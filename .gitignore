@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+runtime-state.json
+test-output/
+# 预设只能本地交付，禁止进入仓库或Git历史。
+presets/
