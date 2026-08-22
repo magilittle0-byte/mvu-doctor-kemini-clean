@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.3.0';
+  const DOCTOR_VERSION = '0.3.1';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -107,28 +107,91 @@
       return text.length >= 2 && !EMPTY_WORDS.test(text);
     }
 
-    function repairJsonText(text) {
+    function stripJsonFence(text) {
       return String(text || '')
-        .replace(/^\s*```(?:json)?/i, '')
-        .replace(/```\s*$/i, '')
-        .replace(/[“”]/g, '"')
-        .replace(/[‘’]/g, "'")
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/(^|\s)\/\/[^\r\n]*/g, '$1')
-        .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, body) => JSON.stringify(
-          body.replace(/\\'/g, "'").replace(/\\"/g, '"'),
-        ))
+        .replace(/^\s*```(?:json|json5)?\s*/i, '')
+        .replace(/\s*```\s*$/i, '')
+        .trim();
+    }
+
+    function readQuotedToken(source, start, opener, closer) {
+      let value = '';
+      for (let index = start + 1; index < source.length; index += 1) {
+        const char = source[index];
+        if (char === '\\' && index + 1 < source.length) {
+          const next = source[index + 1];
+          if (next === opener || next === closer || next === '\\' || next === '"' || next === "'") {
+            value += next;
+            index += 1;
+            continue;
+          }
+          value += char + next;
+          index += 1;
+          continue;
+        }
+        if (char === closer) return { end: index + 1, literal: JSON.stringify(value) };
+        value += char;
+      }
+      return null;
+    }
+
+    function shieldJsonLikeStrings(source) {
+      const literals = [];
+      let structural = '';
+      for (let index = 0; index < source.length;) {
+        const char = source[index];
+        if (char === '/' && source[index + 1] === '*') {
+          const end = source.indexOf('*/', index + 2);
+          index = end < 0 ? source.length : end + 2;
+          continue;
+        }
+        if (char === '/' && source[index + 1] === '/') {
+          const end = source.indexOf('\n', index + 2);
+          index = end < 0 ? source.length : end;
+          continue;
+        }
+        let token = null;
+        if (char === '"') {
+          let end = index + 1;
+          for (; end < source.length; end += 1) {
+            if (source[end] === '\\') { end += 1; continue; }
+            if (source[end] === '"') { end += 1; break; }
+          }
+          if (end <= source.length && source[end - 1] === '"') token = { end, literal: source.slice(index, end) };
+        } else if (char === "'") token = readQuotedToken(source, index, "'", "'");
+        else if (char === '“') token = readQuotedToken(source, index, '“', '”');
+        else if (char === '‘') token = readQuotedToken(source, index, '‘', '’');
+        if (token) {
+          const placeholder = `\uE000${literals.length}\uE001`;
+          literals.push(token.literal);
+          structural += placeholder;
+          index = token.end;
+          continue;
+        }
+        structural += char;
+        index += 1;
+      }
+      return { structural, literals };
+    }
+
+    function repairJsonText(text) {
+      const source = stripJsonFence(text);
+      const { structural, literals } = shieldJsonLikeStrings(source);
+      const repaired = structural
         .replace(/([{,]\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1"$2"$3')
         .replace(/,\s*([}\]])/g, '$1')
         .replace(/}\s*{/g, '},{')
         .replace(/]\s*\[/g, '],[')
         .replace(/([}\]])(\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1,$2"$3"$4')
-        .replace(/([}\]])(\s*)"(?=[^"\r\n]+"\s*:)/g, '$1,$2"')
-        .trim();
+        .replace(/([}\]])(\s*)(?=\uE000\d+\uE001\s*:)/g, '$1,$2');
+      return repaired.replace(/\uE000(\d+)\uE001/g, (_match, index) => literals[Number(index)]).trim();
     }
 
     function parseJsonWithLocalRepair(text) {
-      let candidate = repairJsonText(text);
+      const original = stripJsonFence(text);
+      try { return JSON.parse(original); }
+      catch { /* repair only after strict JSON has actually failed */ }
+      let candidate = repairJsonText(original);
       let lastError;
       for (let attempt = 0; attempt < 6; attempt += 1) {
         candidate = candidate
@@ -332,8 +395,97 @@
         .filter(Boolean);
     }
 
-    function prepareProfileBatch(rawProfiles, tickets, currentData) {
-      if (!Array.isArray(rawProfiles) || rawProfiles.length < 1) {
+    function usableScalar(value) {
+      if (value == null) return false;
+      if (typeof value === 'string') return isNonEmptyText(value);
+      return true;
+    }
+
+    function asList(value) {
+      if (Array.isArray(value)) return value.filter(usableScalar);
+      return usableScalar(value) ? [value] : [];
+    }
+
+    function observableNarrativeText(text) {
+      return String(text || '')
+        .replace(/<gm_chain\b[^>]*>[\s\S]*?<\/gm_chain\s*>/gi, '')
+        .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking\s*>/gi, '')
+        .replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi, '')
+        .replace(/<options?\b[^>]*>[\s\S]*?<\/options?\s*>/gi, '')
+        .replace(/<人物档案(?:更新|无变化)\b[^>]*>[\s\S]*?<\/人物档案(?:更新|无变化)\s*>/gi, '')
+        .replace(/<人物档案无变化\s*\/>/gi, '');
+    }
+
+    function normalizeProfileCandidates(rawProfiles, acceptedText = '') {
+      if (!Array.isArray(rawProfiles)) return [];
+      const source = observableNarrativeText(acceptedText);
+      return rawProfiles.map((input) => {
+        if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+        const profile = deepClone(input);
+        profile.aliases = asList(profile.aliases).map((value) => String(value).trim()).filter(Boolean);
+        for (const path of REQUIRED_ARRAYS) {
+          const value = at(profile, path);
+          if (value !== undefined && !Array.isArray(value)) profile[path] = asList(value);
+        }
+        if (!Array.isArray(profile.evidence) || profile.evidence.length < 1) {
+          const label = [profile.name, ...profile.aliases]
+            .map((value) => String(value || '').trim())
+            .find((value) => value && source.includes(value));
+          if (label) profile.evidence = [`最终已接受正文明确出现“${label}”；该人物的可观察出场与互动是本档案的直接依据。`];
+        }
+        return profile;
+      });
+    }
+
+    function mergeCandidateValue(previous, incoming) {
+      if (Array.isArray(incoming)) {
+        const combined = [...(Array.isArray(previous) ? previous : []), ...incoming].filter(usableScalar);
+        const seen = new Set();
+        return combined.filter((value) => {
+          const signature = JSON.stringify(value);
+          if (seen.has(signature)) return false;
+          seen.add(signature);
+          return true;
+        }).map(deepClone);
+      }
+      if (incoming && typeof incoming === 'object') {
+        const base = previous && typeof previous === 'object' && !Array.isArray(previous) ? deepClone(previous) : {};
+        for (const [key, value] of Object.entries(incoming)) base[key] = mergeCandidateValue(base[key], value);
+        return base;
+      }
+      return usableScalar(incoming) ? incoming : deepClone(previous);
+    }
+
+    function sameCandidate(left, right) {
+      const exactKeys = ['profileId', 'ticketId'];
+      if (exactKeys.some((key) => left?.[key] && right?.[key] && String(left[key]) === String(right[key]))) return true;
+      const leftNames = new Set(normalizedNames(left));
+      return normalizedNames(right).some((name) => leftNames.has(name));
+    }
+
+    function mergeProfileCandidates(previousProfiles, incomingProfiles) {
+      const merged = Array.isArray(previousProfiles) ? deepClone(previousProfiles) : [];
+      for (const incoming of Array.isArray(incomingProfiles) ? incomingProfiles : []) {
+        if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+          merged.push(incoming);
+          continue;
+        }
+        const index = merged.findIndex((previous) => sameCandidate(previous, incoming));
+        if (index < 0) merged.push(deepClone(incoming));
+        else {
+          const previous = merged[index];
+          merged[index] = mergeCandidateValue(previous, incoming);
+          for (const key of ['profileId', 'ticketId']) {
+            if (usableScalar(previous?.[key])) merged[index][key] = previous[key];
+          }
+        }
+      }
+      return merged;
+    }
+
+    function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedText = '') {
+      const normalizedProfiles = normalizeProfileCandidates(rawProfiles, acceptedText);
+      if (normalizedProfiles.length < 1) {
         return { ok: false, errors: ['人物档案批次为空'], profiles: [] };
       }
       const existing = existingProfilesFromData(currentData);
@@ -347,7 +499,7 @@
       const prepared = [];
       const errors = [];
 
-      for (const [index, input] of rawProfiles.entries()) {
+      for (const [index, input] of normalizedProfiles.entries()) {
         if (!input || typeof input !== 'object' || Array.isArray(input)) {
           errors.push(`第${index + 1}张档案不是对象`);
           continue;
@@ -601,7 +753,7 @@
       return visit(value);
     }
 
-    return Object.freeze({ PROFILE_ROOT, deepClone, generateTicketBatch, statDataOf, parseUpdateVariableBlock, validatePatchOperations, verifyPatchOperations, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, parseWorldState, selectWorldRecall, formatGenerationInjection, profileDigestFromData, profilesFromData, removeApiFromExport });
+    return Object.freeze({ PROFILE_ROOT, deepClone, generateTicketBatch, statDataOf, parseUpdateVariableBlock, validatePatchOperations, verifyPatchOperations, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, parseWorldState, selectWorldRecall, formatGenerationInjection, profileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
@@ -683,16 +835,24 @@
     session.trace.push({ at: new Date().toISOString(), stage, ...runtime.core.removeApiFromExport(detail, [settings().api?.apiKey, settings().api?.endpoint]) });
   }
 
+  function doctorElapsed(session, now = Date.now()) {
+    const start = Number(session?.doctorStartedAt || session?.startedAt || now);
+    return Math.max(0, now - start);
+  }
+
   async function finalizeRun(session, outcome, context = getContext()) {
     if (!session || session.reportSaved) return;
     session.reportSaved = true;
     const store = metadata(context);
+    const finishedAt = Date.now();
     const report = runtime.core.removeApiFromExport({
       runId: session.id,
       chatId: session.chatId,
       startedAt: new Date(session.startedAt).toISOString(),
-      finishedAt: new Date().toISOString(),
-      durationMs: Date.now() - session.startedAt,
+      acceptedAt: session.doctorStartedAt ? new Date(session.doctorStartedAt).toISOString() : null,
+      finishedAt: new Date(finishedAt).toISOString(),
+      durationMs: doctorElapsed(session, finishedAt),
+      totalDurationMs: finishedAt - session.startedAt,
       messageId: session.finalMessageId ?? null,
       tickets: session.tickets,
       injection: session.injection || '',
@@ -1060,10 +1220,9 @@
     return { ok: false, error: '变量医生未得到可用终态，零写入' };
   }
 
-  async function repairProfileReceipt(session, message, reason, data) {
+  async function repairProfileReceipt(session, message, reason, data, candidateProfiles = []) {
     const systemPrompt = `你是MVU人物档案独立审计与格式修复器，不重写正文，不重新随机人格。上游人物回执只是候选材料，不是最终裁决；你必须亲自逐段检查最终正文：凡有姓名、编号或可稳定单指的唯一称谓，并实际说话、行动或持续参与情节的NPC都必须建档；例如“引导者”“柜台管理员”“戴红围巾的侦察员”只要能稳定单指就算人物。玩家本人、当前角色卡扮演主体、纯路人群体、一次性幻象不建档。若上游已有与正文一致的完整候选档案，应保留并校正，不得用无变化丢掉它。根据最终正文、本轮既定characterCreationTicket和已有档案摘要，输出且只输出<人物档案更新>[本轮所有应新增或更新的完整JSON档案对象...]</人物档案更新>或经独立复核后确认的<人物档案无变化/>。新人物必须使用一个未重复的本轮ticketId，personality必须保持该票据十四轴。所有规定字段和列表完整；正文缺失信息应结合世界观创造性补全并写入inferences，后续证据可修订；禁止未知、待定、未登记。旧人物回传合并后的完整档案。`;
-    const upstreamReceipt = runtime.core.parseProfileReceipt(message);
-    const prompt = `修复/复核原因：${reason}\n本轮票据：${JSON.stringify(session.tickets)}\n已有档案摘要：${JSON.stringify(runtime.core.profileDigestFromData(data))}\n上游候选回执：${JSON.stringify(upstreamReceipt)}\n最终正文：${runtime.core.stripProfileReceipt(message)}`;
+    const prompt = `修复/复核原因：${reason}\n本轮票据：${JSON.stringify(session.tickets)}\n已有持久档案摘要：${JSON.stringify(runtime.core.profileDigestFromData(data))}\n本轮最佳候选档案：${JSON.stringify(candidateProfiles)}\n只补齐或修正上述候选中列明的问题；已有正确字段必须原样保留。若正文还出现候选未覆盖的稳定NPC，再追加其完整档案。\n最终正文：${runtime.core.stripProfileReceipt(message)}`;
     const response = await generateDoctorRaw({ systemPrompt, prompt, responseLength: settings().profileMaxTokens, task: '人物档案审计与修复', session });
     assertSessionCurrent(session);
     return response;
@@ -1078,25 +1237,33 @@
     const oldData = dataWithRecoveredProfiles(liveData, getContext());
     let receiptText = message;
     let receipt = runtime.core.parseProfileReceipt(receiptText);
+    let candidateProfiles = receipt.kind === 'update' ? receipt.profiles : [];
     let auditedNochange = false;
     const upstreamPrepared = receipt.kind === 'update'
-      ? runtime.core.prepareProfileBatch(receipt.profiles, session.tickets, oldData)
+      ? runtime.core.prepareProfileBatch(candidateProfiles, session.tickets, oldData, message)
       : { ok: false, errors: [receipt.kind === 'nochange' ? '预设声称人物档案无变化；医生必须独立复核正文是否出现稳定NPC' : receipt.error || '人物档案回执无效'] };
     let prepared = { ok: false, errors: upstreamPrepared.ok ? ['上游档案结构有效；仍需医生独立覆盖复核是否漏掉稳定NPC'] : upstreamPrepared.errors };
     const attempts = Math.max(1, Math.min(3, Number(settings().repairAttempts) || 1));
     for (let attempt = 0; !prepared.ok && attempt < attempts; attempt += 1) {
       try {
         setStatus('正在修复人物档案', `第 ${attempt + 1}/${attempts} 次：${prepared.errors.slice(0, 3).join('；')}`);
-        receiptText = await repairProfileReceipt(session, message, prepared.errors.join('；'), oldData);
+        receiptText = await repairProfileReceipt(session, message, prepared.errors.join('；'), oldData, candidateProfiles);
         receipt = runtime.core.parseProfileReceipt(receiptText);
         if (receipt.kind === 'nochange') {
+          if (candidateProfiles.length) {
+            prepared = { ok: false, errors: ['已经生成候选档案，修复模型不得用“无变化”丢弃已验证工作'] };
+            traceRun(session, 'profile:nochange-rejected', { attempt: attempt + 1, receiptText, candidateProfiles });
+            continue;
+          }
           auditedNochange = true;
           traceRun(session, 'profile:nochange-confirmed', { attempt: attempt + 1, receiptText });
           break;
         }
-        prepared = receipt.kind === 'update'
-          ? runtime.core.prepareProfileBatch(receipt.profiles, session.tickets, oldData)
-          : { ok: false, errors: [receipt.error || '修复模型没有返回有效档案回执'] };
+        if (receipt.kind === 'update') {
+          candidateProfiles = runtime.core.mergeProfileCandidates(candidateProfiles, receipt.profiles);
+          prepared = runtime.core.prepareProfileBatch(candidateProfiles, session.tickets, oldData, message);
+          traceRun(session, 'profile:candidate-preserved', { attempt: attempt + 1, candidateProfiles, errors: prepared.errors });
+        } else prepared = { ok: false, errors: [receipt.error || '修复模型没有返回有效档案回执'] };
       } catch (error) {
         prepared = { ok: false, errors: [`修复请求失败：${error.message || error}`] };
       }
@@ -1187,6 +1354,7 @@
     }
     session.finalMessageId = latestAi.index;
     session.acceptedText = latestAi.message.mes;
+    session.doctorStartedAt = Date.now();
     traceRun(session, 'accepted-final', { messageId: latestAi.index, message: latestAi.message });
     setStatus('医生处理中', '先检查并修复MVU变量；人物与世界尚未开始');
     const variableResult = await auditVariables(session, latestAi.index, latestAi.message.mes);
@@ -1194,7 +1362,7 @@
       addDiagnostic('variable_failed', variableResult.error, context);
       await saveMetadata(context);
       setRetry({ kind: 'variable', session, messageId: latestAi.index, message: latestAi.message.mes });
-      setStatus('MVU变量修复失败', variableResult.error, { durationMs: Date.now() - session.startedAt });
+      setStatus('MVU变量修复失败', variableResult.error, { durationMs: doctorElapsed(session) });
       await finalizeRun(session, { ok: false, stage: 'variable', error: variableResult.error }, context);
       return;
     }
@@ -1204,7 +1372,7 @@
       addDiagnostic('profile_failed', profileResult.error, context);
       await saveMetadata(context);
       setRetry({ kind: 'profile', session, messageId: latestAi.index, message: getContext().chat?.[latestAi.index]?.mes || variableResult.message, data: variableResult.data });
-      setStatus('人物档案失败', profileResult.error, { durationMs: Date.now() - session.startedAt });
+      setStatus('人物档案失败', profileResult.error, { durationMs: doctorElapsed(session) });
       await finalizeRun(session, { ok: false, stage: 'profile', variable: variableResult, error: profileResult.error }, context);
       return;
     }
@@ -1217,14 +1385,14 @@
       addDiagnostic('world_failed', worldResult.error, context);
       await saveMetadata(context);
       setRetry({ kind: 'world', session, messageId: latestAi.index, message: finalAcceptedText, data: profileResult.data });
-      setStatus('档案完成，世界引擎失败', worldResult.error, { profiles: profileCount, branches: activeWorldCount(world), durationMs: Date.now() - session.startedAt });
+      setStatus('档案完成，世界引擎失败', worldResult.error, { profiles: profileCount, branches: activeWorldCount(world), durationMs: doctorElapsed(session) });
       await finalizeRun(session, { ok: false, stage: 'world', variable: variableResult, profiles: profileResult, error: worldResult.error }, context);
       return;
     }
     addDiagnostic('completed', `档案变更${profileResult.changed}张；世界项${activeWorldCount(world)}条`, context);
     await saveMetadata(context);
     setRetry(null);
-    setStatus('本轮医生完成', `档案与世界状态均已落定`, { profiles: profileCount, branches: activeWorldCount(world), durationMs: Date.now() - session.startedAt });
+    setStatus('本轮医生完成', `档案与世界状态均已落定`, { profiles: profileCount, branches: activeWorldCount(world), durationMs: doctorElapsed(session) });
     await finalizeRun(session, { ok: true, variable: variableResult, profiles: profileResult, world: worldResult }, context);
     void refreshUiData();
   }
@@ -1242,7 +1410,8 @@
     runtime.retrying = true;
     renderRetryControl();
     try {
-      const session = { ...item.session, id: `retry-${Date.now().toString(36)}`, startedAt: Date.now(), epoch: runtime.epoch, cancelled: false, trace: [], reportSaved: false, acceptedText: item.message, finalMessageId: item.messageId };
+      const retryStartedAt = Date.now();
+      const session = { ...item.session, id: `retry-${retryStartedAt.toString(36)}`, startedAt: retryStartedAt, doctorStartedAt: retryStartedAt, epoch: runtime.epoch, cancelled: false, trace: [], reportSaved: false, acceptedText: item.message, finalMessageId: item.messageId };
       const retryLabel = item.kind === 'variable' ? '重新检查并修复MVU变量' : item.kind === 'profile' ? '重新审计并提交当前人物档案' : '重新推进当前世界支线';
       setStatus('正在重试', retryLabel);
       let workingMessage = item.message;

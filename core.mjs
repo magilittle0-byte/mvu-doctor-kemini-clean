@@ -83,28 +83,91 @@ function isNonEmptyText(value) {
   return text.length >= 2 && !EMPTY_WORDS.test(text);
 }
 
-function repairJsonText(text) {
+function stripJsonFence(text) {
   return String(text || '')
-    .replace(/^\s*```(?:json)?/i, '')
-    .replace(/```\s*$/i, '')
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|\s)\/\/[^\r\n]*/g, '$1')
-    .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, body) => JSON.stringify(
-      body.replace(/\\'/g, "'").replace(/\\"/g, '"'),
-    ))
+    .replace(/^\s*```(?:json|json5)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+}
+
+function readQuotedToken(source, start, opener, closer) {
+  let value = '';
+  for (let index = start + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '\\' && index + 1 < source.length) {
+      const next = source[index + 1];
+      if (next === opener || next === closer || next === '\\' || next === '"' || next === "'") {
+        value += next;
+        index += 1;
+        continue;
+      }
+      value += char + next;
+      index += 1;
+      continue;
+    }
+    if (char === closer) return { end: index + 1, literal: JSON.stringify(value) };
+    value += char;
+  }
+  return null;
+}
+
+function shieldJsonLikeStrings(source) {
+  const literals = [];
+  let structural = '';
+  for (let index = 0; index < source.length;) {
+    const char = source[index];
+    if (char === '/' && source[index + 1] === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end < 0 ? source.length : end + 2;
+      continue;
+    }
+    if (char === '/' && source[index + 1] === '/') {
+      const end = source.indexOf('\n', index + 2);
+      index = end < 0 ? source.length : end;
+      continue;
+    }
+    let token = null;
+    if (char === '"') {
+      let end = index + 1;
+      for (; end < source.length; end += 1) {
+        if (source[end] === '\\') { end += 1; continue; }
+        if (source[end] === '"') { end += 1; break; }
+      }
+      if (end <= source.length && source[end - 1] === '"') token = { end, literal: source.slice(index, end) };
+    } else if (char === "'") token = readQuotedToken(source, index, "'", "'");
+    else if (char === '“') token = readQuotedToken(source, index, '“', '”');
+    else if (char === '‘') token = readQuotedToken(source, index, '‘', '’');
+    if (token) {
+      const placeholder = `\uE000${literals.length}\uE001`;
+      literals.push(token.literal);
+      structural += placeholder;
+      index = token.end;
+      continue;
+    }
+    structural += char;
+    index += 1;
+  }
+  return { structural, literals };
+}
+
+function repairJsonText(text) {
+  const source = stripJsonFence(text);
+  const { structural, literals } = shieldJsonLikeStrings(source);
+  const repaired = structural
     .replace(/([{,]\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1"$2"$3')
     .replace(/,\s*([}\]])/g, '$1')
     .replace(/}\s*{/g, '},{')
     .replace(/]\s*\[/g, '],[')
     .replace(/([}\]])(\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1,$2"$3"$4')
-    .replace(/([}\]])(\s*)"(?=[^"\r\n]+"\s*:)/g, '$1,$2"')
-    .trim();
+    .replace(/([}\]])(\s*)(?=\uE000\d+\uE001\s*:)/g, '$1,$2');
+  return repaired.replace(/\uE000(\d+)\uE001/g, (_match, index) => literals[Number(index)]).trim();
 }
 
 function parseJsonWithLocalRepair(text) {
-  let candidate = repairJsonText(text);
+  const original = stripJsonFence(text);
+  try { return JSON.parse(original); }
+  catch { /* repair only after strict JSON has actually failed */ }
+  let candidate = repairJsonText(original);
   let lastError;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     candidate = candidate
@@ -308,8 +371,97 @@ function normalizedNames(profile) {
     .filter(Boolean);
 }
 
-export function prepareProfileBatch(rawProfiles, tickets, currentData) {
-  if (!Array.isArray(rawProfiles) || rawProfiles.length < 1) {
+function usableScalar(value) {
+  if (value == null) return false;
+  if (typeof value === 'string') return isNonEmptyText(value);
+  return true;
+}
+
+function asList(value) {
+  if (Array.isArray(value)) return value.filter(usableScalar);
+  return usableScalar(value) ? [value] : [];
+}
+
+function observableNarrativeText(text) {
+  return String(text || '')
+    .replace(/<gm_chain\b[^>]*>[\s\S]*?<\/gm_chain\s*>/gi, '')
+    .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking\s*>/gi, '')
+    .replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi, '')
+    .replace(/<options?\b[^>]*>[\s\S]*?<\/options?\s*>/gi, '')
+    .replace(/<人物档案(?:更新|无变化)\b[^>]*>[\s\S]*?<\/人物档案(?:更新|无变化)\s*>/gi, '')
+    .replace(/<人物档案无变化\s*\/>/gi, '');
+}
+
+export function normalizeProfileCandidates(rawProfiles, acceptedText = '') {
+  if (!Array.isArray(rawProfiles)) return [];
+  const source = observableNarrativeText(acceptedText);
+  return rawProfiles.map((input) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+    const profile = deepClone(input);
+    profile.aliases = asList(profile.aliases).map((value) => String(value).trim()).filter(Boolean);
+    for (const path of REQUIRED_ARRAYS) {
+      const value = at(profile, path);
+      if (value !== undefined && !Array.isArray(value)) profile[path] = asList(value);
+    }
+    if (!Array.isArray(profile.evidence) || profile.evidence.length < 1) {
+      const label = [profile.name, ...profile.aliases]
+        .map((value) => String(value || '').trim())
+        .find((value) => value && source.includes(value));
+      if (label) profile.evidence = [`最终已接受正文明确出现“${label}”；该人物的可观察出场与互动是本档案的直接依据。`];
+    }
+    return profile;
+  });
+}
+
+function mergeCandidateValue(previous, incoming) {
+  if (Array.isArray(incoming)) {
+    const combined = [...(Array.isArray(previous) ? previous : []), ...incoming].filter(usableScalar);
+    const seen = new Set();
+    return combined.filter((value) => {
+      const signature = JSON.stringify(value);
+      if (seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    }).map(deepClone);
+  }
+  if (incoming && typeof incoming === 'object') {
+    const base = previous && typeof previous === 'object' && !Array.isArray(previous) ? deepClone(previous) : {};
+    for (const [key, value] of Object.entries(incoming)) base[key] = mergeCandidateValue(base[key], value);
+    return base;
+  }
+  return usableScalar(incoming) ? incoming : deepClone(previous);
+}
+
+function sameCandidate(left, right) {
+  const exactKeys = ['profileId', 'ticketId'];
+  if (exactKeys.some((key) => left?.[key] && right?.[key] && String(left[key]) === String(right[key]))) return true;
+  const leftNames = new Set(normalizedNames(left));
+  return normalizedNames(right).some((name) => leftNames.has(name));
+}
+
+export function mergeProfileCandidates(previousProfiles, incomingProfiles) {
+  const merged = Array.isArray(previousProfiles) ? deepClone(previousProfiles) : [];
+  for (const incoming of Array.isArray(incomingProfiles) ? incomingProfiles : []) {
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      merged.push(incoming);
+      continue;
+    }
+    const index = merged.findIndex((previous) => sameCandidate(previous, incoming));
+    if (index < 0) merged.push(deepClone(incoming));
+    else {
+      const previous = merged[index];
+      merged[index] = mergeCandidateValue(previous, incoming);
+      for (const key of ['profileId', 'ticketId']) {
+        if (usableScalar(previous?.[key])) merged[index][key] = previous[key];
+      }
+    }
+  }
+  return merged;
+}
+
+export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedText = '') {
+  const normalizedProfiles = normalizeProfileCandidates(rawProfiles, acceptedText);
+  if (normalizedProfiles.length < 1) {
     return { ok: false, errors: ['人物档案批次为空'], profiles: [] };
   }
   const existing = existingProfilesFromData(currentData);
@@ -323,7 +475,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData) {
   const prepared = [];
   const errors = [];
 
-  for (const [index, input] of rawProfiles.entries()) {
+  for (const [index, input] of normalizedProfiles.entries()) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       errors.push(`第${index + 1}张档案不是对象`);
       continue;

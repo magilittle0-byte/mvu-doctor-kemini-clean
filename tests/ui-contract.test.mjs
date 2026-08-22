@@ -6,7 +6,7 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.3.0控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
+test('0.3.1控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -19,7 +19,7 @@ test('0.3.0控制台包含变量、连接、人物、世界、诊断与恢复入
   assert.match(source, /retryLastFailure/);
   assert.match(source, /auditVariables/);
   assert.match(source, /removeApiFromExport/);
-  assert.equal(manifest.version, '0.3.0');
+  assert.equal(manifest.version, '0.3.1');
 });
 
 test('人物和世界内容使用textContent节点渲染且移动端为全屏控制台', () => {

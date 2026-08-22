@@ -8,7 +8,9 @@ import {
   openAiChatEndpoint,
   openAiModelsEndpoint,
   mergeProfileRootDirect,
+  mergeProfileCandidates,
   mergeUpdateVariableBlocks,
+  normalizeProfileCandidates,
   parseProfileReceipt,
   parseUpdateVariableBlock,
   parseWorldState,
@@ -60,6 +62,12 @@ test('人物档案JSON可保守修复缺逗号的数组项和对象字段', () =
   assert.deepEqual(object.profiles[0].aliases, []);
 });
 
+test('合法JSON中的中文引号不会被修复器反向破坏', () => {
+  const receipt = parseProfileReceipt('<人物档案更新>[{"name":"林澄","inferences":["她把‘草稿’收好，并说明这是‘暂定’记录。"]}]</人物档案更新>');
+  assert.equal(receipt.kind, 'update');
+  assert.equal(receipt.profiles[0].inferences[0], '她把‘草稿’收好，并说明这是‘暂定’记录。');
+});
+
 test('变量医生解析无限回廊UpdateVariable并把原更新与纠错合并', () => {
   const original = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/契约者/经济/UP","value":10}]</JSONPatch></UpdateVariable>';
   const correction = '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/当前时间/地点","value":"回廊大厅"}]</JSONPatch></UpdateVariable>';
@@ -109,6 +117,39 @@ test('完整新档案绑定同一票据并编译为单根原子补丁', () => {
   assert.equal(verifyCommittedProfiles(committed, prepared.profiles), true);
   assert.equal(buildProfilePatch(current, prepared.profiles).operations[0].op, 'insert');
   assert.equal(verifyCommittedProfiles(mergeProfileRootDirect(current, prepared.profiles), prepared.profiles), true);
+});
+
+test('人物修复保留最佳候选并只归一化缺项，不重新生成整张档案', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const firstCandidate = {
+    ticketId: ticket.ticketId,
+    name: '林澄',
+    aliases: ['小澄'],
+    relationships: ['与药房老板保持互相信任的雇佣关系'],
+  };
+  const repairedCandidate = completeProfile(ticket);
+  repairedCandidate.ticketId = '模型重试时误写的票据';
+  repairedCandidate.aliases = '小澄';
+  repairedCandidate.inferences = ['她把‘草稿’作为可修订记录，不会冒充已经确认的事实。'];
+  delete repairedCandidate.evidence;
+  const merged = mergeProfileCandidates([firstCandidate], [repairedCandidate]);
+  const normalized = normalizeProfileCandidates(merged, '林澄正在药房柜台后整理新送到的药材。');
+  assert.deepEqual(normalized[0].aliases, ['小澄']);
+  assert.equal(normalized[0].ticketId, ticket.ticketId);
+  assert.equal(normalized[0].evidence.length, 1);
+  const prepared = prepareProfileBatch(merged, [ticket], { stat_data: {} }, '林澄正在药房柜台后整理新送到的药材。');
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.deepEqual(prepared.profiles[0].relationships, firstCandidate.relationships);
+  assert.match(prepared.profiles[0].inferences[0], /‘草稿’/);
+});
+
+test('人物证据只取最终叙事，不把规划和选项冒充已发生事实', () => {
+  const candidate = { name: '林澄', aliases: '小澄' };
+  const normalized = normalizeProfileCandidates(
+    [candidate],
+    '<gm_chain>安排林澄稍后登场</gm_chain><content>街上暂时无人。</content><options>去找林澄</options>',
+  );
+  assert.equal(normalized[0].evidence, undefined);
 });
 
 test('任一必填字段缺失会使整批校验失败', () => {
