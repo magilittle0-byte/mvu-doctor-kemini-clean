@@ -780,17 +780,47 @@ export function profilesFromData(data) {
 export function removeApiFromExport(value, secrets = []) {
   const blocked = /^(?:api|apiKey|endpoint|authorization|headers|requestHeaders|credentials|accessToken|refreshToken|secret)$/i;
   const secretValues = (secrets || []).map((item) => String(item || '')).filter((item) => item.length >= 4);
-  const visit = (item) => {
-    if (Array.isArray(item)) return item.map(visit);
-    if (item && typeof item === 'object') {
-      return Object.fromEntries(Object.entries(item)
-        .filter(([key]) => !blocked.test(key))
-        .map(([key, child]) => [key, visit(child)]));
+  const active = new WeakMap();
+  const visit = (item, path = '$') => {
+    if (typeof item === 'string') {
+      let text = redactDiagnostic(item);
+      for (const secret of secretValues) text = text.split(secret).join('[API已排除]');
+      return text;
     }
-    if (typeof item !== 'string') return item;
-    let text = redactDiagnostic(item);
-    for (const secret of secretValues) text = text.split(secret).join('[API已排除]');
-    return text;
+    if (item === null || typeof item === 'boolean' || typeof item === 'number') return item;
+    if (typeof item === 'bigint') return `${item}n`;
+    if (typeof item === 'undefined') return '[undefined]';
+    if (typeof item === 'function') return `[Function${item.name ? `: ${item.name}` : ''}]`;
+    if (typeof item === 'symbol') return String(item);
+    if (!item || typeof item !== 'object') return item;
+    if (active.has(item)) return `[Circular -> ${active.get(item)}]`;
+    if (item instanceof Date) return Number.isNaN(item.getTime()) ? 'Invalid Date' : item.toISOString();
+    if (item instanceof Error) {
+      return visit({ name: item.name, message: item.message, stack: item.stack }, `${path}.error`);
+    }
+    if (item instanceof ArrayBuffer) return { type: 'ArrayBuffer', byteLength: item.byteLength };
+    if (ArrayBuffer.isView(item)) return { type: item.constructor?.name || 'TypedArray', values: Array.from(item) };
+
+    active.set(item, path);
+    try {
+      if (Array.isArray(item)) return item.map((child, index) => visit(child, `${path}[${index}]`));
+      if (item instanceof Map) {
+        return { type: 'Map', entries: Array.from(item.entries(), ([key, child], index) => [visit(key, `${path}.mapKey${index}`), visit(child, `${path}.mapValue${index}`)]) };
+      }
+      if (item instanceof Set) return { type: 'Set', values: Array.from(item, (child, index) => visit(child, `${path}.set${index}`)) };
+      const result = {};
+      for (const key of Object.keys(item)) {
+        if (blocked.test(key)) continue;
+        try {
+          result[key] = visit(item[key], `${path}.${key}`);
+        } catch (error) {
+          result[key] = `[读取失败: ${error?.message || String(error)}]`;
+        }
+      }
+      return result;
+    } finally {
+      active.delete(item);
+    }
   };
   return visit(value);
 }

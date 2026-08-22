@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.3.3';
+  const DOCTOR_VERSION = '0.3.4';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -804,17 +804,47 @@
     function removeApiFromExport(value, secrets = []) {
       const blocked = /^(?:api|apiKey|endpoint|authorization|headers|requestHeaders|credentials|accessToken|refreshToken|secret)$/i;
       const secretValues = (secrets || []).map((item) => String(item || '')).filter((item) => item.length >= 4);
-      const visit = (item) => {
-        if (Array.isArray(item)) return item.map(visit);
-        if (item && typeof item === 'object') {
-          return Object.fromEntries(Object.entries(item)
-            .filter(([key]) => !blocked.test(key))
-            .map(([key, child]) => [key, visit(child)]));
+      const active = new WeakMap();
+      const visit = (item, path = '$') => {
+        if (typeof item === 'string') {
+          let text = redactDiagnostic(item);
+          for (const secret of secretValues) text = text.split(secret).join('[API已排除]');
+          return text;
         }
-        if (typeof item !== 'string') return item;
-        let text = redactDiagnostic(item);
-        for (const secret of secretValues) text = text.split(secret).join('[API已排除]');
-        return text;
+        if (item === null || typeof item === 'boolean' || typeof item === 'number') return item;
+        if (typeof item === 'bigint') return `${item}n`;
+        if (typeof item === 'undefined') return '[undefined]';
+        if (typeof item === 'function') return `[Function${item.name ? `: ${item.name}` : ''}]`;
+        if (typeof item === 'symbol') return String(item);
+        if (!item || typeof item !== 'object') return item;
+        if (active.has(item)) return `[Circular -> ${active.get(item)}]`;
+        if (item instanceof Date) return Number.isNaN(item.getTime()) ? 'Invalid Date' : item.toISOString();
+        if (item instanceof Error) {
+          return visit({ name: item.name, message: item.message, stack: item.stack }, `${path}.error`);
+        }
+        if (item instanceof ArrayBuffer) return { type: 'ArrayBuffer', byteLength: item.byteLength };
+        if (ArrayBuffer.isView(item)) return { type: item.constructor?.name || 'TypedArray', values: Array.from(item) };
+
+        active.set(item, path);
+        try {
+          if (Array.isArray(item)) return item.map((child, index) => visit(child, `${path}[${index}]`));
+          if (item instanceof Map) {
+            return { type: 'Map', entries: Array.from(item.entries(), ([key, child], index) => [visit(key, `${path}.mapKey${index}`), visit(child, `${path}.mapValue${index}`)]) };
+          }
+          if (item instanceof Set) return { type: 'Set', values: Array.from(item, (child, index) => visit(child, `${path}.set${index}`)) };
+          const result = {};
+          for (const key of Object.keys(item)) {
+            if (blocked.test(key)) continue;
+            try {
+              result[key] = visit(item[key], `${path}.${key}`);
+            } catch (error) {
+              result[key] = `[读取失败: ${error?.message || String(error)}]`;
+            }
+          }
+          return result;
+        } finally {
+          active.delete(item);
+        }
       };
       return visit(value);
     }
@@ -1453,6 +1483,9 @@ ${runtime.core.profileCompletionContract()}`;
         store.world = parsed;
         await saveMetadata(context);
         traceRun(session, 'world:committed', { attempt, raw, world: parsed });
+        runtime.status = { ...runtime.status, branches: activeWorldCount(parsed) };
+        renderWorld();
+        renderStatusSurface();
         return { ok: true, world: store.world };
       } catch (error) {
         failure = error.message || String(error);
@@ -1789,16 +1822,29 @@ ${runtime.core.profileCompletionContract()}`;
 
   async function refreshUiData() {
     const context = getContext();
-    const latestAi = latestMessage(context, false);
-    const Mvu = await getMvu();
-    const data = Mvu && latestAi ? await mvuDataAt(Mvu, latestAi.index) : null;
-    runtime.uiProfiles = combinedProfiles(data, context);
+    const chatId = String(context?.chatId || '');
     const world = metadata(context).world;
-    runtime.status = { ...runtime.status, profiles: Object.keys(runtime.uiProfiles).length, branches: activeWorldCount(world) };
-    renderProfiles();
+    runtime.status = { ...runtime.status, branches: activeWorldCount(world) };
     renderWorld();
     renderDiagnostics();
     renderStatusSurface();
+
+    const latestAi = latestMessage(context, false);
+    try {
+      const Mvu = await getMvu();
+      const data = Mvu && latestAi ? await mvuDataAt(Mvu, latestAi.index) : null;
+      if (String(getContext()?.chatId || '') !== chatId) return;
+      runtime.uiProfiles = combinedProfiles(data, context);
+      runtime.status = { ...runtime.status, profiles: Object.keys(runtime.uiProfiles).length };
+      renderProfiles();
+      renderStatusSurface();
+    } catch (error) {
+      runtime.uiProfiles = combinedProfiles(null, context);
+      runtime.status = { ...runtime.status, profiles: Object.keys(runtime.uiProfiles).length };
+      renderProfiles();
+      renderStatusSurface();
+      setConnectionMessage(`人物MVU读取失败，世界面板仍已刷新：${error?.message || String(error)}`, 'warning');
+    }
   }
 
   function setConnectionMessage(message, severity = 'info') {
@@ -1876,8 +1922,26 @@ ${runtime.core.profileCompletionContract()}`;
     const context = getContext();
     const config = settings(context);
     const latestAi = latestMessage(context, false);
-    const Mvu = await getMvu();
-    const currentMvu = Mvu && latestAi ? await mvuDataAt(Mvu, latestAi.index) : null;
+    const filename = `mvu-doctor-full-report-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    let destination = null;
+    if (typeof window.showSaveFilePicker === 'function') {
+      try {
+        destination = window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: 'JSON 运行报告', accept: { 'application/json': ['.json'] } }],
+        }).then((handle) => ({ handle }), (error) => ({ error }));
+      } catch {
+        destination = null;
+      }
+    }
+    let currentMvu = null;
+    let currentMvuReadError = '';
+    try {
+      const Mvu = await getMvu();
+      currentMvu = Mvu && latestAi ? await mvuDataAt(Mvu, latestAi.index) : null;
+    } catch (error) {
+      currentMvuReadError = error?.message || String(error);
+    }
     const secrets = [config.api?.apiKey, config.api?.endpoint];
     const report = runtime.core.removeApiFromExport({
       reportType: 'MVU人物与世界医生完整运行报告',
@@ -1891,13 +1955,29 @@ ${runtime.core.profileCompletionContract()}`;
       doctorMetadata: metadata(context),
       chat: context?.chat || [],
       currentMvu,
+      ...(currentMvuReadError ? { currentMvuReadError: `当前楼层MVU读取失败，其他完整内容仍已导出：${currentMvuReadError}` } : {}),
     }, secrets);
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8' });
+    const serialized = JSON.stringify(report, null, 2);
+    if (destination) {
+      const selected = await destination;
+      if (selected.error) {
+        if (selected.error?.name === 'AbortError') return { cancelled: true };
+      } else {
+        const writable = await selected.handle.createWritable();
+        try {
+          await writable.write(serialized);
+        } finally {
+          await writable.close();
+        }
+        return { cancelled: false, filename, mode: 'file-picker' };
+      }
+    }
+    const blob = new Blob([serialized], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     try {
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `mvu-doctor-full-report-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      anchor.download = filename;
       anchor.style.display = 'none';
       document.body.appendChild(anchor);
       anchor.click();
@@ -1905,6 +1985,7 @@ ${runtime.core.profileCompletionContract()}`;
     } finally {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
+    return { cancelled: false, filename, mode: 'download' };
   }
 
   function mountSettingsShortcut() {
@@ -2038,7 +2119,7 @@ ${runtime.core.profileCompletionContract()}`;
       } catch (error) { setConnectionMessage(error.message || String(error), 'error'); }
     });
     root.querySelector('[data-role="copyDiagnostics"]').addEventListener('click', () => void copyDiagnostics().then(() => setConnectionMessage('脱敏诊断已复制。', 'success')).catch((error) => setStatus('复制诊断失败', error.message || String(error))));
-    root.querySelector('[data-role="exportFullReport"]').addEventListener('click', () => void exportFullReport().then(() => setConnectionMessage('完整报告已导出；文件未脱敏，请只在本地保存。', 'success')).catch((error) => setStatus('完整报告导出失败', error.message || String(error))));
+    root.querySelector('[data-role="exportFullReport"]').addEventListener('click', () => void exportFullReport().then((result) => setConnectionMessage(result?.cancelled ? '已取消导出，没有创建文件。' : '完整报告已导出；文件未脱敏，请只在本地保存。', result?.cancelled ? 'info' : 'success')).catch((error) => setStatus('完整报告导出失败', error.message || String(error))));
     root.querySelector('[data-role="clearDiagnostics"]').addEventListener('click', async () => {
       if (!window.confirm?.('清空当前聊天的医生诊断与完整运行记录？人物档案和世界状态不会删除。')) return;
       metadata().diagnostics = [];

@@ -6,7 +6,7 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.3.3控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
+test('0.3.4控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -23,7 +23,24 @@ test('0.3.3控制台包含变量、连接、人物、世界、诊断与恢复入
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.3.3');
+  assert.equal(manifest.version, '0.3.4');
+});
+
+test('世界提交立即重绘且MVU读取不能阻塞世界面板刷新', () => {
+  assert.match(source, /await saveMetadata\(context\);[\s\S]{0,400}renderWorld\(\);[\s\S]{0,100}renderStatusSurface\(\);/);
+  const refresh = source.match(/async function refreshUiData\(\) \{([\s\S]*?)\n  \}/)?.[1] || '';
+  assert.ok(refresh.indexOf('renderWorld();') >= 0);
+  assert.ok(refresh.indexOf('renderWorld();') < refresh.indexOf('await getMvu();'));
+  assert.match(refresh, /catch \(error\)[\s\S]*世界面板仍已刷新/);
+});
+
+test('完整报告在用户点击阶段先取得文件句柄且MVU读取失败不阻断导出', () => {
+  const exporter = source.match(/async function exportFullReport\(\) \{([\s\S]*?)\n  \}/)?.[1] || '';
+  assert.match(exporter, /showSaveFilePicker/);
+  assert.ok(exporter.indexOf('showSaveFilePicker') < exporter.indexOf('await getMvu();'));
+  assert.match(exporter, /currentMvuReadError/);
+  assert.match(exporter, /createWritable/);
+  assert.match(exporter, /JSON\.stringify\(report, null, 2\)/);
 });
 
 test('人物和世界内容使用textContent节点渲染且移动端为全屏控制台', () => {

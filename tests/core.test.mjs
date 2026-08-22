@@ -312,3 +312,16 @@ test('完整报告只移除API字段和实际凭据，保留正文与变量', ()
   assert.equal(report.stat_data.时间, '上午');
   assert.doesNotMatch(report.raw, /secret-1234/);
 });
+
+test('完整报告清理器可序列化循环引用、BigInt、日期、Map、Set和异常', () => {
+  const source = { count: 12n, when: new Date('2026-08-23T00:00:00.000Z'), map: new Map([['正文', '保留']]), set: new Set(['支线']), error: new Error('读取失败') };
+  source.self = source;
+  const report = removeApiFromExport(source);
+  assert.equal(report.count, '12n');
+  assert.equal(report.when, '2026-08-23T00:00:00.000Z');
+  assert.equal(report.map.entries[0][1], '保留');
+  assert.deepEqual(report.set.values, ['支线']);
+  assert.equal(report.error.message, '读取失败');
+  assert.match(report.self, /^\[Circular/);
+  assert.doesNotThrow(() => JSON.stringify(report));
+});
