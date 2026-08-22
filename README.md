@@ -2,6 +2,8 @@
 
 > 测试候选版：尚未执行真实 TauriTavern / SillyTavern 十二回合验收，不能视为正式发布或“已经可用”的证明。本仓库供用户自行安装实测。
 
+当前版本：`0.1.1`。运行时核心已经打包进 `index.js`，不依赖 `document.currentScript` 或额外定位 `core.mjs`，兼容以非脚本标签方式执行扩展入口的酒馆加载器。
+
 这是一个从零写的轻量医生扩展。它不继承旧医生的任务编排和臃肿架构，与本地交付的 **Kemini Dramatron 陨落的天才 v1.2 MVU适配预设** 配合完成完整链路：
 
 1. `GENERATION_STARTED` 时先掷出十四轴 `characterCreationTicket`，同时召回与本轮输入相关的支线和 NPC 倾向。
