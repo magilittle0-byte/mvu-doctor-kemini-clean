@@ -15,6 +15,8 @@ import {
   parseUpdateVariableBlock,
   parseWorldState,
   prepareProfileBatch,
+  profileCompletionContract,
+  profileNarrativeText,
   redactDiagnostic,
   removeApiFromExport,
   selectWorldRecall,
@@ -68,6 +70,24 @@ test('合法JSON中的中文引号不会被修复器反向破坏', () => {
   assert.equal(receipt.profiles[0].inferences[0], '她把‘草稿’收好，并说明这是‘暂定’记录。');
 });
 
+test('完整档案合同逐项声明所有创作补全字段', () => {
+  const contract = profileCompletionContract();
+  for (const field of [
+    'identity', 'species', 'gender', 'age', 'occupation', 'affiliation', 'socialPosition',
+    'appearance', 'overall', 'body', 'face', 'hair', 'voice', 'physiology',
+    'personality', 'history', 'currentState', 'relationships', 'knowledge', 'capabilities',
+    'resources', 'evidence', 'inferences',
+  ]) assert.match(contract, new RegExp(`"${field}"`));
+  assert.match(contract, /正文没有明说的内容不是空项/);
+  assert.match(contract, /主动设计/);
+});
+
+test('人物档案只把最终叙事当作已发生事实', () => {
+  const narrative = profileNarrativeText('<gm_chain>计划让甲登场</gm_chain><content>乙正在柜台后说话。</content><options>去找甲</options><UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>');
+  assert.doesNotMatch(narrative, /计划让甲登场|去找甲|JSONPatch/);
+  assert.match(narrative, /乙正在柜台后说话/);
+});
+
 test('变量医生解析无限回廊UpdateVariable并把原更新与纠错合并', () => {
   const original = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/契约者/经济/UP","value":10}]</JSONPatch></UpdateVariable>';
   const correction = '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/当前时间/地点","value":"回廊大厅"}]</JSONPatch></UpdateVariable>';
@@ -119,6 +139,25 @@ test('完整新档案绑定同一票据并编译为单根原子补丁', () => {
   assert.equal(verifyCommittedProfiles(mergeProfileRootDirect(current, prepared.profiles), prepared.profiles), true);
 });
 
+test('合法的单字物种与性别不会被误判为空字段', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const profile = completeProfile(ticket);
+  profile.identity.species = '人';
+  profile.identity.gender = '女';
+  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} });
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+});
+
+test('权威人物设定覆盖冲突骰轴，骰票只补尚未给出的轴', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const profile = completeProfile(ticket);
+  profile.personality = { temperament: '角色卡明确设定为热情直率' };
+  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} });
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.equal(prepared.profiles[0].personality.temperament, '角色卡明确设定为热情直率');
+  assert.equal(prepared.profiles[0].personality.coreDesire, ticket.axes.coreDesire);
+});
+
 test('人物修复保留最佳候选并只归一化缺项，不重新生成整张档案', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const firstCandidate = {
@@ -141,6 +180,45 @@ test('人物修复保留最佳候选并只归一化缺项，不重新生成整�
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   assert.deepEqual(prepared.profiles[0].relationships, firstCandidate.relationships);
   assert.match(prepared.profiles[0].inferences[0], /‘草稿’/);
+});
+
+test('多人物候选的占位缺项可定向补全并整体通过，而不重写已有内容', () => {
+  const tickets = generateTicketBatch(2, () => 0.25, 1700000000000);
+  const first = completeProfile(tickets[0]);
+  const second = completeProfile(tickets[1]);
+  second.name = '周遥';
+  first.identity.gender = '女';
+  second.identity.gender = '男';
+  second.identity.affiliation = '无';
+  second.appearance.hair = '不详';
+  const before = prepareProfileBatch([first, second], tickets, { stat_data: {} });
+  assert.equal(before.ok, false);
+  assert.equal(before.errors.length, 2);
+
+  const repaired = mergeProfileCandidates([first, second], [{
+    ticketId: second.ticketId,
+    name: second.name,
+    identity: { affiliation: '暂时独立行动，尚未加入任何组织' },
+    appearance: { hair: '深棕短发，鬓角修剪整齐' },
+    inferences: ['归属与发型由医生结合身份主动补全，后续权威证据出现时可修订。'],
+  }]);
+  const after = prepareProfileBatch(repaired, tickets, { stat_data: {} });
+  assert.equal(after.ok, true, after.errors.join('\n'));
+  assert.equal(after.profiles[0].identity.occupation, first.identity.occupation);
+  assert.equal(after.profiles[1].identity.affiliation, '暂时独立行动，尚未加入任何组织');
+});
+
+test('旧人物的局部更新自动继承完整持久档案', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const existing = completeProfile(ticket);
+  existing.profileId = 'actor-existing';
+  const current = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: { [existing.profileId]: existing } } } };
+  const prepared = prepareProfileBatch([
+    { profileId: existing.profileId, name: existing.name, currentState: { goal: '查清今晚药材失窃的来源' } },
+  ], [], current, '林澄决定查清今晚药材失窃的来源。');
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.equal(prepared.profiles[0].identity.occupation, existing.identity.occupation);
+  assert.equal(prepared.profiles[0].currentState.goal, '查清今晚药材失窃的来源');
 });
 
 test('人物证据只取最终叙事，不把规划和选项冒充已发生事实', () => {

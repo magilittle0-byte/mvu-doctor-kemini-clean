@@ -31,6 +31,51 @@ const REQUIRED_TEXT_PATHS = [
 const REQUIRED_ARRAYS = ['relationships', 'knowledge', 'capabilities', 'resources', 'evidence', 'inferences'];
 const EMPTY_WORDS = /^(未知|不详|待定|待确认|未登记|暂无|无|unknown|null|n\/a)$/i;
 
+export function profileCompletionContract() {
+  return `每个人物必须按以下唯一结构输出完整对象；正文没有明说的内容不是空项，而是结合权威材料、世界观、人物身份和同一张骰票主动设计，并在inferences中说明为可修订补全：
+{
+  "profileId": "旧人物沿用既有ID；新人留空字符串",
+  "ticketId": "新人使用分配的本轮ticketId；旧人物保持原值",
+  "name": "正文中可稳定单指的姓名、编号或唯一称谓",
+  "aliases": ["正文已经出现的别名；没有可用空数组"],
+  "identity": {
+    "species": "物种",
+    "gender": "性别或该物种适用的性别说明",
+    "age": "明确年龄或符合世界观的年龄段",
+    "occupation": "职业或实际职责",
+    "affiliation": "所属组织、社区或独立状态",
+    "socialPosition": "在当前社会与关系网络中的位置"
+  },
+  "appearance": {
+    "overall": "整体形象",
+    "body": "体型与动作特征",
+    "face": "面部特征",
+    "hair": "头发或不适用时的物种原因",
+    "voice": "声音与说话听感",
+    "physiology": "符合物种与世界观的完整生理说明"
+  },
+  "personality": {
+    "temperament": "基础气质", "coreDesire": "核心欲望", "values": "价值观",
+    "thinking": "思考方式", "attachment": "关系模式", "socialMotive": "社交动机",
+    "interest": "利益取向", "conflict": "冲突方式", "stress": "压力反应",
+    "moralBoundary": "道德边界", "expression": "表达习惯", "actionHabit": "行动习惯",
+    "weakness": "弱点与自我欺骗", "humor": "幽默方式"
+  },
+  "history": "连贯经历；正文未交代部分应合理设计",
+  "currentState": {
+    "location": "当前位置", "condition": "身体与处境", "emotion": "当前情绪",
+    "goal": "人物自己的当前目标，不替玩家决定"
+  },
+  "relationships": ["至少一条当前关系、关系距离或暂时独立状态的自然说明"],
+  "knowledge": ["至少一条人物实际掌握的知识"],
+  "capabilities": ["至少一条可执行能力"],
+  "resources": ["至少一条可调用资源；资源有限也要自然说明"],
+  "evidence": ["至少一条来自最终叙事或权威材料的直接依据"],
+  "inferences": ["至少一条医生主动设计且可被后续证据修订的补全说明"]
+}
+禁止用未知、待定、未登记、正文未提及或空字符串逃避补全。不适用字段必须写明不适用的世界观原因。所有列表字段必须是数组。`;
+}
+
 export function deepClone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
@@ -80,7 +125,7 @@ function at(object, path) {
 
 function isNonEmptyText(value) {
   const text = String(value ?? '').trim();
-  return text.length >= 2 && !EMPTY_WORDS.test(text);
+  return text.length >= 1 && /[\p{L}\p{N}]/u.test(text) && !EMPTY_WORDS.test(text);
 }
 
 function stripJsonFence(text) {
@@ -382,7 +427,7 @@ function asList(value) {
   return usableScalar(value) ? [value] : [];
 }
 
-function observableNarrativeText(text) {
+export function profileNarrativeText(text) {
   return String(text || '')
     .replace(/<gm_chain\b[^>]*>[\s\S]*?<\/gm_chain\s*>/gi, '')
     .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking\s*>/gi, '')
@@ -394,10 +439,10 @@ function observableNarrativeText(text) {
 
 export function normalizeProfileCandidates(rawProfiles, acceptedText = '') {
   if (!Array.isArray(rawProfiles)) return [];
-  const source = observableNarrativeText(acceptedText);
+  const source = profileNarrativeText(acceptedText);
   return rawProfiles.map((input) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
-    const profile = deepClone(input);
+    let profile = deepClone(input);
     profile.aliases = asList(profile.aliases).map((value) => String(value).trim()).filter(Boolean);
     for (const path of REQUIRED_ARRAYS) {
       const value = at(profile, path);
@@ -480,10 +525,11 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
       errors.push(`第${index + 1}张档案不是对象`);
       continue;
     }
-    const profile = deepClone(input);
+    let profile = deepClone(input);
     const matchedId = normalizedNames(profile).map((name) => nameIndex.get(name)).find(Boolean);
     let profileId = String(profile.profileId || matchedId || '').trim();
     const isExisting = Boolean(profileId && existing[profileId]);
+    if (isExisting) profile = mergeCandidateValue(existing[profileId], profile);
     const ticket = ticketMap.get(String(profile.ticketId || ''));
     if (!profileId) {
       if (!ticket) {
@@ -492,13 +538,13 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
       }
       profileId = ticket.ticketId;
       profile.ticketId = ticket.ticketId;
-      profile.personality = deepClone(ticket.axes);
+      profile.personality = mergeCandidateValue(ticket.axes, profile.personality || {});
     } else if (!isExisting) {
       if (!ticket) {
         errors.push(`第${index + 1}张新档案的profileId不属于旧档案，且没有本轮票据`);
         continue;
       }
-      profile.personality = deepClone(ticket.axes);
+      profile.personality = mergeCandidateValue(ticket.axes, profile.personality || {});
     }
     if (!isExisting && ticket) {
       if (usedTickets.has(ticket.ticketId)) errors.push(`同一票据被多名新人物重复使用：${ticket.ticketId}`);
