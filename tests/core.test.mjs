@@ -124,6 +124,13 @@ test('独立API端点归一化、响应提取与诊断脱敏', () => {
   assert.match(diagnosticAdvice('variable_failed', 'MVU解析失败').summary, /MVU变量/);
 });
 
+test('诊断以明确阶段码为准，完成详情中的世界字样不会被误报为失败', () => {
+  const completed = diagnosticAdvice('completed', '档案变更1张；世界项2条');
+  assert.equal(completed.severity, 'success');
+  assert.match(completed.summary, /已经完成/);
+  assert.equal(diagnosticAdvice('world_failed', '世界引擎失败').severity, 'error');
+});
+
 test('完整新档案绑定同一票据并编译为单根原子补丁', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const current = { stat_data: { 时间: '上午' } };
@@ -214,10 +221,11 @@ test('旧人物的局部更新自动继承完整持久档案', () => {
   existing.profileId = 'actor-existing';
   const current = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: { [existing.profileId]: existing } } } };
   const prepared = prepareProfileBatch([
-    { profileId: existing.profileId, name: existing.name, currentState: { goal: '查清今晚药材失窃的来源' } },
+    { profileId: existing.profileId, ticketId: '模型误写票据', name: existing.name, currentState: { goal: '查清今晚药材失窃的来源' } },
   ], [], current, '林澄决定查清今晚药材失窃的来源。');
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   assert.equal(prepared.profiles[0].identity.occupation, existing.identity.occupation);
+  assert.equal(prepared.profiles[0].ticketId, existing.ticketId);
   assert.equal(prepared.profiles[0].currentState.goal, '查清今晚药材失窃的来源');
 });
 
@@ -241,17 +249,44 @@ test('任一必填字段缺失会使整批校验失败', () => {
   assert.match(prepared.errors.join('；'), /appearance\.voice/);
 });
 
-test('新人物不能伪造profileId绕过票据，也不能复用同一票据', () => {
+test('新人自创ID或漏票据时按正文首次出现顺序绑定骰票，仍禁止复用票据', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const fake = completeProfile(ticket);
   fake.profileId = 'invented-id';
   fake.ticketId = 'not-a-ticket';
-  assert.equal(prepareProfileBatch([fake], [ticket], { stat_data: {} }).ok, false);
+  const normalized = prepareProfileBatch([fake], [ticket], { stat_data: {} }, '林澄正在药房柜台后整理药材。');
+  assert.equal(normalized.ok, true, normalized.errors.join('\n'));
+  assert.equal(normalized.profiles[0].profileId, ticket.ticketId);
+  assert.equal(normalized.profiles[0].ticketId, ticket.ticketId);
   const first = completeProfile(ticket);
   const second = completeProfile(ticket);
   second.name = '周遥';
   second.profileId = 'second-id';
   assert.match(prepareProfileBatch([first, second], [ticket], { stat_data: {} }).errors.join('；'), /重复使用/);
+});
+
+test('多新人即使模型返回顺序颠倒，也按最终正文首次出现次序依次绑定骰票', () => {
+  const tickets = generateTicketBatch(2, () => 0.25, 1700000000000);
+  const later = completeProfile(tickets[0]);
+  const earlier = completeProfile(tickets[1]);
+  later.name = '林澄';
+  earlier.name = '周遥';
+  for (const profile of [later, earlier]) {
+    profile.profileId = '模型自创ID';
+    delete profile.ticketId;
+    profile.personality = {};
+  }
+  const prepared = prepareProfileBatch(
+    [later, earlier],
+    tickets,
+    { stat_data: {} },
+    '周遥先推门进来，片刻后林澄才从后门出现。',
+  );
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  const byName = Object.fromEntries(prepared.profiles.map((profile) => [profile.name, profile]));
+  assert.equal(byName.周遥.ticketId, tickets[0].ticketId);
+  assert.equal(byName.林澄.ticketId, tickets[1].ticketId);
+  assert.equal(byName.周遥.personality.temperament, tickets[0].axes.temperament);
 });
 
 test('世界引擎JSON归一化且召回当前相关人物', () => {

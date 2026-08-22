@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.3.2';
+  const DOCTOR_VERSION = '0.3.3';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -535,6 +535,10 @@
       }
       const existing = existingProfilesFromData(currentData);
       const ticketMap = new Map((tickets || []).map((ticket) => [String(ticket.ticketId), ticket]));
+      const claimedTickets = new Set(normalizedProfiles
+        .map((profile) => String(profile?.ticketId || ''))
+        .filter((ticketId) => ticketMap.has(ticketId)));
+      const availableTickets = [...ticketMap.values()].sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0));
       const usedTickets = new Set();
       const nameIndex = new Map();
       for (const [id, profile] of Object.entries(existing)) {
@@ -543,19 +547,28 @@
       const ids = new Set();
       const prepared = [];
       const errors = [];
+      const narrative = profileNarrativeText(acceptedText).toLocaleLowerCase();
+      const orderedProfiles = normalizedProfiles.map((profile, originalIndex) => {
+        const positions = normalizedNames(profile).map((name) => narrative.indexOf(name)).filter((position) => position >= 0);
+        return { profile, originalIndex, position: positions.length ? Math.min(...positions) : Number.MAX_SAFE_INTEGER };
+      }).sort((left, right) => left.position - right.position || left.originalIndex - right.originalIndex);
 
-      for (const [index, input] of normalizedProfiles.entries()) {
+      for (const { profile: input, originalIndex: index } of orderedProfiles) {
         if (!input || typeof input !== 'object' || Array.isArray(input)) {
           errors.push(`第${index + 1}张档案不是对象`);
           continue;
         }
         let profile = deepClone(input);
         const matchedId = normalizedNames(profile).map((name) => nameIndex.get(name)).find(Boolean);
-        let profileId = String(profile.profileId || matchedId || '').trim();
+        const requestedId = String(profile.profileId || '').trim();
+        let profileId = String(matchedId || (requestedId && existing[requestedId] ? requestedId : '')).trim();
         const isExisting = Boolean(profileId && existing[profileId]);
         if (isExisting) profile = mergeCandidateValue(existing[profileId], profile);
-        const ticket = ticketMap.get(String(profile.ticketId || ''));
-        if (!profileId) {
+        let ticket = ticketMap.get(String(profile.ticketId || ''));
+        if (!isExisting) {
+          if (!ticket) {
+            ticket = availableTickets.find((candidate) => !usedTickets.has(candidate.ticketId) && !claimedTickets.has(candidate.ticketId));
+          }
           if (!ticket) {
             errors.push(`第${index + 1}张新档案没有匹配本轮characterCreationTicket`);
             continue;
@@ -563,18 +576,11 @@
           profileId = ticket.ticketId;
           profile.ticketId = ticket.ticketId;
           profile.personality = mergeCandidateValue(ticket.axes, profile.personality || {});
-        } else if (!isExisting) {
-          if (!ticket) {
-            errors.push(`第${index + 1}张新档案的profileId不属于旧档案，且没有本轮票据`);
-            continue;
-          }
-          profile.personality = mergeCandidateValue(ticket.axes, profile.personality || {});
-        }
-        if (!isExisting && ticket) {
           if (usedTickets.has(ticket.ticketId)) errors.push(`同一票据被多名新人物重复使用：${ticket.ticketId}`);
           usedTickets.add(ticket.ticketId);
         }
         profile.profileId = profileId;
+        if (isExisting && usableScalar(existing[profileId]?.ticketId)) profile.ticketId = existing[profileId].ticketId;
         if (ids.has(profileId)) errors.push(`档案批次内profileId重复：${profileId}`);
         ids.add(profileId);
 
@@ -668,11 +674,28 @@
     }
 
     function diagnosticAdvice(kind, detail) {
-      const text = `${kind || ''} ${detail || ''}`;
+      const code = String(kind || '').trim().toLocaleLowerCase();
+      const detailText = String(detail || '');
+      if (code === 'completed') {
+        return { severity: 'success', summary: '本轮人物档案和世界状态已经完成。', action: '无需处理。' };
+      }
+      if (code === 'variable_failed') {
+        return { severity: 'error', summary: 'MVU变量没有完成检查或修复，人物档案和世界推进尚未开始。', action: '保留当前正文，检查MVU/变量结构与模型连接后点击“重试MVU变量失败步骤”。' };
+      }
+      if (code === 'world_failed') {
+        return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '点击“重试世界支线失败步骤”；旧世界记录会保留，格式错误会自动定向修复。' };
+      }
+      if (code === 'profile_failed' && /JSON|解析|array element|object property/i.test(detailText)) {
+        return { severity: 'error', summary: '模型返回的结构化档案格式损坏，本轮保持零写入。', action: '先点击“重试失败步骤”；若再次失败，提高人物输出上限或更换格式遵从性更好的模型。' };
+      }
+      if (code === 'profile_failed') {
+        return { severity: 'error', summary: '人物档案没有达到完整可用标准，本轮保持零写入。', action: '展开详情查看具体缺项；修正连接或输出上限后点击“重试人物档案失败步骤”。' };
+      }
+      const text = `${code} ${detailText}`;
       if (/variable|MVU变量|变量修复/i.test(text)) {
         return { severity: 'error', summary: 'MVU变量没有完成检查或修复，人物档案和世界推进尚未开始。', action: '保留当前正文，检查MVU/变量结构与模型连接后点击“重试MVU变量失败步骤”。' };
       }
-      if (/world|世界|支线/i.test(text)) {
+      if (/world[_ -]?failed|世界.*失败|支线.*失败/i.test(text)) {
         return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '点击“重试世界支线失败步骤”；旧世界记录会保留，格式错误会自动定向修复。' };
       }
       if (/JSON|解析|array element|object property/i.test(text)) {
@@ -698,9 +721,6 @@
       }
       if (/stale|过期|切换|取消/i.test(text)) {
         return { severity: 'warning', summary: '任务因聊天、楼层或生成目标改变而作废。', action: '回到对应聊天和最新回复后重新生成；旧结果不会写入新目标。' };
-      }
-      if (/completed|完成/i.test(text)) {
-        return { severity: 'success', summary: '本轮人物档案和世界状态已经完成。', action: '无需处理。' };
       }
       return { severity: 'info', summary: '医生记录了一条运行信息。', action: '展开详情核对；若影响当前回合，可在修正配置后重试失败步骤。' };
     }
