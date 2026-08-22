@@ -7,13 +7,19 @@ import {
   generateTicketBatch,
   openAiChatEndpoint,
   openAiModelsEndpoint,
+  mergeProfileRootDirect,
+  mergeUpdateVariableBlocks,
   parseProfileReceipt,
+  parseUpdateVariableBlock,
   parseWorldState,
   prepareProfileBatch,
   redactDiagnostic,
+  removeApiFromExport,
   selectWorldRecall,
   statDataOf,
+  validatePatchOperations,
   verifyCommittedProfiles,
+  verifyPatchOperations,
 } from '../core.mjs';
 
 function completeProfile(ticket) {
@@ -54,6 +60,28 @@ test('人物档案JSON可保守修复缺逗号的数组项和对象字段', () =
   assert.deepEqual(object.profiles[0].aliases, []);
 });
 
+test('变量医生解析无限回廊UpdateVariable并把原更新与纠错合并', () => {
+  const original = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/契约者/经济/UP","value":10}]</JSONPatch></UpdateVariable>';
+  const correction = '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/当前时间/地点","value":"回廊大厅"}]</JSONPatch></UpdateVariable>';
+  assert.equal(parseUpdateVariableBlock(original).ok, true);
+  const merged = mergeUpdateVariableBlocks(`正文\n${original}`, correction);
+  assert.equal(merged.ok, true);
+  assert.equal(parseUpdateVariableBlock(merged.message).operations.length, 2);
+  assert.equal((merged.message.match(/<UpdateVariable/g) || []).length, 1);
+});
+
+test('变量纠错在交给MVU前拒绝不存在路径与复杂节点整块覆盖', () => {
+  const state = { stat_data: { 契约者: { 经济: { UP: 10 }, 背包: {} } } };
+  const valid = validatePatchOperations(state, [{ op: 'delta', path: '/契约者/经济/UP', value: 5 }]);
+  assert.equal(valid.ok, true);
+  assert.equal(valid.expected.契约者.经济.UP, 15);
+  assert.equal(verifyPatchOperations({ stat_data: valid.expected }, valid), true);
+  assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/不存在', value: 1 }]).ok, false);
+  assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/经济', value: {} }]).ok, false);
+  const move = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"move","from":"/契约者/经济/UP","to":"/契约者/经济/余额"}]</JSONPatch></UpdateVariable>');
+  assert.equal(move.ok, true);
+});
+
 test('独立API端点归一化、响应提取与诊断脱敏', () => {
   assert.equal(openAiChatEndpoint('https://example.com/v1'), 'https://example.com/v1/chat/completions');
   assert.equal(openAiChatEndpoint('https://example.com/v1/chat/completions'), 'https://example.com/v1/chat/completions');
@@ -64,6 +92,8 @@ test('独立API端点归一化、响应提取与诊断脱敏', () => {
   assert.doesNotMatch(redactDiagnostic('x-api-key: private-value-123456'), /private-value/);
   assert.match(diagnosticAdvice('profile_failed', 'JSON无法解析').action, /重试失败步骤/);
   assert.equal(diagnosticAdvice('profile_failed', '整批档案校验失败').severity, 'error');
+  assert.match(diagnosticAdvice('world_failed', 'JSON无法解析').summary, /世界支线/);
+  assert.match(diagnosticAdvice('variable_failed', 'MVU解析失败').summary, /MVU变量/);
 });
 
 test('完整新档案绑定同一票据并编译为单根原子补丁', () => {
@@ -77,6 +107,8 @@ test('完整新档案绑定同一票据并编译为单根原子补丁', () => {
   assert.equal(patch.operations[0].path, '/人物档案');
   const committed = { stat_data: { ...statDataOf(current), 人物档案: patch.expected } };
   assert.equal(verifyCommittedProfiles(committed, prepared.profiles), true);
+  assert.equal(buildProfilePatch(current, prepared.profiles).operations[0].op, 'insert');
+  assert.equal(verifyCommittedProfiles(mergeProfileRootDirect(current, prepared.profiles), prepared.profiles), true);
 });
 
 test('任一必填字段缺失会使整批校验失败', () => {
@@ -111,4 +143,18 @@ test('世界引擎JSON归一化且召回当前相关人物', () => {
   assert.equal(recalled.length, 1);
   assert.equal(recalled[0].id, 'b1');
   assert.equal(recalled[0].status, 'active');
+});
+
+test('世界引擎可修复裸键、单引号、缺逗号和尾逗号', () => {
+  const world = parseWorldState("{summary:'继续推进', branches:[{id:'b1', title:'线索'}] npcIntents:[], agreements:[], hostilePlans:[],}");
+  assert.equal(world.summary, '继续推进');
+  assert.equal(world.branches[0].id, 'b1');
+});
+
+test('完整报告只移除API字段和实际凭据，保留正文与变量', () => {
+  const report = removeApiFromExport({ api: { apiKey: 'secret-1234', endpoint: 'https://api.test' }, chat: '正文完整保留', stat_data: { 时间: '上午' }, raw: 'Bearer secret-1234' }, ['secret-1234']);
+  assert.equal(report.api, undefined);
+  assert.equal(report.chat, '正文完整保留');
+  assert.equal(report.stat_data.时间, '上午');
+  assert.doesNotMatch(report.raw, /secret-1234/);
 });

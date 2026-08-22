@@ -168,6 +168,7 @@
 #mvu-doctor-kemini-clean-root .mvu-kc-status-card { display: flex; gap: 12px; align-items: flex-start; }
 #mvu-doctor-kemini-clean-root .mvu-kc-status-card p,
 #mvu-doctor-kemini-clean-root .mvu-kc-muted { color: var(--kc-muted); }
+#mvu-doctor-kemini-clean-root .mvu-kc-warning { margin: 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--kc-warn) 45%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--kc-warn) 9%, transparent); color: #f7d58b; line-height: 1.55; }
 #mvu-doctor-kemini-clean-root .mvu-kc-status-dot { width: 12px; height: 12px; margin-top: 5px; border-radius: 50%; background: var(--kc-info); box-shadow: 0 0 14px currentColor; }
 #mvu-doctor-kemini-clean-root[data-state="ready"] .mvu-kc-status-dot { background: var(--kc-success); }
 #mvu-doctor-kemini-clean-root[data-state="error"] .mvu-kc-status-dot { background: var(--kc-error); }

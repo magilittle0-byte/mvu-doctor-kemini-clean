@@ -89,9 +89,16 @@ function repairJsonText(text) {
     .replace(/```\s*$/i, '')
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/[^\r\n]*/g, '$1')
+    .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, body) => JSON.stringify(
+      body.replace(/\\'/g, "'").replace(/\\"/g, '"'),
+    ))
+    .replace(/([{,]\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1"$2"$3')
     .replace(/,\s*([}\]])/g, '$1')
     .replace(/}\s*{/g, '},{')
     .replace(/]\s*\[/g, '],[')
+    .replace(/([}\]])(\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1,$2"$3"$4')
     .replace(/([}\]])(\s*)"(?=[^"\r\n]+"\s*:)/g, '$1,$2"')
     .trim();
 }
@@ -100,20 +107,173 @@ function parseJsonWithLocalRepair(text) {
   let candidate = repairJsonText(text);
   let lastError;
   for (let attempt = 0; attempt < 6; attempt += 1) {
+    candidate = candidate
+      .replace(/,\s*([}\]])/g, '$1')
+      .replace(/([}\]])(\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1,$2"$3"$4')
+      .replace(/([}\]])(\s*)(?="[^"\r\n]+"\s*:)/g, '$1,$2');
     try {
       return JSON.parse(candidate);
     } catch (error) {
       lastError = error;
       const position = Number(String(error?.message || '').match(/position\s+(\d+)/i)?.[1]);
-      const commaExpected = /Expected\s+['"]?,['"]?\s+or|expected comma|array element|object property/i.test(String(error?.message || ''));
+      const commaExpected = /Expected\s+['"]?,['"]?\s+or|expected comma|array element|object property|property name/i.test(String(error?.message || ''));
       if (!Number.isInteger(position) || !commaExpected) break;
       let insertAt = position;
       while (/\s/.test(candidate[insertAt] || '')) insertAt += 1;
-      if (!insertAt || candidate[insertAt - 1] === ',' || candidate[insertAt] === ',') break;
+      if (!insertAt || candidate[insertAt] === ',') break;
+      if (candidate[insertAt - 1] === ',') {
+        if (/[}\]]/.test(candidate[insertAt] || '')) {
+          candidate = `${candidate.slice(0, insertAt - 1)}${candidate.slice(insertAt)}`;
+          continue;
+        }
+        break;
+      }
       candidate = `${candidate.slice(0, insertAt)},${candidate.slice(insertAt)}`;
     }
   }
   throw lastError || new Error('JSON无法解析');
+}
+
+const PATCH_OPERATIONS = new Set(['replace', 'delta', 'insert', 'remove', 'move']);
+
+export function parseUpdateVariableBlock(message) {
+  const source = String(message || '');
+  const blocks = [...source.matchAll(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi)];
+  const rawBlock = blocks.at(-1)?.[0] || '';
+  if (!rawBlock) return { ok: false, error: '缺少完整的<UpdateVariable>区块', operations: [] };
+  const patch = rawBlock.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/i)?.[1];
+  if (patch == null) return { ok: false, error: 'UpdateVariable缺少完整的JSONPatch区块', operations: [] };
+  let parsed;
+  try { parsed = parseJsonWithLocalRepair(patch); }
+  catch (error) { return { ok: false, error: `JSONPatch无法解析：${error.message || error}`, operations: [] }; }
+  if (!Array.isArray(parsed)) return { ok: false, error: 'JSONPatch根节点必须是数组', operations: [] };
+  const operations = [];
+  for (const [index, raw] of parsed.entries()) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: `第${index + 1}个变量操作不是对象`, operations: [] };
+    const operation = { ...raw, op: raw.op === 'add' ? 'insert' : String(raw.op || '').toLowerCase() };
+    if (!PATCH_OPERATIONS.has(operation.op)) return { ok: false, error: `第${index + 1}个变量操作不受支持：${operation.op || '空'}`, operations: [] };
+    if (['replace', 'delta', 'insert'].includes(operation.op) && !Object.prototype.hasOwnProperty.call(operation, 'value')) return { ok: false, error: `第${index + 1}个${operation.op}操作缺少value`, operations: [] };
+    if (operation.op === 'move') {
+      operation.to ||= operation.path;
+      delete operation.path;
+      if (typeof operation.from !== 'string' || !operation.from.startsWith('/') || typeof operation.to !== 'string' || !operation.to.startsWith('/')) return { ok: false, error: `第${index + 1}个move操作缺少from/to路径`, operations: [] };
+      if ([operation.from, operation.to].some((path) => path.split('/').slice(1).some((part) => part.startsWith('_')))) return { ok: false, error: `第${index + 1}个move操作触碰只读路径`, operations: [] };
+    } else {
+      if (typeof operation.path !== 'string' || !operation.path.startsWith('/')) return { ok: false, error: `第${index + 1}个变量操作缺少JSON Pointer路径`, operations: [] };
+      if (operation.path.split('/').slice(1).some((part) => part.startsWith('_'))) return { ok: false, error: `第${index + 1}个变量操作触碰只读路径：${operation.path}`, operations: [] };
+    }
+    operations.push(operation);
+  }
+  const block = `<UpdateVariable>\n<Analysis>变量医生仅提交经MVU解析验证的纠错补丁。</Analysis>\n<JSONPatch>\n${JSON.stringify(operations, null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
+  return { ok: true, operations, block, rawBlock };
+}
+
+function pointerParts(path) {
+  if (typeof path !== 'string' || !path.startsWith('/') || /~(?![01])/.test(path)) return null;
+  return path.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+}
+
+function pointerValue(root, path) {
+  const parts = pointerParts(path);
+  if (!parts) return { found: false };
+  let value = root;
+  for (const part of parts) {
+    if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, part)) return { found: false };
+    value = value[part];
+  }
+  return { found: true, value };
+}
+
+function pointerParent(root, path) {
+  const parts = pointerParts(path);
+  if (!parts?.length) return null;
+  const key = parts.pop();
+  let parent = root;
+  for (const part of parts) {
+    if (!parent || typeof parent !== 'object' || !Object.prototype.hasOwnProperty.call(parent, part)) return null;
+    parent = parent[part];
+  }
+  return parent && typeof parent === 'object' ? { parent, key } : null;
+}
+
+export function validatePatchOperations(currentData, operations) {
+  const expected = deepClone(statDataOf(currentData));
+  if (!expected || typeof expected !== 'object') return { ok: false, error: '当前MVU没有可验证的stat_data' };
+  const touched = [];
+  for (const [index, operation] of (operations || []).entries()) {
+    const number = index + 1;
+    if (operation.op === 'move') {
+      const source = pointerParent(expected, operation.from);
+      const destination = pointerParent(expected, operation.to);
+      const hit = pointerValue(expected, operation.from);
+      if (!source || !destination || !hit.found) return { ok: false, error: `第${number}个move的来源或目标父路径不存在` };
+      if (Array.isArray(source.parent)) {
+        const sourceIndex = Number(source.key);
+        if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= source.parent.length) return { ok: false, error: `第${number}个move来源数组位置无效` };
+        source.parent.splice(sourceIndex, 1);
+      } else delete source.parent[source.key];
+      if (Array.isArray(destination.parent)) {
+        const destinationIndex = destination.key === '-' ? destination.parent.length : Number(destination.key);
+        if (!Number.isInteger(destinationIndex) || destinationIndex < 0 || destinationIndex > destination.parent.length) return { ok: false, error: `第${number}个move目标数组位置无效` };
+        destination.parent.splice(destinationIndex, 0, deepClone(hit.value));
+      } else destination.parent[destination.key] = deepClone(hit.value);
+      touched.push(operation.from, operation.to);
+      continue;
+    }
+    const parent = pointerParent(expected, operation.path);
+    const hit = pointerValue(expected, operation.path);
+    if (!parent) return { ok: false, error: `第${number}个操作的父路径不存在：${operation.path}` };
+    if (operation.op === 'insert') {
+      if (hit.found) return { ok: false, error: `第${number}个insert目标已经存在：${operation.path}` };
+      if (Array.isArray(parent.parent)) {
+        const arrayIndex = parent.key === '-' ? parent.parent.length : Number(parent.key);
+        if (!Number.isInteger(arrayIndex) || arrayIndex < 0 || arrayIndex > parent.parent.length) return { ok: false, error: `第${number}个insert数组位置无效：${operation.path}` };
+        parent.parent.splice(arrayIndex, 0, deepClone(operation.value));
+      } else parent.parent[parent.key] = deepClone(operation.value);
+    } else if (operation.op === 'replace') {
+      if (!hit.found) return { ok: false, error: `第${number}个replace目标不存在：${operation.path}` };
+      if (hit.value && typeof hit.value === 'object') return { ok: false, error: `第${number}个replace试图整体覆盖复杂节点：${operation.path}` };
+      parent.parent[parent.key] = deepClone(operation.value);
+    } else if (operation.op === 'delta') {
+      if (!hit.found || typeof hit.value !== 'number' || typeof operation.value !== 'number' || !Number.isFinite(operation.value)) return { ok: false, error: `第${number}个delta目标或增量不是有效数字：${operation.path}` };
+      parent.parent[parent.key] = hit.value + operation.value;
+    } else if (operation.op === 'remove') {
+      if (!hit.found) return { ok: false, error: `第${number}个remove目标不存在：${operation.path}` };
+      if (Array.isArray(parent.parent)) {
+        const arrayIndex = Number(parent.key);
+        if (!Number.isInteger(arrayIndex) || arrayIndex < 0 || arrayIndex >= parent.parent.length) return { ok: false, error: `第${number}个remove数组位置无效：${operation.path}` };
+        parent.parent.splice(arrayIndex, 1);
+      }
+      else delete parent.parent[parent.key];
+    }
+    touched.push(operation.path);
+  }
+  return { ok: true, expected, touched };
+}
+
+export function verifyPatchOperations(data, validation) {
+  const stat = statDataOf(data);
+  if (!validation?.ok || !stat) return false;
+  return validation.touched.every((path) => {
+    const expected = pointerValue(validation.expected, path);
+    const actual = pointerValue(stat, path);
+    return expected.found === actual.found && (!expected.found || JSON.stringify(expected.value) === JSON.stringify(actual.value));
+  });
+}
+
+export function mergeUpdateVariableBlocks(originalMessage, correctionMessage) {
+  const original = parseUpdateVariableBlock(originalMessage);
+  const correction = parseUpdateVariableBlock(correctionMessage);
+  if (!correction.ok) return correction;
+  const operations = [...(original.ok ? original.operations : []), ...correction.operations];
+  const block = `<UpdateVariable>\n<Analysis>保留原变量更新，并追加医生已验证的纠错。</Analysis>\n<JSONPatch>\n${JSON.stringify(operations, null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
+  const source = String(originalMessage || '');
+  const replaced = original.ok
+    ? source.replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi, (match, offset) => (
+      offset === source.search(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/i) ? block : ''
+    )).replace(/\n{3,}/g, '\n\n').trim()
+    : `${source.trim()}\n\n${block}`.trim();
+  return { ok: true, operations, block, message: replaced };
 }
 
 export function parseProfileReceipt(message) {
@@ -214,13 +374,23 @@ export function buildProfilePatch(currentData, profiles) {
   const existingRoot = stat?.人物档案 && typeof stat.人物档案 === 'object' ? deepClone(stat.人物档案) : {};
   const byActorId = existingRoot.byActorId && typeof existingRoot.byActorId === 'object' ? existingRoot.byActorId : {};
   for (const profile of profiles) byActorId[profile.profileId] = deepClone(profile);
-  const nextRoot = { ...existingRoot, byActorId };
-  const operation = { op: stat?.人物档案 ? 'replace' : 'add', path: PROFILE_ROOT, value: nextRoot };
+  const nextRoot = { schemaVersion: 1, ...existingRoot, byActorId };
+  const operation = { op: stat?.人物档案 ? 'replace' : 'insert', path: PROFILE_ROOT, value: nextRoot };
   return {
     operations: [operation],
     block: `<UpdateVariable><Analysis>人物档案批次已经完整校验；以单个根对象原子提交，不修改数据库表格。</Analysis><JSONPatch>${JSON.stringify([operation])}</JSONPatch></UpdateVariable>`,
     expected: nextRoot,
   };
+}
+
+export function mergeProfileRootDirect(currentData, profiles) {
+  const next = deepClone(currentData || {});
+  const stat = next.stat_data && typeof next.stat_data === 'object' ? next.stat_data : next;
+  const current = stat.人物档案 && typeof stat.人物档案 === 'object' ? stat.人物档案 : {};
+  const byActorId = current.byActorId && typeof current.byActorId === 'object' ? deepClone(current.byActorId) : {};
+  for (const profile of profiles || []) byActorId[profile.profileId] = deepClone(profile);
+  stat.人物档案 = { schemaVersion: 1, ...current, byActorId };
+  return next;
 }
 
 export function verifyCommittedProfiles(data, profiles) {
@@ -277,6 +447,12 @@ export function redactDiagnostic(value) {
 
 export function diagnosticAdvice(kind, detail) {
   const text = `${kind || ''} ${detail || ''}`;
+  if (/variable|MVU变量|变量修复/i.test(text)) {
+    return { severity: 'error', summary: 'MVU变量没有完成检查或修复，人物档案和世界推进尚未开始。', action: '保留当前正文，检查MVU/变量结构与模型连接后点击“重试MVU变量失败步骤”。' };
+  }
+  if (/world|世界|支线/i.test(text)) {
+    return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '点击“重试世界支线失败步骤”；旧世界记录会保留，格式错误会自动定向修复。' };
+  }
   if (/JSON|解析|array element|object property/i.test(text)) {
     return { severity: 'error', summary: '模型返回的结构化档案格式损坏，本轮保持零写入。', action: '先点击“重试失败步骤”；若再次失败，提高人物输出上限或更换格式遵从性更好的模型。' };
   }
@@ -300,9 +476,6 @@ export function diagnosticAdvice(kind, detail) {
   }
   if (/stale|过期|切换|取消/i.test(text)) {
     return { severity: 'warning', summary: '任务因聊天、楼层或生成目标改变而作废。', action: '回到对应聊天和最新回复后重新生成；旧结果不会写入新目标。' };
-  }
-  if (/world|世界|支线/i.test(text)) {
-    return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '检查连接后点击“重试失败步骤”；已有世界记录会保留。' };
   }
   if (/completed|完成/i.test(text)) {
     return { severity: 'success', summary: '本轮人物档案和世界状态已经完成。', action: '无需处理。' };
@@ -384,4 +557,22 @@ export function profileDigestFromData(data, limit = 60) {
 
 export function profilesFromData(data) {
   return deepClone(existingProfilesFromData(data));
+}
+
+export function removeApiFromExport(value, secrets = []) {
+  const blocked = /^(?:api|apiKey|endpoint|authorization|headers|requestHeaders|credentials|accessToken|refreshToken|secret)$/i;
+  const secretValues = (secrets || []).map((item) => String(item || '')).filter((item) => item.length >= 4);
+  const visit = (item) => {
+    if (Array.isArray(item)) return item.map(visit);
+    if (item && typeof item === 'object') {
+      return Object.fromEntries(Object.entries(item)
+        .filter(([key]) => !blocked.test(key))
+        .map(([key, child]) => [key, visit(child)]));
+    }
+    if (typeof item !== 'string') return item;
+    let text = redactDiagnostic(item);
+    for (const secret of secretValues) text = text.split(secret).join('[API已排除]');
+    return text;
+  };
+  return visit(value);
 }

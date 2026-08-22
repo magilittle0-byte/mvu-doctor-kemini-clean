@@ -2,14 +2,17 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
+  const DOCTOR_VERSION = '0.3.0';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
     enabled: true,
+    variableDoctor: true,
     ticketCount: 8,
     recallLimit: 8,
     worldEngine: true,
     repairAttempts: 2,
+    variableMaxTokens: 5000,
     profileMaxTokens: 6000,
     worldMaxTokens: 3000,
     additionalPrompt: '',
@@ -110,9 +113,16 @@
         .replace(/```\s*$/i, '')
         .replace(/[“”]/g, '"')
         .replace(/[‘’]/g, "'")
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|\s)\/\/[^\r\n]*/g, '$1')
+        .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, body) => JSON.stringify(
+          body.replace(/\\'/g, "'").replace(/\\"/g, '"'),
+        ))
+        .replace(/([{,]\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1"$2"$3')
         .replace(/,\s*([}\]])/g, '$1')
         .replace(/}\s*{/g, '},{')
         .replace(/]\s*\[/g, '],[')
+        .replace(/([}\]])(\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1,$2"$3"$4')
         .replace(/([}\]])(\s*)"(?=[^"\r\n]+"\s*:)/g, '$1,$2"')
         .trim();
     }
@@ -121,20 +131,173 @@
       let candidate = repairJsonText(text);
       let lastError;
       for (let attempt = 0; attempt < 6; attempt += 1) {
+        candidate = candidate
+          .replace(/,\s*([}\]])/g, '$1')
+          .replace(/([}\]])(\s*)([A-Za-z_$\u3400-\u9fff][A-Za-z0-9_$\u3400-\u9fff-]*)(\s*:)/g, '$1,$2"$3"$4')
+          .replace(/([}\]])(\s*)(?="[^"\r\n]+"\s*:)/g, '$1,$2');
         try {
           return JSON.parse(candidate);
         } catch (error) {
           lastError = error;
           const position = Number(String(error?.message || '').match(/position\s+(\d+)/i)?.[1]);
-          const commaExpected = /Expected\s+['"]?,['"]?\s+or|expected comma|array element|object property/i.test(String(error?.message || ''));
+          const commaExpected = /Expected\s+['"]?,['"]?\s+or|expected comma|array element|object property|property name/i.test(String(error?.message || ''));
           if (!Number.isInteger(position) || !commaExpected) break;
           let insertAt = position;
           while (/\s/.test(candidate[insertAt] || '')) insertAt += 1;
-          if (!insertAt || candidate[insertAt - 1] === ',' || candidate[insertAt] === ',') break;
+          if (!insertAt || candidate[insertAt] === ',') break;
+          if (candidate[insertAt - 1] === ',') {
+            if (/[}\]]/.test(candidate[insertAt] || '')) {
+              candidate = `${candidate.slice(0, insertAt - 1)}${candidate.slice(insertAt)}`;
+              continue;
+            }
+            break;
+          }
           candidate = `${candidate.slice(0, insertAt)},${candidate.slice(insertAt)}`;
         }
       }
       throw lastError || new Error('JSON无法解析');
+    }
+
+    const PATCH_OPERATIONS = new Set(['replace', 'delta', 'insert', 'remove', 'move']);
+
+    function parseUpdateVariableBlock(message) {
+      const source = String(message || '');
+      const blocks = [...source.matchAll(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi)];
+      const rawBlock = blocks.at(-1)?.[0] || '';
+      if (!rawBlock) return { ok: false, error: '缺少完整的<UpdateVariable>区块', operations: [] };
+      const patch = rawBlock.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/i)?.[1];
+      if (patch == null) return { ok: false, error: 'UpdateVariable缺少完整的JSONPatch区块', operations: [] };
+      let parsed;
+      try { parsed = parseJsonWithLocalRepair(patch); }
+      catch (error) { return { ok: false, error: `JSONPatch无法解析：${error.message || error}`, operations: [] }; }
+      if (!Array.isArray(parsed)) return { ok: false, error: 'JSONPatch根节点必须是数组', operations: [] };
+      const operations = [];
+      for (const [index, raw] of parsed.entries()) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: `第${index + 1}个变量操作不是对象`, operations: [] };
+        const operation = { ...raw, op: raw.op === 'add' ? 'insert' : String(raw.op || '').toLowerCase() };
+        if (!PATCH_OPERATIONS.has(operation.op)) return { ok: false, error: `第${index + 1}个变量操作不受支持：${operation.op || '空'}`, operations: [] };
+        if (['replace', 'delta', 'insert'].includes(operation.op) && !Object.prototype.hasOwnProperty.call(operation, 'value')) return { ok: false, error: `第${index + 1}个${operation.op}操作缺少value`, operations: [] };
+        if (operation.op === 'move') {
+          operation.to ||= operation.path;
+          delete operation.path;
+          if (typeof operation.from !== 'string' || !operation.from.startsWith('/') || typeof operation.to !== 'string' || !operation.to.startsWith('/')) return { ok: false, error: `第${index + 1}个move操作缺少from/to路径`, operations: [] };
+          if ([operation.from, operation.to].some((path) => path.split('/').slice(1).some((part) => part.startsWith('_')))) return { ok: false, error: `第${index + 1}个move操作触碰只读路径`, operations: [] };
+        } else {
+          if (typeof operation.path !== 'string' || !operation.path.startsWith('/')) return { ok: false, error: `第${index + 1}个变量操作缺少JSON Pointer路径`, operations: [] };
+          if (operation.path.split('/').slice(1).some((part) => part.startsWith('_'))) return { ok: false, error: `第${index + 1}个变量操作触碰只读路径：${operation.path}`, operations: [] };
+        }
+        operations.push(operation);
+      }
+      const block = `<UpdateVariable>\n<Analysis>变量医生仅提交经MVU解析验证的纠错补丁。</Analysis>\n<JSONPatch>\n${JSON.stringify(operations, null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
+      return { ok: true, operations, block, rawBlock };
+    }
+
+    function pointerParts(path) {
+      if (typeof path !== 'string' || !path.startsWith('/') || /~(?![01])/.test(path)) return null;
+      return path.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+    }
+
+    function pointerValue(root, path) {
+      const parts = pointerParts(path);
+      if (!parts) return { found: false };
+      let value = root;
+      for (const part of parts) {
+        if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, part)) return { found: false };
+        value = value[part];
+      }
+      return { found: true, value };
+    }
+
+    function pointerParent(root, path) {
+      const parts = pointerParts(path);
+      if (!parts?.length) return null;
+      const key = parts.pop();
+      let parent = root;
+      for (const part of parts) {
+        if (!parent || typeof parent !== 'object' || !Object.prototype.hasOwnProperty.call(parent, part)) return null;
+        parent = parent[part];
+      }
+      return parent && typeof parent === 'object' ? { parent, key } : null;
+    }
+
+    function validatePatchOperations(currentData, operations) {
+      const expected = deepClone(statDataOf(currentData));
+      if (!expected || typeof expected !== 'object') return { ok: false, error: '当前MVU没有可验证的stat_data' };
+      const touched = [];
+      for (const [index, operation] of (operations || []).entries()) {
+        const number = index + 1;
+        if (operation.op === 'move') {
+          const source = pointerParent(expected, operation.from);
+          const destination = pointerParent(expected, operation.to);
+          const hit = pointerValue(expected, operation.from);
+          if (!source || !destination || !hit.found) return { ok: false, error: `第${number}个move的来源或目标父路径不存在` };
+          if (Array.isArray(source.parent)) {
+            const sourceIndex = Number(source.key);
+            if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= source.parent.length) return { ok: false, error: `第${number}个move来源数组位置无效` };
+            source.parent.splice(sourceIndex, 1);
+          } else delete source.parent[source.key];
+          if (Array.isArray(destination.parent)) {
+            const destinationIndex = destination.key === '-' ? destination.parent.length : Number(destination.key);
+            if (!Number.isInteger(destinationIndex) || destinationIndex < 0 || destinationIndex > destination.parent.length) return { ok: false, error: `第${number}个move目标数组位置无效` };
+            destination.parent.splice(destinationIndex, 0, deepClone(hit.value));
+          } else destination.parent[destination.key] = deepClone(hit.value);
+          touched.push(operation.from, operation.to);
+          continue;
+        }
+        const parent = pointerParent(expected, operation.path);
+        const hit = pointerValue(expected, operation.path);
+        if (!parent) return { ok: false, error: `第${number}个操作的父路径不存在：${operation.path}` };
+        if (operation.op === 'insert') {
+          if (hit.found) return { ok: false, error: `第${number}个insert目标已经存在：${operation.path}` };
+          if (Array.isArray(parent.parent)) {
+            const arrayIndex = parent.key === '-' ? parent.parent.length : Number(parent.key);
+            if (!Number.isInteger(arrayIndex) || arrayIndex < 0 || arrayIndex > parent.parent.length) return { ok: false, error: `第${number}个insert数组位置无效：${operation.path}` };
+            parent.parent.splice(arrayIndex, 0, deepClone(operation.value));
+          } else parent.parent[parent.key] = deepClone(operation.value);
+        } else if (operation.op === 'replace') {
+          if (!hit.found) return { ok: false, error: `第${number}个replace目标不存在：${operation.path}` };
+          if (hit.value && typeof hit.value === 'object') return { ok: false, error: `第${number}个replace试图整体覆盖复杂节点：${operation.path}` };
+          parent.parent[parent.key] = deepClone(operation.value);
+        } else if (operation.op === 'delta') {
+          if (!hit.found || typeof hit.value !== 'number' || typeof operation.value !== 'number' || !Number.isFinite(operation.value)) return { ok: false, error: `第${number}个delta目标或增量不是有效数字：${operation.path}` };
+          parent.parent[parent.key] = hit.value + operation.value;
+        } else if (operation.op === 'remove') {
+          if (!hit.found) return { ok: false, error: `第${number}个remove目标不存在：${operation.path}` };
+          if (Array.isArray(parent.parent)) {
+            const arrayIndex = Number(parent.key);
+            if (!Number.isInteger(arrayIndex) || arrayIndex < 0 || arrayIndex >= parent.parent.length) return { ok: false, error: `第${number}个remove数组位置无效：${operation.path}` };
+            parent.parent.splice(arrayIndex, 1);
+          }
+          else delete parent.parent[parent.key];
+        }
+        touched.push(operation.path);
+      }
+      return { ok: true, expected, touched };
+    }
+
+    function verifyPatchOperations(data, validation) {
+      const stat = statDataOf(data);
+      if (!validation?.ok || !stat) return false;
+      return validation.touched.every((path) => {
+        const expected = pointerValue(validation.expected, path);
+        const actual = pointerValue(stat, path);
+        return expected.found === actual.found && (!expected.found || JSON.stringify(expected.value) === JSON.stringify(actual.value));
+      });
+    }
+
+    function mergeUpdateVariableBlocks(originalMessage, correctionMessage) {
+      const original = parseUpdateVariableBlock(originalMessage);
+      const correction = parseUpdateVariableBlock(correctionMessage);
+      if (!correction.ok) return correction;
+      const operations = [...(original.ok ? original.operations : []), ...correction.operations];
+      const block = `<UpdateVariable>\n<Analysis>保留原变量更新，并追加医生已验证的纠错。</Analysis>\n<JSONPatch>\n${JSON.stringify(operations, null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
+      const source = String(originalMessage || '');
+      const replaced = original.ok
+        ? source.replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi, (match, offset) => (
+          offset === source.search(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/i) ? block : ''
+        )).replace(/\n{3,}/g, '\n\n').trim()
+        : `${source.trim()}\n\n${block}`.trim();
+      return { ok: true, operations, block, message: replaced };
     }
 
     function parseProfileReceipt(message) {
@@ -235,13 +398,23 @@
       const existingRoot = stat?.人物档案 && typeof stat.人物档案 === 'object' ? deepClone(stat.人物档案) : {};
       const byActorId = existingRoot.byActorId && typeof existingRoot.byActorId === 'object' ? existingRoot.byActorId : {};
       for (const profile of profiles) byActorId[profile.profileId] = deepClone(profile);
-      const nextRoot = { ...existingRoot, byActorId };
-      const operation = { op: stat?.人物档案 ? 'replace' : 'add', path: PROFILE_ROOT, value: nextRoot };
+      const nextRoot = { schemaVersion: 1, ...existingRoot, byActorId };
+      const operation = { op: stat?.人物档案 ? 'replace' : 'insert', path: PROFILE_ROOT, value: nextRoot };
       return {
         operations: [operation],
         block: `<UpdateVariable><Analysis>人物档案批次已经完整校验；以单个根对象原子提交，不修改数据库表格。</Analysis><JSONPatch>${JSON.stringify([operation])}</JSONPatch></UpdateVariable>`,
         expected: nextRoot,
       };
+    }
+
+    function mergeProfileRootDirect(currentData, profiles) {
+      const next = deepClone(currentData || {});
+      const stat = next.stat_data && typeof next.stat_data === 'object' ? next.stat_data : next;
+      const current = stat.人物档案 && typeof stat.人物档案 === 'object' ? stat.人物档案 : {};
+      const byActorId = current.byActorId && typeof current.byActorId === 'object' ? deepClone(current.byActorId) : {};
+      for (const profile of profiles || []) byActorId[profile.profileId] = deepClone(profile);
+      stat.人物档案 = { schemaVersion: 1, ...current, byActorId };
+      return next;
     }
 
     function verifyCommittedProfiles(data, profiles) {
@@ -298,6 +471,12 @@
 
     function diagnosticAdvice(kind, detail) {
       const text = `${kind || ''} ${detail || ''}`;
+      if (/variable|MVU变量|变量修复/i.test(text)) {
+        return { severity: 'error', summary: 'MVU变量没有完成检查或修复，人物档案和世界推进尚未开始。', action: '保留当前正文，检查MVU/变量结构与模型连接后点击“重试MVU变量失败步骤”。' };
+      }
+      if (/world|世界|支线/i.test(text)) {
+        return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '点击“重试世界支线失败步骤”；旧世界记录会保留，格式错误会自动定向修复。' };
+      }
       if (/JSON|解析|array element|object property/i.test(text)) {
         return { severity: 'error', summary: '模型返回的结构化档案格式损坏，本轮保持零写入。', action: '先点击“重试失败步骤”；若再次失败，提高人物输出上限或更换格式遵从性更好的模型。' };
       }
@@ -321,9 +500,6 @@
       }
       if (/stale|过期|切换|取消/i.test(text)) {
         return { severity: 'warning', summary: '任务因聊天、楼层或生成目标改变而作废。', action: '回到对应聊天和最新回复后重新生成；旧结果不会写入新目标。' };
-      }
-      if (/world|世界|支线/i.test(text)) {
-        return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '检查连接后点击“重试失败步骤”；已有世界记录会保留。' };
       }
       if (/completed|完成/i.test(text)) {
         return { severity: 'success', summary: '本轮人物档案和世界状态已经完成。', action: '无需处理。' };
@@ -407,7 +583,25 @@
       return deepClone(existingProfilesFromData(data));
     }
 
-    return Object.freeze({ PROFILE_ROOT, deepClone, generateTicketBatch, statDataOf, parseProfileReceipt, stripProfileReceipt, prepareProfileBatch, buildProfilePatch, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, parseWorldState, selectWorldRecall, formatGenerationInjection, profileDigestFromData, profilesFromData });
+    function removeApiFromExport(value, secrets = []) {
+      const blocked = /^(?:api|apiKey|endpoint|authorization|headers|requestHeaders|credentials|accessToken|refreshToken|secret)$/i;
+      const secretValues = (secrets || []).map((item) => String(item || '')).filter((item) => item.length >= 4);
+      const visit = (item) => {
+        if (Array.isArray(item)) return item.map(visit);
+        if (item && typeof item === 'object') {
+          return Object.fromEntries(Object.entries(item)
+            .filter(([key]) => !blocked.test(key))
+            .map(([key, child]) => [key, visit(child)]));
+        }
+        if (typeof item !== 'string') return item;
+        let text = redactDiagnostic(item);
+        for (const secret of secretValues) text = text.split(secret).join('[API已排除]');
+        return text;
+      };
+      return visit(value);
+    }
+
+    return Object.freeze({ PROFILE_ROOT, deepClone, generateTicketBatch, statDataOf, parseUpdateVariableBlock, validatePatchOperations, verifyPatchOperations, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, parseWorldState, selectWorldRecall, formatGenerationInjection, profileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
@@ -456,7 +650,7 @@
     const world = current.world || {};
     context.chatMetadata[PLUGIN_ID] = {
       ...current,
-      schemaVersion: 2,
+      schemaVersion: 3,
       world: {
         branches: Array.isArray(world.branches) ? world.branches : [],
         npcIntents: Array.isArray(world.npcIntents) ? world.npcIntents : [],
@@ -466,8 +660,50 @@
         ...(world.updatedAt ? { updatedAt: world.updatedAt } : {}),
       },
       diagnostics: Array.isArray(current.diagnostics) ? current.diagnostics : [],
+      profiles: current.profiles && typeof current.profiles === 'object' ? current.profiles : {},
+      fullRuns: Array.isArray(current.fullRuns) ? current.fullRuns : [],
     };
     return context.chatMetadata[PLUGIN_ID];
+  }
+
+  function combinedProfiles(data, context = getContext()) {
+    return { ...metadata(context).profiles, ...runtime.core.profilesFromData(data) };
+  }
+
+  function dataWithRecoveredProfiles(data, context = getContext()) {
+    return runtime.core.mergeProfileRootDirect(
+      data || { stat_data: {} },
+      Object.values(metadata(context).profiles || {}),
+    );
+  }
+
+  function traceRun(session, stage, detail = {}) {
+    if (!session) return;
+    session.trace ||= [];
+    session.trace.push({ at: new Date().toISOString(), stage, ...runtime.core.removeApiFromExport(detail, [settings().api?.apiKey, settings().api?.endpoint]) });
+  }
+
+  async function finalizeRun(session, outcome, context = getContext()) {
+    if (!session || session.reportSaved) return;
+    session.reportSaved = true;
+    const store = metadata(context);
+    const report = runtime.core.removeApiFromExport({
+      runId: session.id,
+      chatId: session.chatId,
+      startedAt: new Date(session.startedAt).toISOString(),
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - session.startedAt,
+      messageId: session.finalMessageId ?? null,
+      tickets: session.tickets,
+      injection: session.injection || '',
+      acceptedText: session.acceptedText || '',
+      outcome,
+      trace: session.trace || [],
+    }, [settings(context).api?.apiKey, settings(context).api?.endpoint]);
+    store.fullRuns.unshift(report);
+    store.fullRuns = store.fullRuns.slice(0, 6);
+    while (JSON.stringify(store.fullRuns).length > 4000000 && store.fullRuns.length > 1) store.fullRuns.pop();
+    await saveMetadata(context);
   }
 
   async function saveMetadata(context = getContext()) {
@@ -587,16 +823,25 @@
     }
   }
 
-  async function generateDoctorRaw({ systemPrompt, prompt, responseLength }) {
+  async function generateDoctorRaw({ systemPrompt, prompt, responseLength, task = '医生模型', session = null }) {
     const context = getContext();
     const config = settings(context);
     const extra = String(config.additionalPrompt || '').trim();
     const finalSystemPrompt = extra ? `${systemPrompt}\n\n【用户全局模型适配附加提示词】\n${extra}` : systemPrompt;
+    traceRun(session, `${task}:request`, { systemPrompt: finalSystemPrompt, prompt, responseLength });
     runtime.internalGeneration = true;
     try {
-      if (config.api.mode === 'custom') return await customCompletion({ systemPrompt: finalSystemPrompt, prompt, responseLength });
+      let output;
+      if (config.api.mode === 'custom') output = await customCompletion({ systemPrompt: finalSystemPrompt, prompt, responseLength });
+      else {
       if (typeof context?.generateRaw !== 'function') throw new Error('酒馆generateRaw不可用；请改用自定义API或检查酒馆模型连接');
-      return await context.generateRaw({ systemPrompt: finalSystemPrompt, prompt, trimNames: false, responseLength });
+        output = await context.generateRaw({ systemPrompt: finalSystemPrompt, prompt, trimNames: false, responseLength });
+      }
+      traceRun(session, `${task}:response`, { output });
+      return output;
+    } catch (error) {
+      traceRun(session, `${task}:error`, { error: error.message || String(error) });
+      throw error;
     } finally {
       runtime.internalGeneration = false;
     }
@@ -643,13 +888,16 @@
     let data = null;
     const Mvu = await getMvu();
     if (Mvu && latestAi) data = await mvuDataAt(Mvu, latestAi.index);
-    const profiles = runtime.core.profilesFromData(data);
+    data = dataWithRecoveredProfiles(data, context);
+    const profiles = combinedProfiles(data, context);
     const recall = runtime.core.selectWorldRecall(metadata(context).world, latestUser?.message?.mes || '', profiles, config.recallLimit);
     const injection = runtime.core.formatGenerationInjection({
       tickets: session.tickets,
       recall,
-      profileDigest: runtime.core.profileDigestFromData(data),
+      profileDigest: runtime.core.profileDigestFromData(dataWithRecoveredProfiles(data, context)),
     });
+    session.injection = injection;
+    traceRun(session, 'generation:prepared', { tickets: session.tickets, recall, profileDigest: runtime.core.profileDigestFromData(dataWithRecoveredProfiles(data, context)) });
     try {
       context.setExtensionPrompt(PROMPT_KEY, injection, 1, 1, false, 0);
       setStatus('正文生成中', `已注入 ${session.tickets.length} 张候选票据和 ${recall.length} 条相关世界记录`);
@@ -673,33 +921,179 @@
     }
   }
 
+  function currentCharacter(context = getContext()) {
+    const id = context?.characterId ?? context?.this_chid;
+    return context?.characters?.[id] || context?.character || null;
+  }
+
+  function cropForModel(value, limit = 80000) {
+    const text = typeof value === 'string' ? value : JSON.stringify(value ?? null);
+    if (text.length <= limit) return text;
+    const half = Math.floor(limit / 2);
+    return `${text.slice(0, half)}\n……中间省略${text.length - limit}字……\n${text.slice(-half)}`;
+  }
+
+  function collectMvuReference(context = getContext()) {
+    const character = currentCharacter(context);
+    const scripts = character?.data?.extensions?.tavern_helper?.scripts || character?.extensions?.tavern_helper?.scripts || [];
+    const schema = scripts.filter((item) => /变量结构|schema|mvu/i.test(String(item?.name || ''))).map((item) => `${item.name}:\n${item.content || ''}`).join('\n\n');
+    const entries = character?.data?.character_book?.entries || character?.character_book?.entries || [];
+    const rules = entries.filter((item) => /mvu_update|变量更新|变量输出|变量列表|initvar/i.test(`${item?.comment || ''}\n${item?.keys || ''}`)).map((item) => `${item.comment || 'MVU规则'}:\n${item.content || ''}`).join('\n\n');
+    return { schema: cropForModel(schema || '当前角色卡没有暴露变量结构脚本。', 60000), rules: cropForModel(rules || '当前角色卡没有暴露MVU更新规则。', 60000) };
+  }
+
+  async function previousMvuData(Mvu, context, messageId) {
+    for (let index = Number(messageId) - 1; index >= 0; index -= 1) {
+      const message = context.chat?.[index];
+      if (!message || message.is_user || message.is_system) continue;
+      const data = await mvuDataAt(Mvu, index);
+      if (data && Object.keys(runtime.core.statDataOf(data) || {}).length) return data;
+    }
+    return null;
+  }
+
+  async function saveMergedVariableBlock(context, messageId, originalText, correctionText) {
+    const merged = runtime.core.mergeUpdateVariableBlocks(originalText, correctionText);
+    if (!merged.ok) throw new Error(merged.error || '无法合并变量补丁');
+    const message = context.chat?.[messageId];
+    if (!message) throw new Error('变量修复目标消息已不存在');
+    const beforeMes = message.mes;
+    const swipeId = Number(message.swipe_id);
+    const beforeSwipe = Array.isArray(message.swipes) && Number.isInteger(swipeId) ? message.swipes[swipeId] : undefined;
+    message.mes = merged.message;
+    if (Array.isArray(message.swipes) && Number.isInteger(swipeId)) message.swipes[swipeId] = merged.message;
+    if (message.extra && typeof message.extra === 'object') delete message.extra.display_text;
+    if (typeof context.saveChat !== 'function') throw new Error('宿主没有提供正文持久化接口');
+    try { await context.saveChat(); }
+    catch (error) {
+      message.mes = beforeMes;
+      if (Array.isArray(message.swipes) && Number.isInteger(swipeId)) message.swipes[swipeId] = beforeSwipe;
+      throw error;
+    }
+    try { context.updateMessageBlock?.(messageId, message); } catch { /* persisted state is authoritative */ }
+    return merged.message;
+  }
+
+  async function auditVariables(session, messageId, acceptedText) {
+    const context = getContext();
+    const config = settings(context);
+    const Mvu = await getMvu();
+    if (!config.variableDoctor) {
+      const data = Mvu ? await mvuDataAt(Mvu, messageId) : null;
+      traceRun(session, 'variable:skipped', { reason: '变量医生已关闭' });
+      return { ok: true, changed: false, data, message: acceptedText };
+    }
+    if (!Mvu?.getMvuData || !Mvu?.parseMessage || !Mvu?.replaceMvuData) return { ok: false, error: '变量医生无法取得完整MVU接口，零写入' };
+    await waitForMvuIdle(Mvu, session);
+    let currentData = await mvuDataAt(Mvu, messageId);
+    if (!currentData || !Object.keys(runtime.core.statDataOf(currentData) || {}).length) return { ok: false, error: '变量医生无法读取最终正文对应的stat_data，零写入' };
+    const previousData = await previousMvuData(Mvu, context, messageId);
+    const reference = collectMvuReference(context);
+    const original = runtime.core.parseUpdateVariableBlock(acceptedText);
+    const systemPrompt = `你是正文后的MVU变量修复医生。当前stat_data已经包含原正文变量块实际落地的结果；你只输出叠加在当前状态上的纠错或补漏，绝不能把原有delta再执行一次。严格服从当前角色卡Schema与[mvu_update]规则，不套用其他卡路径。只根据已经接受的正文判断已发生事实；计划、选项、NPC尝试不是已裁决结果，不得替玩家行动、同意、感受或结算。不要修改/人物档案路径，不接管数据库、人物档案或世界支线。禁止写入以下划线开头的只读路径。只输出一个完整<UpdateVariable><Analysis>不超过80字</Analysis><JSONPatch>[replace|delta|insert|remove|move操作]</JSONPatch></UpdateVariable>；无需修复必须输出空数组。`;
+    let reason = '';
+    const attempts = Math.max(1, Math.min(4, Number(config.repairAttempts) + 1 || 1));
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      assertSessionCurrent(session);
+      const prompt = `【当前角色卡变量结构】\n${reference.schema}\n\n【当前角色卡MVU规则】\n${reference.rules}\n\n【上一楼层stat_data，仅作差异证据】\n${cropForModel(runtime.core.statDataOf(previousData), 70000)}\n\n【当前stat_data（原变量更新已应用）】\n${cropForModel(runtime.core.statDataOf(currentData), 120000)}\n\n【原变量块解析状态】\n${original.ok ? JSON.stringify(original.operations) : original.error}\n\n【最终接受正文】\n${cropForModel(runtime.core.stripProfileReceipt(acceptedText), 50000)}\n\n${reason ? `上次失败：${reason}\n请只修复格式或不安全操作后重发完整区块。` : '审计当前状态，只补确证的错更、漏更；已经正确的变化不要重复。'}`;
+      let raw;
+      try {
+        setStatus('正在检查MVU变量', `第 ${attempt}/${attempts} 次审计；人物与世界尚未开始`);
+        raw = await generateDoctorRaw({ systemPrompt, prompt, responseLength: config.variableMaxTokens, task: 'MVU变量医生', session });
+      } catch (error) {
+        reason = `变量模型请求失败：${error.message || error}`;
+        if (attempt < attempts) continue;
+        return { ok: false, error: `${reason}；零写入` };
+      }
+      const parsed = runtime.core.parseUpdateVariableBlock(raw);
+      if (!parsed.ok) {
+        reason = parsed.error;
+        traceRun(session, 'variable:parse-failed', { attempt, reason, raw });
+        if (attempt < attempts) continue;
+        return { ok: false, error: `变量医生输出无法解析：${reason}；零写入` };
+      }
+      if (parsed.operations.some((operation) => [operation.path, operation.from, operation.to].filter(Boolean).some((path) => path === '/人物档案' || path.startsWith('/人物档案/')))) {
+        reason = '变量医生越权触碰/人物档案';
+        if (attempt < attempts) continue;
+        return { ok: false, error: `${reason}；零写入` };
+      }
+      if (!parsed.operations.length) {
+        traceRun(session, 'variable:nochange', { attempt, originalPatch: original });
+        return { ok: true, changed: false, data: currentData, message: acceptedText };
+      }
+      const localValidation = runtime.core.validatePatchOperations(currentData, parsed.operations);
+      if (!localValidation.ok) {
+        reason = `本地补丁安全校验失败：${localValidation.error}`;
+        traceRun(session, 'variable:validation-failed', { attempt, reason, parsed });
+        if (attempt < attempts) continue;
+        return { ok: false, error: `${reason}；零写入` };
+      }
+      let candidate;
+      try { candidate = await Mvu.parseMessage(parsed.block, runtime.core.deepClone(currentData)); }
+      catch (error) {
+        reason = `MVU/Schema拒绝纠错补丁：${error.message || error}`;
+        if (attempt < attempts) continue;
+        return { ok: false, error: `${reason}；零写入` };
+      }
+      if (!runtime.core.verifyPatchOperations(candidate, localValidation)) {
+        reason = 'MVU/Schema解析结果没有按补丁落地全部目标路径';
+        if (attempt < attempts) continue;
+        return { ok: false, error: `${reason}；零写入` };
+      }
+      assertSessionCurrent(session);
+      const snapshot = runtime.core.deepClone(currentData);
+      try {
+        await Mvu.replaceMvuData(candidate, { type: 'message', message_id: messageId });
+        const readback = await mvuDataAt(Mvu, messageId);
+        if (!runtime.core.verifyPatchOperations(readback, localValidation) || JSON.stringify(runtime.core.statDataOf(readback)) !== JSON.stringify(runtime.core.statDataOf(candidate))) {
+          const rolledBack = await rollbackMvu(Mvu, snapshot, messageId);
+          return { ok: false, error: `变量纠错写入后读回不一致；${rolledBack ? '已回滚' : '回滚失败，请停止当前聊天'}` };
+        }
+        const mergedMessage = await saveMergedVariableBlock(context, messageId, acceptedText, parsed.block);
+        traceRun(session, 'variable:committed', { attempt, originalPatch: original, correction: parsed, readback });
+        return { ok: true, changed: true, data: readback, message: mergedMessage };
+      } catch (error) {
+        const rolledBack = await rollbackMvu(Mvu, snapshot, messageId);
+        return { ok: false, error: `变量纠错提交失败；${rolledBack ? '已回滚原状态' : '回滚失败'}：${error.message || error}` };
+      }
+    }
+    return { ok: false, error: '变量医生未得到可用终态，零写入' };
+  }
+
   async function repairProfileReceipt(session, message, reason, data) {
-    const systemPrompt = `你是MVU人物档案格式修复器，不重写正文，不重新随机人格。根据最终正文、本轮既定characterCreationTicket和已有档案摘要，输出且只输出<人物档案更新>[完整JSON档案对象...]</人物档案更新>或<人物档案无变化/>。新人物必须使用一个未重复的本轮ticketId，personality必须保持该票据十四轴。所有规定字段和列表完整；正文缺失信息可以做不冲突推断并写入inferences；禁止未知、待定、未登记。旧人物回传合并后的完整档案。`;
-    const prompt = `修复原因：${reason}\n本轮票据：${JSON.stringify(session.tickets)}\n已有档案摘要：${JSON.stringify(runtime.core.profileDigestFromData(data))}\n最终正文：${runtime.core.stripProfileReceipt(message)}`;
-    const response = await generateDoctorRaw({ systemPrompt, prompt, responseLength: settings().profileMaxTokens });
+    const systemPrompt = `你是MVU人物档案独立审计与格式修复器，不重写正文，不重新随机人格。上游人物回执只是候选材料，不是最终裁决；你必须亲自逐段检查最终正文：凡有姓名、编号或可稳定单指的唯一称谓，并实际说话、行动或持续参与情节的NPC都必须建档；例如“引导者”“柜台管理员”“戴红围巾的侦察员”只要能稳定单指就算人物。玩家本人、当前角色卡扮演主体、纯路人群体、一次性幻象不建档。若上游已有与正文一致的完整候选档案，应保留并校正，不得用无变化丢掉它。根据最终正文、本轮既定characterCreationTicket和已有档案摘要，输出且只输出<人物档案更新>[本轮所有应新增或更新的完整JSON档案对象...]</人物档案更新>或经独立复核后确认的<人物档案无变化/>。新人物必须使用一个未重复的本轮ticketId，personality必须保持该票据十四轴。所有规定字段和列表完整；正文缺失信息应结合世界观创造性补全并写入inferences，后续证据可修订；禁止未知、待定、未登记。旧人物回传合并后的完整档案。`;
+    const upstreamReceipt = runtime.core.parseProfileReceipt(message);
+    const prompt = `修复/复核原因：${reason}\n本轮票据：${JSON.stringify(session.tickets)}\n已有档案摘要：${JSON.stringify(runtime.core.profileDigestFromData(data))}\n上游候选回执：${JSON.stringify(upstreamReceipt)}\n最终正文：${runtime.core.stripProfileReceipt(message)}`;
+    const response = await generateDoctorRaw({ systemPrompt, prompt, responseLength: settings().profileMaxTokens, task: '人物档案审计与修复', session });
     assertSessionCurrent(session);
     return response;
   }
 
-  async function commitProfiles(session, messageId, message) {
+  async function commitProfiles(session, messageId, message, variableData = null) {
     assertSessionCurrent(session);
     const Mvu = await getMvu();
     const hasMvu = Mvu?.getMvuData && Mvu?.parseMessage && Mvu?.replaceMvuData;
     if (hasMvu) await waitForMvuIdle(Mvu, session);
-    const oldData = hasMvu ? await mvuDataAt(Mvu, messageId) : null;
+    const liveData = hasMvu ? (variableData || await mvuDataAt(Mvu, messageId)) : null;
+    const oldData = dataWithRecoveredProfiles(liveData, getContext());
     let receiptText = message;
     let receipt = runtime.core.parseProfileReceipt(receiptText);
-    if (receipt.kind === 'nochange') return { ok: true, changed: 0, data: oldData };
-    let prepared = receipt.kind === 'update'
+    let auditedNochange = false;
+    const upstreamPrepared = receipt.kind === 'update'
       ? runtime.core.prepareProfileBatch(receipt.profiles, session.tickets, oldData)
-      : { ok: false, errors: [receipt.error || '人物档案回执无效'] };
-    const attempts = Math.max(0, Math.min(3, Number(settings().repairAttempts) || 0));
+      : { ok: false, errors: [receipt.kind === 'nochange' ? '预设声称人物档案无变化；医生必须独立复核正文是否出现稳定NPC' : receipt.error || '人物档案回执无效'] };
+    let prepared = { ok: false, errors: upstreamPrepared.ok ? ['上游档案结构有效；仍需医生独立覆盖复核是否漏掉稳定NPC'] : upstreamPrepared.errors };
+    const attempts = Math.max(1, Math.min(3, Number(settings().repairAttempts) || 1));
     for (let attempt = 0; !prepared.ok && attempt < attempts; attempt += 1) {
       try {
         setStatus('正在修复人物档案', `第 ${attempt + 1}/${attempts} 次：${prepared.errors.slice(0, 3).join('；')}`);
         receiptText = await repairProfileReceipt(session, message, prepared.errors.join('；'), oldData);
         receipt = runtime.core.parseProfileReceipt(receiptText);
-        if (receipt.kind === 'nochange') return { ok: true, changed: 0, data: oldData };
+        if (receipt.kind === 'nochange') {
+          auditedNochange = true;
+          traceRun(session, 'profile:nochange-confirmed', { attempt: attempt + 1, receiptText });
+          break;
+        }
         prepared = receipt.kind === 'update'
           ? runtime.core.prepareProfileBatch(receipt.profiles, session.tickets, oldData)
           : { ok: false, errors: [receipt.error || '修复模型没有返回有效档案回执'] };
@@ -708,6 +1102,16 @@
       }
     }
     assertSessionCurrent(session);
+    if (auditedNochange) {
+      if (hasMvu && Object.keys(metadata().profiles || {}).length && JSON.stringify(runtime.core.statDataOf(liveData)?.人物档案 || {}) !== JSON.stringify(runtime.core.statDataOf(oldData)?.人物档案 || {})) {
+        try {
+          await Mvu.replaceMvuData(oldData, { type: 'message', message_id: messageId });
+          const restored = await mvuDataAt(Mvu, messageId);
+          if (JSON.stringify(runtime.core.statDataOf(restored)?.人物档案 || {}) === JSON.stringify(runtime.core.statDataOf(oldData)?.人物档案 || {})) return { ok: true, changed: 0, data: restored };
+        } catch { /* metadata remains the durable doctor-owned recovery copy */ }
+      }
+      return { ok: true, changed: 0, data: oldData };
+    }
     if (!prepared.ok) return { ok: false, error: `整批档案校验失败，零写入：${prepared.errors.slice(0, 8).join('；')}` };
     if (!hasMvu) return { ok: false, error: 'MVU接口不可用，完整档案已生成但未写入任何状态' };
     if (!oldData) return { ok: false, error: '无法读取最终正文对应的MVU状态' };
@@ -715,7 +1119,12 @@
     let candidate;
     try { candidate = await Mvu.parseMessage(patch.block, runtime.core.deepClone(oldData)); }
     catch (error) { return { ok: false, error: `MVU无法解析人物档案补丁，零写入：${error.message || error}` }; }
-    if (!runtime.core.verifyCommittedProfiles(candidate, prepared.profiles)) return { ok: false, error: 'MVU解析结果没有完整包含全部档案，零写入' };
+    let projectionMode = 'mvu-parse';
+    if (!runtime.core.verifyCommittedProfiles(candidate, prepared.profiles)) {
+      candidate = runtime.core.mergeProfileRootDirect(oldData, prepared.profiles);
+      projectionMode = 'schema-compatible-direct-root';
+    }
+    const metadataProfilesBefore = runtime.core.deepClone(metadata().profiles);
     try {
       assertSessionCurrent(session);
       await Mvu.replaceMvuData(candidate, { type: 'message', message_id: messageId });
@@ -724,8 +1133,14 @@
         const rolledBack = await rollbackMvu(Mvu, oldData, messageId);
         return { ok: false, error: `档案写入后读回不一致；${rolledBack ? '已回滚原状态' : '回滚失败，请勿继续本聊天'}` };
       }
+      const store = metadata();
+      for (const profile of prepared.profiles) store.profiles[profile.profileId] = runtime.core.deepClone(profile);
+      await saveMetadata();
+      traceRun(session, 'profile:committed', { projectionMode, profiles: prepared.profiles, patch, readback });
       return { ok: true, changed: prepared.profiles.length, data: readback };
     } catch (error) {
+      metadata().profiles = metadataProfilesBefore;
+      try { await saveMetadata(); } catch { /* primary failure is reported below */ }
       const rolledBack = await rollbackMvu(Mvu, oldData, messageId);
       return { ok: false, error: `档案提交失败；${rolledBack ? '已回滚原状态' : '回滚也失败'}：${error.message || error}` };
     }
@@ -736,16 +1151,29 @@
     if (!settings(context).worldEngine) return { ok: true, skipped: true };
     const store = metadata(context);
     const systemPrompt = `你是独立世界推进器。根据已接受正文、已有世界状态和人物档案摘要，更新未决支线与NPC自主行动倾向。NPC的intent只能记录准备或尝试，不能把未在正文中裁决的尝试写成成功结果。不得替玩家决定行动、感受、同意或关系。只输出一个JSON对象，不要代码围栏：{"summary":"","branches":[],"npcIntents":[],"agreements":[],"hostilePlans":[]}。每项字段：id,title,actor,location,keywords,status(active|waiting|resolved|failed),intent,consequence。保留仍有效的旧项，合并重复项，已解决项标resolved。`;
-    const prompt = `已有世界状态：\n${JSON.stringify(store.world)}\n人物档案摘要：\n${JSON.stringify(runtime.core.profileDigestFromData(data))}\n最终接受正文：\n${runtime.core.stripProfileReceipt(acceptedText)}`;
-    try {
-      const raw = await generateDoctorRaw({ systemPrompt, prompt, responseLength: settings(context).worldMaxTokens });
-      assertSessionCurrent(session);
-      store.world = runtime.core.parseWorldState(raw, store.world);
-      await saveMetadata(context);
-      return { ok: true, world: store.world };
-    } catch (error) {
-      return { ok: false, error: `世界引擎失败：${error.message || error}` };
-    } finally { /* generateDoctorRaw owns request lifecycle */ }
+    const basePrompt = `已有世界状态：\n${JSON.stringify(store.world)}\n人物档案摘要：\n${JSON.stringify(runtime.core.profileDigestFromData(dataWithRecoveredProfiles(data, context)))}\n最终接受正文：\n${runtime.core.stripProfileReceipt(acceptedText)}`;
+    let failure = '';
+    let previousRaw = '';
+    const attempts = Math.max(1, Math.min(4, Number(settings(context).repairAttempts) + 1 || 1));
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const prompt = failure
+          ? `${basePrompt}\n\n上一次输出解析失败：${failure}\n上一次原始输出：\n${cropForModel(previousRaw, 16000)}\n请重新输出一个完整、严格双引号、无尾逗号的JSON对象。`
+          : basePrompt;
+        const raw = await generateDoctorRaw({ systemPrompt, prompt, responseLength: settings(context).worldMaxTokens, task: '世界连续性引擎', session });
+        previousRaw = raw;
+        assertSessionCurrent(session);
+        const parsed = runtime.core.parseWorldState(raw, store.world);
+        store.world = parsed;
+        await saveMetadata(context);
+        traceRun(session, 'world:committed', { attempt, raw, world: parsed });
+        return { ok: true, world: store.world };
+      } catch (error) {
+        failure = error.message || String(error);
+        traceRun(session, 'world:retryable-failure', { attempt, failure, previousRaw });
+      }
+    }
+    return { ok: false, error: `世界引擎失败：${failure}` };
   }
 
   async function acceptFinal(session) {
@@ -754,32 +1182,50 @@
     const latestAi = latestMessage(context, false);
     if (!latestAi || (latestAi.index === session.baselineIndex && latestAi.message.mes === session.baselineText)) {
       setStatus('最终正文未确认', '500ms后没有读到新的最终助手消息');
+      await finalizeRun(session, { ok: false, stage: 'accepted-final', error: '500ms后没有读到新的最终助手消息' }, context);
       return;
     }
-    setStatus('医生处理中', '正在校验整批人物档案');
-    const profileResult = await commitProfiles(session, latestAi.index, latestAi.message.mes);
+    session.finalMessageId = latestAi.index;
+    session.acceptedText = latestAi.message.mes;
+    traceRun(session, 'accepted-final', { messageId: latestAi.index, message: latestAi.message });
+    setStatus('医生处理中', '先检查并修复MVU变量；人物与世界尚未开始');
+    const variableResult = await auditVariables(session, latestAi.index, latestAi.message.mes);
+    if (!variableResult.ok) {
+      addDiagnostic('variable_failed', variableResult.error, context);
+      await saveMetadata(context);
+      setRetry({ kind: 'variable', session, messageId: latestAi.index, message: latestAi.message.mes });
+      setStatus('MVU变量修复失败', variableResult.error, { durationMs: Date.now() - session.startedAt });
+      await finalizeRun(session, { ok: false, stage: 'variable', error: variableResult.error }, context);
+      return;
+    }
+    setStatus('MVU变量已确认', variableResult.changed ? '纠错补丁已写入、读回并合并保存；正在校验人物档案' : '本轮变量无需纠错；正在校验人物档案');
+    const profileResult = await commitProfiles(session, latestAi.index, variableResult.message, variableResult.data);
     if (!profileResult.ok) {
       addDiagnostic('profile_failed', profileResult.error, context);
       await saveMetadata(context);
-      setRetry({ kind: 'profile', session, messageId: latestAi.index, message: latestAi.message.mes });
+      setRetry({ kind: 'profile', session, messageId: latestAi.index, message: getContext().chat?.[latestAi.index]?.mes || variableResult.message, data: variableResult.data });
       setStatus('人物档案失败', profileResult.error, { durationMs: Date.now() - session.startedAt });
+      await finalizeRun(session, { ok: false, stage: 'profile', variable: variableResult, error: profileResult.error }, context);
       return;
     }
     setStatus('人物档案已完成', profileResult.changed ? `原子提交 ${profileResult.changed} 张完整档案` : '本轮明确无档案变化');
-    const worldResult = await advanceWorld(session, latestAi.message.mes, profileResult.data);
+    const finalAcceptedText = getContext().chat?.[latestAi.index]?.mes || variableResult.message;
+    const worldResult = await advanceWorld(session, finalAcceptedText, profileResult.data);
     const world = metadata(context).world;
-    const profileCount = Object.keys(runtime.core.profilesFromData(profileResult.data)).length;
+    const profileCount = Object.keys(combinedProfiles(profileResult.data, context)).length;
     if (!worldResult.ok) {
       addDiagnostic('world_failed', worldResult.error, context);
       await saveMetadata(context);
-      setRetry({ kind: 'world', session, messageId: latestAi.index, message: latestAi.message.mes, data: profileResult.data });
+      setRetry({ kind: 'world', session, messageId: latestAi.index, message: finalAcceptedText, data: profileResult.data });
       setStatus('档案完成，世界引擎失败', worldResult.error, { profiles: profileCount, branches: activeWorldCount(world), durationMs: Date.now() - session.startedAt });
+      await finalizeRun(session, { ok: false, stage: 'world', variable: variableResult, profiles: profileResult, error: worldResult.error }, context);
       return;
     }
     addDiagnostic('completed', `档案变更${profileResult.changed}张；世界项${activeWorldCount(world)}条`, context);
     await saveMetadata(context);
     setRetry(null);
     setStatus('本轮医生完成', `档案与世界状态均已落定`, { profiles: profileCount, branches: activeWorldCount(world), durationMs: Date.now() - session.startedAt });
+    await finalizeRun(session, { ok: true, variable: variableResult, profiles: profileResult, world: worldResult }, context);
     void refreshUiData();
   }
 
@@ -796,24 +1242,42 @@
     runtime.retrying = true;
     renderRetryControl();
     try {
-      const session = { ...item.session, epoch: runtime.epoch, cancelled: false };
-      setStatus('正在重试', item.kind === 'profile' ? '重新修复并提交当前人物档案' : '重新推进当前世界支线');
-      if (item.kind === 'profile') {
-        const profileResult = await commitProfiles(session, item.messageId, item.message);
+      const session = { ...item.session, id: `retry-${Date.now().toString(36)}`, startedAt: Date.now(), epoch: runtime.epoch, cancelled: false, trace: [], reportSaved: false, acceptedText: item.message, finalMessageId: item.messageId };
+      const retryLabel = item.kind === 'variable' ? '重新检查并修复MVU变量' : item.kind === 'profile' ? '重新审计并提交当前人物档案' : '重新推进当前世界支线';
+      setStatus('正在重试', retryLabel);
+      let workingMessage = item.message;
+      let workingData = item.data || null;
+      if (item.kind === 'variable') {
+        const variableResult = await auditVariables(session, item.messageId, item.message);
+        if (!variableResult.ok) {
+          addDiagnostic('variable_failed', variableResult.error, context);
+          await saveMetadata(context);
+          setRetry({ ...item, session });
+          setStatus('MVU变量重试失败', variableResult.error);
+          await finalizeRun(session, { ok: false, stage: 'variable', error: variableResult.error }, context);
+          return;
+        }
+        workingMessage = getContext().chat?.[item.messageId]?.mes || variableResult.message;
+        workingData = variableResult.data;
+      }
+      if (item.kind === 'variable' || item.kind === 'profile') {
+        const profileResult = await commitProfiles(session, item.messageId, workingMessage, workingData);
         if (!profileResult.ok) {
           addDiagnostic('profile_failed', profileResult.error, context);
           await saveMetadata(context);
-          setRetry({ ...item, session });
+          setRetry({ kind: 'profile', session, messageId: item.messageId, message: workingMessage, data: workingData });
           setStatus('人物档案重试失败', profileResult.error);
+          await finalizeRun(session, { ok: false, stage: 'profile', error: profileResult.error }, context);
           return;
         }
-        const worldResult = await advanceWorld(session, item.message, profileResult.data);
-        const profileCount = Object.keys(runtime.core.profilesFromData(profileResult.data)).length;
+        const worldResult = await advanceWorld(session, workingMessage, profileResult.data);
+        const profileCount = Object.keys(combinedProfiles(profileResult.data, context)).length;
         if (!worldResult.ok) {
           addDiagnostic('world_failed', worldResult.error, context);
           await saveMetadata(context);
-          setRetry({ kind: 'world', session, messageId: item.messageId, message: item.message, data: profileResult.data });
+          setRetry({ kind: 'world', session, messageId: item.messageId, message: workingMessage, data: profileResult.data });
           setStatus('档案完成，世界重试失败', worldResult.error, { profiles: profileCount });
+          await finalizeRun(session, { ok: false, stage: 'world', error: worldResult.error }, context);
           return;
         }
       } else {
@@ -823,17 +1287,19 @@
           await saveMetadata(context);
           setRetry({ ...item, session });
           setStatus('世界支线重试失败', worldResult.error);
+          await finalizeRun(session, { ok: false, stage: 'world', error: worldResult.error }, context);
           return;
         }
       }
       const world = metadata(context).world;
       const Mvu = await getMvu();
       const data = Mvu ? await mvuDataAt(Mvu, item.messageId) : item.data;
-      const profileCount = Object.keys(runtime.core.profilesFromData(data)).length;
+      const profileCount = Object.keys(combinedProfiles(data, context)).length;
       addDiagnostic('completed', `手动重试完成；档案${profileCount}张；世界项${activeWorldCount(world)}条`, context);
       await saveMetadata(context);
       setRetry(null);
       setStatus('失败步骤已恢复', '当前人物档案与世界状态已经重新核对', { profiles: profileCount, branches: activeWorldCount(world) });
+      await finalizeRun(session, { ok: true, retryKind: item.kind, profiles: profileCount, worldItems: activeWorldCount(world) }, context);
       await refreshUiData();
     } finally {
       runtime.retrying = false;
@@ -1021,7 +1487,8 @@
     const buttons = root?.querySelectorAll?.('[data-role="retry"]') || [];
     for (const button of buttons) {
       button.disabled = !runtime.retry || runtime.retrying;
-      button.textContent = runtime.retrying ? '正在重试失败步骤…' : runtime.retry ? `重试${runtime.retry.kind === 'profile' ? '人物档案' : '世界支线'}失败步骤` : '当前没有可重试任务';
+      const label = runtime.retry?.kind === 'variable' ? 'MVU变量' : runtime.retry?.kind === 'profile' ? '人物档案' : '世界支线';
+      button.textContent = runtime.retrying ? '正在重试失败步骤…' : runtime.retry ? `重试${label}失败步骤` : '当前没有可重试任务';
     }
   }
 
@@ -1037,7 +1504,7 @@
     const latestAi = latestMessage(context, false);
     const Mvu = await getMvu();
     const data = Mvu && latestAi ? await mvuDataAt(Mvu, latestAi.index) : null;
-    runtime.uiProfiles = runtime.core.profilesFromData(data);
+    runtime.uiProfiles = combinedProfiles(data, context);
     const world = metadata(context).world;
     runtime.status = { ...runtime.status, profiles: Object.keys(runtime.uiProfiles).length, branches: activeWorldCount(world) };
     renderProfiles();
@@ -1059,10 +1526,12 @@
     const config = settings();
     const values = {
       enabled: config.enabled,
+      variableDoctor: config.variableDoctor,
       world: config.worldEngine,
       tickets: config.ticketCount,
       recall: config.recallLimit,
       repairs: config.repairAttempts,
+      variableTokens: config.variableMaxTokens,
       profileTokens: config.profileMaxTokens,
       worldTokens: config.worldMaxTokens,
       additionalPrompt: config.additionalPrompt,
@@ -1086,10 +1555,12 @@
     const config = settings();
     const number = (role, min, max, fallback) => Math.max(min, Math.min(max, Number(root.querySelector(`[data-role="${role}"]`)?.value) || fallback));
     config.enabled = Boolean(root.querySelector('[data-role="enabled"]')?.checked);
+    config.variableDoctor = Boolean(root.querySelector('[data-role="variableDoctor"]')?.checked);
     config.worldEngine = Boolean(root.querySelector('[data-role="world"]')?.checked);
     config.ticketCount = number('tickets', 1, 24, 8);
     config.recallLimit = number('recall', 1, 16, 8);
     config.repairAttempts = number('repairs', 0, 3, 2);
+    config.variableMaxTokens = number('variableTokens', 1000, 32768, 5000);
     config.profileMaxTokens = number('profileTokens', 1000, 32768, 6000);
     config.worldMaxTokens = number('worldTokens', 512, 16384, 3000);
     config.additionalPrompt = String(root.querySelector('[data-role="additionalPrompt"]')?.value || '');
@@ -1111,6 +1582,41 @@
     }).join('\n');
     if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(lines || '当前聊天没有诊断记录');
     else throw new Error('当前宿主不支持剪贴板API');
+  }
+
+  async function exportFullReport() {
+    const context = getContext();
+    const config = settings(context);
+    const latestAi = latestMessage(context, false);
+    const Mvu = await getMvu();
+    const currentMvu = Mvu && latestAi ? await mvuDataAt(Mvu, latestAi.index) : null;
+    const secrets = [config.api?.apiKey, config.api?.endpoint];
+    const report = runtime.core.removeApiFromExport({
+      reportType: 'MVU人物与世界医生完整运行报告',
+      warning: '本文件未脱敏，包含当前聊天正文、变量、人物档案、世界记录、医生提示与模型原始返回；只排除了API连接和凭据。请勿公开上传。',
+      generatedAt: new Date().toISOString(),
+      doctorVersion: DOCTOR_VERSION,
+      chatId: String(context?.chatId || ''),
+      settings: { ...config, api: undefined },
+      runtimeStatus: runtime.status,
+      retryState: runtime.retry,
+      doctorMetadata: metadata(context),
+      chat: context?.chat || [],
+      currentMvu,
+    }, secrets);
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `mvu-doctor-full-report-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   }
 
   function mountSettingsShortcut() {
@@ -1174,6 +1680,7 @@
             <div class="mvu-kc-status-card"><span class="mvu-kc-status-dot"></span><div><h2 data-role="status-summary">医生正在初始化</h2><p data-role="status-action">请稍候。</p></div></div>
             <div class="mvu-kc-card"><h2>基础运行</h2><div class="mvu-kc-form-grid">
               <label><span>启用医生</span><input data-role="enabled" type="checkbox"></label>
+              <label><span>正文后修复MVU变量</span><input data-role="variableDoctor" type="checkbox"></label>
               <label><span>正文后推进世界</span><input data-role="world" type="checkbox"></label>
               <label><span>候选人物票据</span><input data-role="tickets" type="number" min="1" max="24"></label>
               <label><span>召回世界项上限</span><input data-role="recall" type="number" min="1" max="16"></label>
@@ -1188,7 +1695,7 @@
               <label class="mvu-kc-field"><span>API密钥</span><input data-role="apiKey" data-custom-api type="password" autocomplete="off" placeholder="可留空用于本地服务"></label>
               <label class="mvu-kc-reveal"><input data-role="revealKey" type="checkbox"><span>显示密钥</span></label>
               <label class="mvu-kc-field"><span>模型</span><input data-role="apiModel" data-custom-api list="mvu-kc-models" type="text" placeholder="model-name"><datalist id="mvu-kc-models"></datalist></label>
-              <div class="mvu-kc-form-grid"><label><span>人物输出上限</span><input data-role="profileTokens" type="number" min="1000" max="32768"></label><label><span>世界输出上限</span><input data-role="worldTokens" type="number" min="512" max="16384"></label></div>
+              <div class="mvu-kc-form-grid"><label><span>变量医生输出上限</span><input data-role="variableTokens" type="number" min="1000" max="32768"></label><label><span>人物输出上限</span><input data-role="profileTokens" type="number" min="1000" max="32768"></label><label><span>世界输出上限</span><input data-role="worldTokens" type="number" min="512" max="16384"></label></div>
               <label class="mvu-kc-field"><span>全局模型适配附加提示词</span><textarea data-role="additionalPrompt" rows="5" placeholder="可留空。人物档案修复与世界推进都会追加这段提示词。"></textarea></label>
               <p class="mvu-kc-muted">只有这一个全局入口；不会写入预设、世界书或聊天诊断。</p>
               <div class="mvu-kc-actions"><button data-role="save" class="mvu-kc-primary" type="button">保存连接</button><button data-role="models" data-custom-api type="button">获取模型</button><button data-role="testApi" type="button">测试连接</button></div>
@@ -1206,8 +1713,9 @@
             <div data-role="world-list" class="mvu-kc-world-list"></div>
           </section>
           <section data-panel="diagnostics" hidden>
-            <div class="mvu-kc-toolbar"><div><h2>诊断与恢复</h2><span>只保存当前聊天最近30条</span></div><button data-role="refresh" type="button">刷新</button></div>
-            <div class="mvu-kc-actions"><button data-role="retry" type="button" disabled>当前没有可重试任务</button><button data-role="copyDiagnostics" type="button">复制脱敏诊断</button><button data-role="clearDiagnostics" class="mvu-kc-danger" type="button">清空诊断</button></div>
+            <div class="mvu-kc-toolbar"><div><h2>诊断与恢复</h2><span>保存当前聊天诊断及最近6次完整医生运行</span></div><button data-role="refresh" type="button">刷新</button></div>
+            <p class="mvu-kc-warning">“完整报告”不脱敏，会包含正文、变量、人物、世界、医生提示和模型原始返回；只排除API连接与凭据。仅用于你本地分析。</p>
+            <div class="mvu-kc-actions"><button data-role="retry" type="button" disabled>当前没有可重试任务</button><button data-role="copyDiagnostics" type="button">复制脱敏诊断</button><button data-role="exportFullReport" type="button">导出完整报告（除API）</button><button data-role="clearDiagnostics" class="mvu-kc-danger" type="button">清空诊断</button></div>
             <div data-role="diagnostic-list" class="mvu-kc-diagnostic-list"></div>
           </section>
         </main>
@@ -1242,9 +1750,11 @@
       } catch (error) { setConnectionMessage(error.message || String(error), 'error'); }
     });
     root.querySelector('[data-role="copyDiagnostics"]').addEventListener('click', () => void copyDiagnostics().then(() => setConnectionMessage('脱敏诊断已复制。', 'success')).catch((error) => setStatus('复制诊断失败', error.message || String(error))));
+    root.querySelector('[data-role="exportFullReport"]').addEventListener('click', () => void exportFullReport().then(() => setConnectionMessage('完整报告已导出；文件未脱敏，请只在本地保存。', 'success')).catch((error) => setStatus('完整报告导出失败', error.message || String(error))));
     root.querySelector('[data-role="clearDiagnostics"]').addEventListener('click', async () => {
-      if (!window.confirm?.('只清空当前聊天的医生诊断记录？人物档案和世界状态不会删除。')) return;
+      if (!window.confirm?.('清空当前聊天的医生诊断与完整运行记录？人物档案和世界状态不会删除。')) return;
       metadata().diagnostics = [];
+      metadata().fullRuns = [];
       await saveMetadata();
       renderDiagnostics();
     });
