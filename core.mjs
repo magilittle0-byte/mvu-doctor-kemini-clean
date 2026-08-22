@@ -90,7 +90,30 @@ function repairJsonText(text) {
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
     .replace(/,\s*([}\]])/g, '$1')
+    .replace(/}\s*{/g, '},{')
+    .replace(/]\s*\[/g, '],[')
+    .replace(/([}\]])(\s*)"(?=[^"\r\n]+"\s*:)/g, '$1,$2"')
     .trim();
+}
+
+function parseJsonWithLocalRepair(text) {
+  let candidate = repairJsonText(text);
+  let lastError;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      return JSON.parse(candidate);
+    } catch (error) {
+      lastError = error;
+      const position = Number(String(error?.message || '').match(/position\s+(\d+)/i)?.[1]);
+      const commaExpected = /Expected\s+['"]?,['"]?\s+or|expected comma|array element|object property/i.test(String(error?.message || ''));
+      if (!Number.isInteger(position) || !commaExpected) break;
+      let insertAt = position;
+      while (/\s/.test(candidate[insertAt] || '')) insertAt += 1;
+      if (!insertAt || candidate[insertAt - 1] === ',' || candidate[insertAt] === ',') break;
+      candidate = `${candidate.slice(0, insertAt)},${candidate.slice(insertAt)}`;
+    }
+  }
+  throw lastError || new Error('JSON无法解析');
 }
 
 export function parseProfileReceipt(message) {
@@ -99,7 +122,7 @@ export function parseProfileReceipt(message) {
   const match = raw.match(/<人物档案更新>([\s\S]*?)<\/人物档案更新>/i);
   if (!match) return { kind: 'missing', profiles: [], error: '正文缺少人物档案完成信号' };
   try {
-    const parsed = JSON.parse(repairJsonText(match[1]));
+    const parsed = parseJsonWithLocalRepair(match[1]);
     if (!Array.isArray(parsed)) throw new Error('人物档案回执必须是数组');
     return { kind: 'update', profiles: parsed };
   } catch (error) {
@@ -213,7 +236,78 @@ function extractJsonObject(raw) {
   const first = cleaned.indexOf('{');
   const last = cleaned.lastIndexOf('}');
   if (first < 0 || last <= first) throw new Error('没有找到JSON对象');
-  return JSON.parse(cleaned.slice(first, last + 1));
+  return parseJsonWithLocalRepair(cleaned.slice(first, last + 1));
+}
+
+export function openAiChatEndpoint(rawEndpoint) {
+  const raw = String(rawEndpoint || '').trim();
+  if (!raw) throw new Error('请填写API地址');
+  const url = new URL(raw);
+  const path = url.pathname.replace(/\/+$/, '');
+  if (/\/chat\/completions$/i.test(path)) url.pathname = path;
+  else if (/\/v\d+$/i.test(path)) url.pathname = `${path}/chat/completions`;
+  else url.pathname = `${path}/v1/chat/completions`;
+  return url.toString();
+}
+
+export function openAiModelsEndpoint(rawEndpoint) {
+  const url = new URL(openAiChatEndpoint(rawEndpoint));
+  url.pathname = url.pathname.replace(/\/chat\/completions$/i, '/models');
+  return url.toString();
+}
+
+export function chatCompletionText(payload) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === 'string' && content.trim()) return content;
+  if (Array.isArray(content)) {
+    const joined = content.map((part) => part?.text || part?.content || '').join('').trim();
+    if (joined) return joined;
+  }
+  if (typeof payload?.output_text === 'string' && payload.output_text.trim()) return payload.output_text;
+  throw new Error('API响应缺少choices[0].message.content');
+}
+
+export function redactDiagnostic(value) {
+  return String(value || '')
+    .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi, '$1[已隐藏]')
+    .replace(/((?:x-)?api[-_ ]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi, '$1=[已隐藏]')
+    .replace(/\b(sk|key|token)-[A-Za-z0-9._-]{8,}\b/gi, '[已隐藏密钥]')
+    .replace(/([?&](?:key|token|api_key)=)[^&#\s]+/gi, '$1[已隐藏]');
+}
+
+export function diagnosticAdvice(kind, detail) {
+  const text = `${kind || ''} ${detail || ''}`;
+  if (/JSON|解析|array element|object property/i.test(text)) {
+    return { severity: 'error', summary: '模型返回的结构化档案格式损坏，本轮保持零写入。', action: '先点击“重试失败步骤”；若再次失败，提高人物输出上限或更换格式遵从性更好的模型。' };
+  }
+  if (/401|403|鉴权|unauthorized|forbidden|密钥/i.test(text)) {
+    return { severity: 'error', summary: '医生API鉴权失败，没有向人物或世界状态写入结果。', action: '打开“连接”页，核对API地址、密钥和模型后重新测试。' };
+  }
+  if (/429|限流|rate limit/i.test(text)) {
+    return { severity: 'warning', summary: '模型服务正在限流，本轮任务没有伪造成功。', action: '稍后重试，或换用限额充足的连接。' };
+  }
+  if (/MVU.*不可用|无法读取.*MVU|MVU接口/i.test(text)) {
+    return { severity: 'error', summary: '医生没有取得当前楼层的MVU接口或状态。', action: '确认MagVarUpdate已启用并完成本轮变量处理，再重试当前失败步骤。' };
+  }
+  if (/profile[_ -]?failed|人物档案.*失败|整批.*失败/i.test(text)) {
+    return { severity: 'error', summary: '人物档案没有达到完整可用标准，本轮保持零写入。', action: '展开详情查看具体缺项；修正连接或输出上限后点击“重试人物档案失败步骤”。' };
+  }
+  if (/读回|回滚|提交失败|写入/i.test(text)) {
+    return { severity: 'error', summary: '档案提交或读回验证失败，医生没有把半张档案算作成功。', action: '不要继续覆盖当前状态；先刷新查看档案是否存在，再使用诊断中的失败步骤重试。' };
+  }
+  if (/HTTP 5\d\d|failed to fetch|network|连接.*失败/i.test(text)) {
+    return { severity: 'error', summary: '医生模型服务没有正常响应，本轮没有伪造档案或世界进度。', action: '到“连接”页重新测试；若持续失败，核对端点状态、跨域限制或改用酒馆当前模型。' };
+  }
+  if (/stale|过期|切换|取消/i.test(text)) {
+    return { severity: 'warning', summary: '任务因聊天、楼层或生成目标改变而作废。', action: '回到对应聊天和最新回复后重新生成；旧结果不会写入新目标。' };
+  }
+  if (/world|世界|支线/i.test(text)) {
+    return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '检查连接后点击“重试失败步骤”；已有世界记录会保留。' };
+  }
+  if (/completed|完成/i.test(text)) {
+    return { severity: 'success', summary: '本轮人物档案和世界状态已经完成。', action: '无需处理。' };
+  }
+  return { severity: 'info', summary: '医生记录了一条运行信息。', action: '展开详情核对；若影响当前回合，可在修正配置后重试失败步骤。' };
 }
 
 export function parseWorldState(raw, previous = {}) {

@@ -2,10 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildProfilePatch,
+  chatCompletionText,
+  diagnosticAdvice,
   generateTicketBatch,
+  openAiChatEndpoint,
+  openAiModelsEndpoint,
   parseProfileReceipt,
   parseWorldState,
   prepareProfileBatch,
+  redactDiagnostic,
   selectWorldRecall,
   statDataOf,
   verifyCommittedProfiles,
@@ -38,6 +43,27 @@ test('人物档案回执可提取并拒绝缺失完成信号', () => {
   assert.equal(parseProfileReceipt('正文\n<人物档案无变化/>').kind, 'nochange');
   assert.equal(parseProfileReceipt('<人物档案更新>[{"name":"林澄",}]</人物档案更新>').kind, 'update');
   assert.equal(parseProfileReceipt('只有正文').kind, 'missing');
+});
+
+test('人物档案JSON可保守修复缺逗号的数组项和对象字段', () => {
+  const array = parseProfileReceipt('<人物档案更新>[{"name":"林澄"} {"name":"周遥"}]</人物档案更新>');
+  assert.equal(array.kind, 'update');
+  assert.equal(array.profiles.length, 2);
+  const object = parseProfileReceipt('<人物档案更新>[{"name":"林澄","identity":{"species":"人类"} "aliases":[]}]</人物档案更新>');
+  assert.equal(object.kind, 'update');
+  assert.deepEqual(object.profiles[0].aliases, []);
+});
+
+test('独立API端点归一化、响应提取与诊断脱敏', () => {
+  assert.equal(openAiChatEndpoint('https://example.com/v1'), 'https://example.com/v1/chat/completions');
+  assert.equal(openAiChatEndpoint('https://example.com/v1/chat/completions'), 'https://example.com/v1/chat/completions');
+  assert.equal(openAiModelsEndpoint('https://example.com/v1'), 'https://example.com/v1/models');
+  assert.equal(chatCompletionText({ choices: [{ message: { content: 'OK' } }] }), 'OK');
+  assert.match(redactDiagnostic('Authorization: Bearer sk-example-secret-123456'), /已隐藏/);
+  assert.doesNotMatch(redactDiagnostic('Authorization: Bearer sk-example-secret-123456'), /secret/);
+  assert.doesNotMatch(redactDiagnostic('x-api-key: private-value-123456'), /private-value/);
+  assert.match(diagnosticAdvice('profile_failed', 'JSON无法解析').action, /重试失败步骤/);
+  assert.equal(diagnosticAdvice('profile_failed', '整批档案校验失败').severity, 'error');
 });
 
 test('完整新档案绑定同一票据并编译为单根原子补丁', () => {
