@@ -655,6 +655,9 @@ export function diagnosticAdvice(kind, detail) {
   if (code === 'completed') {
     return { severity: 'success', summary: '本轮人物档案和世界状态已经完成。', action: '无需处理。' };
   }
+  if (code === 'world_recovered') {
+    return { severity: 'success', summary: '上次中断的世界候选已经从持久检查点恢复并完成读回。', action: '无需重复推进；可在“世界”页核对修订号和提交摘要。' };
+  }
   if (code === 'variable_failed') {
     return { severity: 'error', summary: 'MVU变量没有完成检查或修复，人物档案和世界推进尚未开始。', action: '保留当前正文，检查MVU/变量结构与模型连接后点击“重试MVU变量失败步骤”。' };
   }
@@ -701,26 +704,511 @@ export function diagnosticAdvice(kind, detail) {
   return { severity: 'info', summary: '医生记录了一条运行信息。', action: '展开详情核对；若影响当前回合，可在修正配置后重试失败步骤。' };
 }
 
-export function parseWorldState(raw, previous = {}) {
-  const parsed = extractJsonObject(raw);
-  const arrays = ['branches', 'npcIntents', 'agreements', 'hostilePlans'];
-  for (const key of arrays) if (!Array.isArray(parsed[key])) parsed[key] = [];
-  parsed.summary = isNonEmptyText(parsed.summary) ? String(parsed.summary).trim() : String(previous.summary || '世界已推进，暂无额外摘要。');
-  parsed.updatedAt = new Date().toISOString();
-  for (const key of arrays) {
-    parsed[key] = parsed[key].slice(0, 80).map((entry, index) => ({
-      id: String(entry?.id || `${key}-${Date.now().toString(36)}-${index}`),
-      title: String(entry?.title || entry?.actor || '未命名事项'),
-      actor: String(entry?.actor || ''),
-      location: String(entry?.location || ''),
-      keywords: Array.isArray(entry?.keywords) ? entry.keywords.map(String).slice(0, 12) : [],
-      status: ['active', 'waiting', 'resolved', 'failed'].includes(entry?.status) ? entry.status : 'active',
-      intent: String(entry?.intent || entry?.content || ''),
-      consequence: String(entry?.consequence || ''),
-      updatedAt: String(entry?.updatedAt || parsed.updatedAt),
-    }));
+export const WORLD_SCHEMA_VERSION = 4;
+
+function cleanText(value, fallback = '') {
+  const text = String(value ?? '').trim();
+  return text || fallback;
+}
+
+function cleanStringArray(value, limit = 24) {
+  return [...new Set((Array.isArray(value) ? value : value == null ? [] : [value])
+    .map((item) => cleanText(item)).filter(Boolean))].slice(0, limit);
+}
+
+function stableWorldId(prefix, ...parts) {
+  const source = parts.flat().map((item) => cleanText(item).toLocaleLowerCase()).filter(Boolean).join('|') || `${prefix}|empty`;
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
-  return parsed;
+  return `${prefix}-${(hash >>> 0).toString(36)}`;
+}
+
+function worldDigestPayload(world) {
+  const copy = deepClone(world || {});
+  delete copy.digest;
+  delete copy.persistence;
+  delete copy.checkpoint;
+  if (copy.recall) delete copy.recall.pending;
+  return copy;
+}
+
+export function worldDigest(world) {
+  return stableWorldId('wd', JSON.stringify(worldDigestPayload(world)));
+}
+
+function normalizeSourceRef(value = {}, fallback = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    chatId: cleanText(source.chatId, cleanText(fallback.chatId)),
+    messageId: Number.isInteger(Number(source.messageId)) ? Number(source.messageId) : (Number.isInteger(Number(fallback.messageId)) ? Number(fallback.messageId) : null),
+    turn: Math.max(0, Number(source.turn ?? fallback.turn) || 0),
+    sourceKey: cleanText(source.sourceKey, cleanText(fallback.sourceKey)),
+    excerpt: cleanText(source.excerpt, cleanText(fallback.excerpt)).slice(0, 500),
+    at: cleanText(source.at, cleanText(fallback.at, new Date().toISOString())),
+  };
+}
+
+function emptyRecall() {
+  return { pending: null, receipts: [] };
+}
+
+export function emptyWorldState(chatId = '') {
+  const now = new Date().toISOString();
+  const world = {
+    schemaVersion: WORLD_SCHEMA_VERSION,
+    chatId: cleanText(chatId),
+    revision: 0,
+    commitId: '',
+    digest: '',
+    observedThrough: { turn: 0, sourceKey: '', at: now },
+    simulatedThrough: { turn: 0, sourceKey: '', at: now },
+    summary: '',
+    threads: [],
+    lanes: { actors: [], factions: [], environment: { summary: '', economy: '', incidents: [], trends: [], winds: [] } },
+    attempts: [],
+    adjudications: [],
+    resolvedArchive: [],
+    tombstoneThroughTurn: 0,
+    recall: emptyRecall(),
+    failures: [],
+    checkpoint: { state: 'world_committed', candidate: null, candidateDigest: '', preparedAt: '', committedAt: '' },
+    persistence: { status: 'unverified', revision: 0, commitId: '', digest: '', readbackAt: '', error: '' },
+    migration: null,
+    updatedAt: now,
+  };
+  world.digest = worldDigest(world);
+  return world;
+}
+
+function legacyWorldRecords(world = {}) {
+  const map = [
+    ['branches', 'parallel'], ['npcIntents', 'personal'], ['agreements', 'promise'], ['hostilePlans', 'enemy'],
+  ];
+  return map.flatMap(([key, kind]) => (Array.isArray(world?.[key]) ? world[key] : []).map((entry, index) => ({
+    id: cleanText(entry?.id, stableWorldId('thread', kind, entry?.title, entry?.actor, entry?.location, index)),
+    kind,
+    title: cleanText(entry?.title, cleanText(entry?.actor, '未命名连续性事项')),
+    stage: entry?.status === 'resolved' ? 'resolved' : entry?.status === 'waiting' ? 'dormant' : 'advancing',
+    actorIds: cleanStringArray(entry?.actor),
+    factionIds: [],
+    locations: cleanStringArray(entry?.location),
+    keywords: cleanStringArray(entry?.keywords, 16),
+    summary: cleanText(entry?.consequence, cleanText(entry?.intent)),
+    offscreenBeat: cleanText(entry?.intent),
+    trigger: '',
+    nextBeat: cleanText(entry?.intent),
+    stakes: cleanText(entry?.consequence),
+    urgency: key === 'hostilePlans' ? 4 : 2,
+    knowledge: 'hidden',
+    causedBy: [], effects: [], rumors: [],
+    createdTurn: 0, lastAdvancedTurn: 0,
+    sourceRef: normalizeSourceRef({}, { at: entry?.updatedAt }),
+    updatedAt: cleanText(entry?.updatedAt, world?.updatedAt || new Date().toISOString()),
+  })));
+}
+
+function normalizeThread(entry, index = 0, fallbackSource = {}) {
+  const kind = ['parallel', 'personal', 'promise', 'enemy', 'mystery', 'social', 'resource', 'environment'].includes(entry?.kind) ? entry.kind : 'parallel';
+  const title = cleanText(entry?.title, cleanText(entry?.summary, '未命名连续性事项'));
+  const actorIds = cleanStringArray(entry?.actorIds ?? entry?.actors ?? entry?.actor);
+  const locations = cleanStringArray(entry?.locations ?? entry?.location);
+  return {
+    id: cleanText(entry?.id, stableWorldId('thread', kind, title, actorIds, locations, index)),
+    kind,
+    title,
+    stage: ['seeded', 'advancing', 'manifested', 'dormant', 'resolved', 'failed'].includes(entry?.stage) ? entry.stage : (entry?.status === 'resolved' ? 'resolved' : 'advancing'),
+    actorIds,
+    factionIds: cleanStringArray(entry?.factionIds ?? entry?.factions),
+    locations,
+    keywords: cleanStringArray(entry?.keywords, 16),
+    summary: cleanText(entry?.summary, cleanText(entry?.consequence, cleanText(entry?.intent))),
+    offscreenBeat: cleanText(entry?.offscreenBeat, cleanText(entry?.intent)),
+    trigger: cleanText(entry?.trigger),
+    nextBeat: cleanText(entry?.nextBeat, cleanText(entry?.intent)),
+    stakes: cleanText(entry?.stakes, cleanText(entry?.consequence)),
+    urgency: Math.max(0, Math.min(5, Number(entry?.urgency) || 0)),
+    knowledge: ['hidden', 'rumor', 'observed'].includes(entry?.knowledge) ? entry.knowledge : 'hidden',
+    causedBy: cleanStringArray(entry?.causedBy),
+    effects: cleanStringArray(entry?.effects),
+    rumors: cleanStringArray(entry?.rumors),
+    createdTurn: Math.max(0, Number(entry?.createdTurn) || Number(fallbackSource.turn) || 0),
+    lastAdvancedTurn: Math.max(0, Number(entry?.lastAdvancedTurn) || Number(fallbackSource.turn) || 0),
+    sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
+    updatedAt: cleanText(entry?.updatedAt, fallbackSource.at || new Date().toISOString()),
+  };
+}
+
+function normalizeActorLane(entry, index = 0) {
+  const actorId = cleanText(entry?.actorId, cleanText(entry?.name, `actor-${index + 1}`));
+  return {
+    actorId,
+    name: cleanText(entry?.name, actorId),
+    goal: cleanText(entry?.goal),
+    planSteps: cleanStringArray(entry?.planSteps, 12),
+    nextActionTurn: Math.max(0, Number(entry?.nextActionTurn) || 0),
+    lastActionTurn: Math.max(0, Number(entry?.lastActionTurn) || 0),
+    silenceTurns: Math.max(0, Number(entry?.silenceTurns) || 0),
+    status: ['ready', 'waiting', 'blocked_unready', 'inactive'].includes(entry?.status) ? entry.status : 'waiting',
+    lastAction: cleanText(entry?.lastAction),
+    sourceThreadIds: cleanStringArray(entry?.sourceThreadIds ?? entry?.threadIds),
+  };
+}
+
+function normalizeFactionLane(entry, index = 0) {
+  const name = cleanText(entry?.name, `未命名阵营${index + 1}`);
+  return {
+    id: cleanText(entry?.id, stableWorldId('faction', name)),
+    name,
+    goal: cleanText(entry?.goal),
+    status: cleanText(entry?.status, 'active'),
+    relation: cleanText(entry?.relation),
+    condition: cleanText(entry?.condition),
+    summary: cleanText(entry?.summary),
+    sourceThreadIds: cleanStringArray(entry?.sourceThreadIds ?? entry?.threadIds),
+  };
+}
+
+function normalizeAttempt(entry, index = 0, fallbackSource = {}) {
+  const actorId = cleanText(entry?.actorId, cleanText(entry?.actor));
+  const threadId = cleanText(entry?.threadId);
+  const action = cleanText(entry?.action, cleanText(entry?.intent));
+  return {
+    attemptId: cleanText(entry?.attemptId, stableWorldId('attempt', actorId, threadId, action, fallbackSource.sourceKey, index)),
+    actorId,
+    actorName: cleanText(entry?.actorName, cleanText(entry?.actor, actorId)),
+    threadId,
+    intent: cleanText(entry?.intent, action),
+    action,
+    knowledgeBasis: cleanStringArray(entry?.knowledgeBasis),
+    capabilityBasis: cleanStringArray(entry?.capabilityBasis),
+    resourceCosts: cleanStringArray(entry?.resourceCosts),
+    expectedDuration: cleanText(entry?.expectedDuration),
+    risk: cleanText(entry?.risk),
+    visibility: ['hidden', 'rumor', 'observable'].includes(entry?.visibility) ? entry.visibility : 'hidden',
+    playerDecisionRequired: Boolean(entry?.playerDecisionRequired),
+    status: ['pending_world', 'settled', 'blocked_unready', 'cancelled'].includes(entry?.status) ? entry.status : 'pending_world',
+    sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
+    createdTurn: Math.max(0, Number(entry?.createdTurn) || Number(fallbackSource.turn) || 0),
+  };
+}
+
+function normalizeAdjudication(entry, index = 0, fallbackSource = {}) {
+  const attemptId = cleanText(entry?.attemptId);
+  return {
+    resultId: cleanText(entry?.resultId, stableWorldId('result', attemptId, entry?.resultSummary, fallbackSource.sourceKey, index)),
+    attemptId,
+    actorId: cleanText(entry?.actorId, cleanText(entry?.actor)),
+    status: ['success', 'partial', 'failure', 'delayed', 'blocked'].includes(entry?.status) ? entry.status : 'delayed',
+    resultSummary: cleanText(entry?.resultSummary, cleanText(entry?.consequence)),
+    actualCosts: cleanStringArray(entry?.actualCosts),
+    actualDuration: cleanText(entry?.actualDuration),
+    observableConsequence: cleanText(entry?.observableConsequence, cleanText(entry?.consequence)),
+    appliedStateChanges: cleanStringArray(entry?.appliedStateChanges),
+    revealPath: cleanText(entry?.revealPath),
+    sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
+    settledTurn: Math.max(0, Number(entry?.settledTurn) || Number(fallbackSource.turn) || 0),
+  };
+}
+
+export function normalizeWorldState(input = {}, options = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const base = emptyWorldState(options.chatId || source.chatId || '');
+  const legacy = Number(source.schemaVersion) !== WORLD_SCHEMA_VERSION;
+  const threads = legacy ? legacyWorldRecords(source) : (Array.isArray(source.threads) ? source.threads : []);
+  const fallbackSource = normalizeSourceRef({}, { chatId: options.chatId || source.chatId, at: source.updatedAt });
+  const world = {
+    ...base,
+    ...source,
+    schemaVersion: WORLD_SCHEMA_VERSION,
+    chatId: cleanText(options.chatId, cleanText(source.chatId)),
+    revision: Math.max(0, Number(source.revision) || 0),
+    commitId: cleanText(source.commitId),
+    observedThrough: { ...base.observedThrough, ...(source.observedThrough || {}) },
+    simulatedThrough: { ...base.simulatedThrough, ...(source.simulatedThrough || {}) },
+    summary: cleanText(source.summary),
+    threads: threads.slice(0, 160).map((entry, index) => normalizeThread(entry, index, fallbackSource)),
+    lanes: {
+      actors: (Array.isArray(source?.lanes?.actors) ? source.lanes.actors : []).slice(0, 120).map(normalizeActorLane),
+      factions: (Array.isArray(source?.lanes?.factions) ? source.lanes.factions : []).slice(0, 80).map(normalizeFactionLane),
+      environment: {
+        summary: cleanText(source?.lanes?.environment?.summary),
+        economy: cleanText(source?.lanes?.environment?.economy),
+        incidents: cleanStringArray(source?.lanes?.environment?.incidents, 40),
+        trends: cleanStringArray(source?.lanes?.environment?.trends, 40),
+        winds: cleanStringArray(source?.lanes?.environment?.winds, 40),
+      },
+    },
+    attempts: (Array.isArray(source.attempts) ? source.attempts : []).slice(-160).map((entry, index) => normalizeAttempt(entry, index, fallbackSource)),
+    adjudications: (Array.isArray(source.adjudications) ? source.adjudications : []).slice(-160).map((entry, index) => normalizeAdjudication(entry, index, fallbackSource)),
+    resolvedArchive: (Array.isArray(source.resolvedArchive) ? source.resolvedArchive : []).slice(-160).map((entry, index) => normalizeThread(entry, index, fallbackSource)),
+    tombstoneThroughTurn: Math.max(0, Number(source.tombstoneThroughTurn) || 0),
+    recall: {
+      pending: source?.recall?.pending && typeof source.recall.pending === 'object' ? deepClone(source.recall.pending) : null,
+      receipts: (Array.isArray(source?.recall?.receipts) ? source.recall.receipts : []).slice(-80).map((entry) => ({ ...entry })),
+    },
+    failures: (Array.isArray(source.failures) ? source.failures : []).slice(-40).map((entry) => ({ ...entry })),
+    checkpoint: source.checkpoint && typeof source.checkpoint === 'object' ? { ...base.checkpoint, ...deepClone(source.checkpoint) } : base.checkpoint,
+    persistence: source.persistence && typeof source.persistence === 'object' ? { ...base.persistence, ...source.persistence } : base.persistence,
+    migration: source.migration || (legacy ? { fromSchema: Number(source.schemaVersion) || 3, at: new Date().toISOString(), legacyItems: threads.length } : null),
+    updatedAt: cleanText(source.updatedAt, base.updatedAt),
+  };
+  for (const legacyKey of ['branches', 'npcIntents', 'agreements', 'hostilePlans']) delete world[legacyKey];
+  world.digest = cleanText(source.digest, worldDigest(world));
+  return world;
+}
+
+function mergeByStableId(previous, updates, normalizer, keyName = 'id') {
+  const result = new Map((previous || []).map((entry) => [entry[keyName], deepClone(entry)]));
+  for (let index = 0; index < (updates || []).length; index += 1) {
+    const normalized = normalizer(updates[index], index);
+    const prior = result.get(normalized[keyName]);
+    result.set(normalized[keyName], prior ? { ...prior, ...normalized } : normalized);
+  }
+  return [...result.values()];
+}
+
+export function parseWorldProposal(raw) {
+  const parsed = extractJsonObject(raw);
+  const legacy = ['branches', 'npcIntents', 'agreements', 'hostilePlans'].some((key) => Array.isArray(parsed?.[key]));
+  const threads = legacy ? legacyWorldRecords(parsed) : (Array.isArray(parsed.threads) ? parsed.threads : []);
+  return {
+    summary: cleanText(parsed.summary),
+    threads,
+    actorActions: Array.isArray(parsed.actorActions) ? parsed.actorActions : (Array.isArray(parsed.attempts) ? parsed.attempts : []),
+    adjudications: Array.isArray(parsed.adjudications) ? parsed.adjudications : [],
+    factions: Array.isArray(parsed.factions) ? parsed.factions : (Array.isArray(parsed?.lanes?.factions) ? parsed.lanes.factions : []),
+    environment: parsed.environment && typeof parsed.environment === 'object' ? parsed.environment : (parsed?.lanes?.environment || {}),
+    resolvedThreadIds: cleanStringArray(parsed.resolvedThreadIds),
+  };
+}
+
+export function validateWorldProposal(proposal = {}) {
+  const errors = [];
+  if (cleanText(proposal.summary).length < 6) errors.push('summary需要用完整句说明本轮世界总体变化');
+  const threads = Array.isArray(proposal.threads) ? proposal.threads : [];
+  const actions = Array.isArray(proposal.actorActions) ? proposal.actorActions : [];
+  const adjudications = Array.isArray(proposal.adjudications) ? proposal.adjudications : [];
+  const factions = Array.isArray(proposal.factions) ? proposal.factions : [];
+  const environment = proposal.environment && typeof proposal.environment === 'object' ? proposal.environment : {};
+  const environmentHasContent = [environment.summary, environment.economy, ...(environment.incidents || []), ...(environment.trends || []), ...(environment.winds || [])].some((item) => cleanText(item));
+  if (!threads.length && !actions.length && !adjudications.length && !factions.length && !environmentHasContent && !(proposal.resolvedThreadIds || []).length) {
+    errors.push('本轮没有任何连续性、人物、阵营、环境或解决历史变化');
+  }
+  threads.forEach((entry, index) => {
+    if (!cleanText(entry?.title)) errors.push(`threads[${index}]缺少title`);
+    if (![entry?.summary, entry?.offscreenBeat, entry?.nextBeat, entry?.stakes, entry?.intent, entry?.consequence].some((item) => cleanText(item))) {
+      errors.push(`threads[${index}]没有可用的进展、下一步或代价`);
+    }
+  });
+  actions.forEach((entry, index) => {
+    if (!cleanText(entry?.actorId || entry?.actor || entry?.actorName)) errors.push(`actorActions[${index}]缺少人物标识`);
+    if (!cleanText(entry?.threadId)) errors.push(`actorActions[${index}]缺少threadId`);
+    if (!cleanText(entry?.action || entry?.intent)) errors.push(`actorActions[${index}]缺少具体行动尝试`);
+  });
+  adjudications.forEach((entry, index) => {
+    if (!cleanText(entry?.threadId) && !cleanText(entry?.attemptId)) errors.push(`adjudications[${index}]缺少threadId或attemptId`);
+    if (!cleanText(entry?.resultSummary || entry?.observableConsequence || entry?.consequence)) errors.push(`adjudications[${index}]缺少裁决结果`);
+  });
+  return { ok: errors.length === 0, errors };
+}
+
+function profileIdentityMap(profiles = []) {
+  const map = new Map();
+  for (const profile of Array.isArray(profiles) ? profiles : Object.values(profiles || {})) {
+    const id = cleanText(profile?.profileId);
+    const name = cleanText(profile?.name);
+    if (id) map.set(id.toLocaleLowerCase(), profile);
+    if (name) map.set(name.toLocaleLowerCase(), profile);
+    for (const alias of cleanStringArray(profile?.aliases)) map.set(alias.toLocaleLowerCase(), profile);
+  }
+  return map;
+}
+
+export function applyWorldProposal(previousInput, proposalInput, options = {}) {
+  const previous = normalizeWorldState(previousInput, { chatId: options.chatId });
+  const proposal = proposalInput && typeof proposalInput === 'object' ? proposalInput : {};
+  const now = cleanText(options.at, new Date().toISOString());
+  const turn = Math.max(Number(previous.observedThrough?.turn) + 1, Number(options.turn) || 0);
+  const sourceRef = normalizeSourceRef(options.sourceRef, { chatId: options.chatId || previous.chatId, turn, at: now });
+  const normalizedUpdates = (proposal.threads || []).map((entry, index) => normalizeThread(entry, index, sourceRef));
+  const resolvedIds = new Set(cleanStringArray(proposal.resolvedThreadIds));
+  for (const thread of normalizedUpdates) if (thread.stage === 'resolved') resolvedIds.add(thread.id);
+  const mergedThreads = mergeByStableId(previous.threads, normalizedUpdates, (entry, index) => normalizeThread(entry, index, sourceRef));
+  const activeThreads = [];
+  const archive = new Map((previous.resolvedArchive || []).map((entry) => [entry.id, entry]));
+  for (const thread of mergedThreads) {
+    if (resolvedIds.has(thread.id) || thread.stage === 'resolved') archive.set(thread.id, { ...thread, stage: 'resolved', updatedAt: now });
+    else activeThreads.push(thread);
+  }
+
+  const identities = profileIdentityMap(options.profiles);
+  const newAttempts = [];
+  const newResults = [];
+  const actorLaneUpdates = [];
+  for (let index = 0; index < (proposal.actorActions || []).length; index += 1) {
+    const raw = proposal.actorActions[index] || {};
+    const identity = identities.get(cleanText(raw.actorId || raw.actor || raw.actorName).toLocaleLowerCase());
+    const actorId = cleanText(identity?.profileId, cleanText(raw.actorId, cleanText(raw.actor)));
+    const attempt = normalizeAttempt({ ...raw, actorId, actorName: identity?.name || raw.actorName || raw.actor }, index, sourceRef);
+    if (!identity) {
+      actorLaneUpdates.push(normalizeActorLane({ actorId: attempt.actorId || `unready-${index + 1}`, name: attempt.actorName, goal: raw.goal || raw.intent, status: 'blocked_unready', sourceThreadIds: [attempt.threadId] }, index));
+      continue;
+    }
+    attempt.status = 'pending_world';
+    newAttempts.push(attempt);
+    const rawResult = (proposal.adjudications || []).find((item) => cleanText(item?.attemptId) === attempt.attemptId || (cleanText(item?.actorId || item?.actor) === cleanText(raw.actorId || raw.actor) && cleanText(item?.threadId) === attempt.threadId));
+    if (rawResult) {
+      const result = normalizeAdjudication({ ...rawResult, attemptId: attempt.attemptId, actorId }, index, sourceRef);
+      if (result.resultSummary || result.observableConsequence) {
+        newResults.push(result);
+        attempt.status = 'settled';
+      }
+    }
+    actorLaneUpdates.push(normalizeActorLane({ actorId, name: identity.name, goal: raw.goal || identity?.currentState?.goal, planSteps: raw.planSteps, nextActionTurn: Number(raw.nextActionTurn) || turn + 1, lastActionTurn: turn, silenceTurns: 0, status: 'ready', lastAction: attempt.action, sourceThreadIds: [attempt.threadId] }, index));
+  }
+
+  const actors = mergeByStableId(previous.lanes.actors, actorLaneUpdates, normalizeActorLane, 'actorId').slice(-120);
+  const acted = new Set(actorLaneUpdates.map((entry) => entry.actorId));
+  for (const lane of actors) if (!acted.has(lane.actorId)) lane.silenceTurns = Math.max(0, Number(lane.silenceTurns) || 0) + 1;
+  const factions = mergeByStableId(previous.lanes.factions, proposal.factions || [], normalizeFactionLane).slice(-80);
+  const environment = {
+    summary: cleanText(proposal?.environment?.summary, previous.lanes.environment.summary),
+    economy: cleanText(proposal?.environment?.economy, previous.lanes.environment.economy),
+    incidents: cleanStringArray([...(previous.lanes.environment.incidents || []), ...(proposal?.environment?.incidents || [])], 40),
+    trends: cleanStringArray([...(previous.lanes.environment.trends || []), ...(proposal?.environment?.trends || [])], 40),
+    winds: cleanStringArray([...(previous.lanes.environment.winds || []), ...(proposal?.environment?.winds || [])], 40),
+  };
+  const revision = previous.revision + 1;
+  const commitId = stableWorldId('commit', previous.chatId, revision, sourceRef.sourceKey, now);
+  const candidate = normalizeWorldState({
+    ...previous,
+    revision,
+    commitId,
+    observedThrough: { turn, sourceKey: sourceRef.sourceKey, at: now },
+    simulatedThrough: { turn, sourceKey: sourceRef.sourceKey, at: now },
+    summary: cleanText(proposal.summary, previous.summary || '世界连续性已推进。'),
+    threads: activeThreads,
+    lanes: { actors, factions, environment },
+    attempts: [...previous.attempts, ...newAttempts].slice(-160),
+    adjudications: [...previous.adjudications, ...newResults].slice(-160),
+    resolvedArchive: [...archive.values()].slice(-160),
+    tombstoneThroughTurn: resolvedIds.size ? turn : previous.tombstoneThroughTurn,
+    checkpoint: { state: 'world_committed', candidate: null, candidateDigest: '', preparedAt: '', committedAt: now },
+    persistence: { status: 'unverified', revision, commitId, digest: '', readbackAt: '', error: '' },
+    updatedAt: now,
+  }, { chatId: options.chatId || previous.chatId });
+  candidate.digest = worldDigest(candidate);
+  candidate.persistence.digest = candidate.digest;
+  return candidate;
+}
+
+export function prepareWorldTransaction(previousInput, candidateInput, at = new Date().toISOString()) {
+  const previous = normalizeWorldState(previousInput, { chatId: previousInput?.chatId });
+  const candidate = normalizeWorldState(candidateInput, { chatId: previous.chatId });
+  if (candidate.revision !== previous.revision + 1) throw new Error(`世界候选版本不连续：当前${previous.revision}，候选${candidate.revision}`);
+  const prepared = deepClone(previous);
+  prepared.checkpoint = { state: 'world_candidate_prepared', candidate, candidateDigest: candidate.digest, preparedAt: at, committedAt: '' };
+  prepared.persistence = { ...prepared.persistence, status: 'prepared', error: '' };
+  prepared.updatedAt = at;
+  return prepared;
+}
+
+export function recoverPreparedWorldState(input, at = new Date().toISOString()) {
+  const prepared = normalizeWorldState(input, { chatId: input?.chatId });
+  if (prepared.checkpoint?.state !== 'world_candidate_prepared' || !prepared.checkpoint?.candidate) return { recovered: false, world: prepared };
+  const candidate = normalizeWorldState(prepared.checkpoint.candidate, { chatId: prepared.chatId });
+  if (candidate.digest !== prepared.checkpoint.candidateDigest || candidate.revision !== prepared.revision + 1) {
+    prepared.checkpoint = { state: 'world_committed', candidate: null, candidateDigest: '', preparedAt: '', committedAt: '' };
+    prepared.persistence = { ...prepared.persistence, status: 'error', error: '待提交世界候选校验失败，已保留旧权威状态' };
+    return { recovered: false, world: prepared, error: prepared.persistence.error };
+  }
+  candidate.checkpoint = { state: 'world_committed', candidate: null, candidateDigest: '', preparedAt: prepared.checkpoint.preparedAt, committedAt: at };
+  candidate.persistence = { status: 'unverified', revision: candidate.revision, commitId: candidate.commitId, digest: candidate.digest, readbackAt: '', error: '' };
+  candidate.updatedAt = at;
+  return { recovered: true, world: candidate };
+}
+
+export function markWorldReadback(input, at = new Date().toISOString()) {
+  const world = normalizeWorldState(input, { chatId: input?.chatId });
+  world.persistence = { status: 'verified', revision: world.revision, commitId: world.commitId, digest: world.digest, readbackAt: at, error: '' };
+  return world;
+}
+
+export function verifyWorldReadback(readbackInput, candidateInput) {
+  const readback = normalizeWorldState(readbackInput, { chatId: candidateInput?.chatId });
+  const candidate = normalizeWorldState(candidateInput, { chatId: candidateInput?.chatId });
+  return readback.revision === candidate.revision && readback.commitId === candidate.commitId && readback.digest === candidate.digest && readback.checkpoint?.state === 'world_committed';
+}
+
+export function activeWorldCount(worldInput) {
+  const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
+  const environment = world.lanes.environment;
+  const environmentActive = environment.summary || environment.economy || environment.incidents.length || environment.trends.length || environment.winds.length ? 1 : 0;
+  return world.threads.length
+    + world.lanes.actors.filter((entry) => entry.status !== 'inactive').length
+    + world.lanes.factions.filter((entry) => entry.status !== 'resolved' && entry.status !== 'inactive').length
+    + world.attempts.filter((entry) => entry.status === 'pending_world').length
+    + environmentActive;
+}
+
+export function recoverLatestLegacyWorld(currentInput, fullRuns = [], options = {}) {
+  let world = normalizeWorldState(currentInput, { chatId: options.chatId });
+  let best = null;
+  for (const run of Array.isArray(fullRuns) ? fullRuns : []) {
+    if (options.chatId && cleanText(run?.chatId) !== cleanText(options.chatId)) continue;
+    const candidates = [run?.outcome?.world?.world, ...(Array.isArray(run?.trace) ? run.trace.filter((item) => item?.stage === 'world:committed').map((item) => item.world) : [])];
+    for (const candidate of candidates) {
+      if (!candidate || Number(candidate.schemaVersion) === WORLD_SCHEMA_VERSION) continue;
+      const time = Date.parse(candidate.updatedAt || run.finishedAt || 0) || 0;
+      if (!best || time > best.time) best = { candidate, time, runId: run.runId || '' };
+    }
+  }
+  if (!best) return { changed: false, world };
+  const recoveredThreads = legacyWorldRecords(best.candidate);
+  const merged = mergeByStableId(world.threads, recoveredThreads, (entry, index) => normalizeThread(entry, index, { chatId: options.chatId }));
+  if (merged.length <= world.threads.length) return { changed: false, world };
+  const recoveredItems = merged.length - world.threads.length;
+  world.threads = merged;
+  world.summary = cleanText(best.candidate.summary, world.summary);
+  world.migration = { ...(world.migration || {}), recoveredFromRunId: best.runId, recoveredItems, at: new Date().toISOString() };
+  world.digest = worldDigest(world);
+  return { changed: true, world };
+}
+
+export function worldConsistencyReport(worldInput, fullRuns = [], options = {}) {
+  const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
+  let latest = null;
+  for (const run of Array.isArray(fullRuns) ? fullRuns : []) {
+    if (options.chatId && cleanText(run?.chatId) !== cleanText(options.chatId)) continue;
+    const records = [run?.outcome?.world?.world, ...(Array.isArray(run?.trace) ? run.trace.filter((entry) => entry?.stage === 'world:committed').map((entry) => entry.world) : [])];
+    for (const candidate of records) {
+      if (!candidate) continue;
+      const at = Date.parse(candidate.updatedAt || run.finishedAt || 0) || 0;
+      if (!latest || at > latest.at) latest = { candidate, at, runId: run.runId || '' };
+    }
+  }
+  if (!latest) return { ok: true, status: 'no_report', detail: '当前聊天还没有可比较的世界提交报告。' };
+  if (Number(latest.candidate.schemaVersion) === WORLD_SCHEMA_VERSION) {
+    const candidate = normalizeWorldState(latest.candidate, { chatId: world.chatId });
+    const ok = candidate.revision < world.revision || (candidate.revision === world.revision && candidate.digest === world.digest && candidate.commitId === world.commitId);
+    return ok
+      ? { ok: true, status: 'matched', detail: `权威状态与最近报告 ${latest.runId || '未命名运行'} 一致。` }
+      : { ok: false, status: 'split_brain', detail: `最近报告是修订${candidate.revision}/${candidate.digest}，权威存档是修订${world.revision}/${world.digest}` };
+  }
+  const reportIds = new Set(legacyWorldRecords(latest.candidate).map((entry) => entry.id));
+  const worldIds = new Set(world.threads.map((entry) => entry.id));
+  const missing = [...reportIds].filter((id) => !worldIds.has(id));
+  return missing.length
+    ? { ok: false, status: 'legacy_report_ahead', detail: `旧完整报告仍有 ${missing.length} 条世界项未进入权威存档。` }
+    : { ok: true, status: 'legacy_covered', detail: '旧完整报告中的世界项已被当前统一状态覆盖。' };
+}
+
+// Compatibility wrapper for older callers and reports. New runtime uses parseWorldProposal + applyWorldProposal.
+export function parseWorldState(raw, previous = {}) {
+  return applyWorldProposal(previous, parseWorldProposal(raw), { chatId: previous?.chatId });
 }
 
 function tokens(text) {
@@ -728,6 +1216,27 @@ function tokens(text) {
 }
 
 export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
+  if (Number(world?.schemaVersion) === WORLD_SCHEMA_VERSION || Array.isArray(world?.threads)) {
+    const normalized = normalizeWorldState(world, { chatId: world?.chatId });
+    const needle = new Set(tokens(userInput));
+    for (const profile of Object.values(profiles || {})) {
+      if (String(userInput || '').includes(profile?.name || '\0')) for (const token of normalizedNames(profile)) needle.add(token);
+    }
+    const resultsByAttempt = new Map(normalized.adjudications.map((entry) => [entry.attemptId, entry]));
+    const records = [
+      ...normalized.threads.map((entry) => ({ ...entry, recordType: 'thread' })),
+      ...normalized.attempts.slice(-40).map((entry) => ({ ...entry, recordType: 'attempt', adjudication: resultsByAttempt.get(entry.attemptId) || null })),
+    ].map((entry) => {
+      const haystack = tokens(JSON.stringify(entry));
+      let score = Number(entry.urgency) || (entry.recordType === 'attempt' ? 3 : 2);
+      for (const token of haystack) {
+        if (needle.has(token)) score += 5;
+        else if ([...needle].some((part) => token.includes(part) || part.includes(token))) score += 2;
+      }
+      return { ...entry, score };
+    }).sort((a, b) => b.score - a.score || String(b.updatedAt || b.sourceRef?.at || '').localeCompare(String(a.updatedAt || a.sourceRef?.at || '')));
+    return records.slice(0, Math.max(1, Math.min(16, Number(limit) || 8)));
+  }
   const needle = new Set(tokens(userInput));
   for (const profile of Object.values(profiles || {})) {
     if (String(userInput || '').includes(profile?.name || '\0')) {
@@ -750,13 +1259,38 @@ export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
   return records.slice(0, Math.max(1, Math.min(16, Number(limit) || 8)));
 }
 
+export function prepareRecallPackage(worldInput, userInput, profiles = {}, limit = 8, options = {}) {
+  const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
+  const items = selectWorldRecall(world, userInput, profiles, limit).map(({ score, ...entry }) => entry);
+  const packageId = stableWorldId('recall', world.chatId, world.revision, options.sourceKey, userInput, options.at || new Date().toISOString());
+  return { packageId, worldRevision: world.revision, worldCommitId: world.commitId, items, preparedAt: options.at || new Date().toISOString(), sourceKey: cleanText(options.sourceKey) };
+}
+
+export function reserveRecallPackage(worldInput, recallPackage) {
+  const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
+  world.recall.pending = { ...deepClone(recallPackage), itemsDigest: stableWorldId('items', JSON.stringify(recallPackage?.items || [])) };
+  return world;
+}
+
+export function settleRecallPackage(worldInput, packageId, status, options = {}) {
+  const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
+  const pending = world.recall.pending;
+  if (!pending || pending.packageId !== packageId) return { changed: false, world };
+  world.recall.receipts.push({ packageId, status: ['consumed', 'released'].includes(status) ? status : 'released', sourceKey: cleanText(options.sourceKey), messageId: Number.isInteger(Number(options.messageId)) ? Number(options.messageId) : null, at: options.at || new Date().toISOString() });
+  world.recall.receipts = world.recall.receipts.slice(-80);
+  world.recall.pending = null;
+  world.digest = worldDigest(world);
+  return { changed: true, world };
+}
+
 export function formatGenerationInjection({ tickets, recall, profileDigest = [] }) {
   return [
     '<MVUDoctorRuntime>',
     'characterCreationTicket（按首次出现顺序使用；有权威设定或已有档案者跳过）：',
     JSON.stringify(tickets || []),
-    'worldRecallPackage（仅相关连续性素材；NPC intent是尝试，不是既成结果）：',
+    'worldRecallPackage（仅供本次生成消费一次；人物尝试与世界裁决已分开记录，不得把尝试冒充成功）：',
     JSON.stringify(recall || []),
+    '召回包只提供相关事实、镜头外变化和行动倾向；不得覆盖玩家当前指令、角色卡、世界书、已接受事实或MVU当前状态。',
     '已有人物档案摘要（不得重复随机）：',
     JSON.stringify(profileDigest || []),
     '</MVUDoctorRuntime>',

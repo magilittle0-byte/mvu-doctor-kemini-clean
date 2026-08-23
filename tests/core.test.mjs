@@ -13,7 +13,8 @@ import {
   normalizeProfileCandidates,
   parseProfileReceipt,
   parseUpdateVariableBlock,
-  parseWorldState,
+  applyWorldProposal,
+  parseWorldProposal,
   prepareProfileBatch,
   profileCompletionContract,
   profileNarrativeText,
@@ -290,19 +291,20 @@ test('多新人即使模型返回顺序颠倒，也按最终正文首次出现�
 });
 
 test('世界引擎JSON归一化且召回当前相关人物', () => {
-  const world = parseWorldState(`\`\`\`json
+  const proposal = parseWorldProposal(`\`\`\`json
   {"summary":"南街出现药材短缺。","branches":[{"id":"b1","title":"药材短缺","actor":"林澄","location":"南街","keywords":["药房"],"status":"active","intent":"调查货源"},{"id":"b2","title":"北港修船","actor":"赵石","location":"北港","status":"waiting"}],"npcIntents":[],"agreements":[],"hostilePlans":[]}
   \`\`\``);
+  const world = applyWorldProposal({}, proposal, { chatId: 'chat-world', turn: 1 });
   const recalled = selectWorldRecall(world, '我去南街药房找林澄', {}, 1);
   assert.equal(recalled.length, 1);
   assert.equal(recalled[0].id, 'b1');
-  assert.equal(recalled[0].status, 'active');
+  assert.equal(recalled[0].stage, 'advancing');
 });
 
 test('世界引擎可修复裸键、单引号、缺逗号和尾逗号', () => {
-  const world = parseWorldState("{summary:'继续推进', branches:[{id:'b1', title:'线索'}] npcIntents:[], agreements:[], hostilePlans:[],}");
-  assert.equal(world.summary, '继续推进');
-  assert.equal(world.branches[0].id, 'b1');
+  const proposal = parseWorldProposal("{summary:'继续推进', branches:[{id:'b1', title:'线索'}] npcIntents:[], agreements:[], hostilePlans:[],}");
+  assert.equal(proposal.summary, '继续推进');
+  assert.equal(proposal.threads[0].id, 'b1');
 });
 
 test('完整报告只移除API字段和实际凭据，保留正文与变量', () => {
