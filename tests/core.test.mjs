@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildProfilePatch,
+  buildVariableAuditChecklist,
+  capturePathSnapshot,
   chatCompletionText,
   diagnosticAdvice,
   generateTicketBatch,
@@ -19,12 +21,17 @@ import {
   profileCompletionContract,
   profileNarrativeText,
   redactDiagnostic,
+  restorePathSnapshot,
+  restoreTouchedData,
   removeApiFromExport,
   selectWorldRecall,
   statDataOf,
   validatePatchOperations,
+  validateVariableAuditReceipt,
   verifyCommittedProfiles,
   verifyPatchOperations,
+  verifyPatchApplication,
+  verifyPathSnapshot,
 } from '../core.mjs';
 
 function completeProfile(ticket) {
@@ -99,6 +106,30 @@ test('变量医生解析无限回廊UpdateVariable并把原更新与纠错合并
   assert.equal((merged.message.match(/<UpdateVariable/g) || []).length, 1);
 });
 
+test('空补丁必须带本轮逐项审计回执，不能把模型的一句nochange当成功', () => {
+  const currentData = { stat_data: { 背包: { 武器: '短剑' }, 关系: { 林澄: { 好感: 0, 恐惧: 3 } } } };
+  const checklist = buildVariableAuditChecklist({ narrative: '她因胁迫而恐惧，并把短剑交给守卫。', currentData });
+  const missing = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>');
+  assert.equal(validateVariableAuditReceipt(missing, { auditId: 'a-1', checklist, currentData }).ok, false);
+  const checks = checklist.map((item) => ({
+    category: item.id,
+    status: item.risk && item.paths.length ? 'consistent' : 'not_applicable',
+    evidence: item.risk ? '已逐项对照正文事件与当前状态' : '本轮正文没有该类已裁决变化',
+    narrativeQuote: item.risk && item.id !== 'opening_and_initialization' ? '她因' : '',
+    statePaths: item.risk && item.paths.length ? [item.paths[0]] : [],
+    stateObservations: item.risk && item.paths.length ? [{
+      path: item.paths[0],
+      value: item.paths[0].split('/').slice(1).reduce((value, key) => value?.[key], currentData.stat_data),
+    }] : [],
+  }));
+  const raw = `<UpdateVariable><AuditReceipt>${JSON.stringify({ auditId: 'a-1', verdict: 'nochange', checks })}</AuditReceipt><JSONPatch>[]</JSONPatch></UpdateVariable>`;
+  const parsed = parseUpdateVariableBlock(raw);
+  assert.equal(validateVariableAuditReceipt(parsed, { auditId: 'a-1', checklist, currentData, narrative: '她因胁迫而恐惧，并把短剑交给守卫。' }).ok, true);
+  checks.find((item) => item.category === 'inventory_and_transfer').statePaths = ['/背包/不存在'];
+  const invalidPath = parseUpdateVariableBlock(`<UpdateVariable><AuditReceipt>${JSON.stringify({ auditId: 'a-1', verdict: 'nochange', checks })}</AuditReceipt><JSONPatch>[]</JSONPatch></UpdateVariable>`);
+  assert.equal(validateVariableAuditReceipt(invalidPath, { auditId: 'a-1', checklist, currentData, narrative: '她因胁迫而恐惧，并把短剑交给守卫。' }).ok, false);
+});
+
 test('变量纠错在交给MVU前拒绝不存在路径与复杂节点整块覆盖', () => {
   const state = { stat_data: { 契约者: { 经济: { UP: 10 }, 背包: {} } } };
   const valid = validatePatchOperations(state, [{ op: 'delta', path: '/契约者/经济/UP', value: 5 }]);
@@ -109,6 +140,26 @@ test('变量纠错在交给MVU前拒绝不存在路径与复杂节点整块覆�
   assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/经济', value: {} }]).ok, false);
   const move = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"move","from":"/契约者/经济/UP","to":"/契约者/经济/余额"}]</JSONPatch></UpdateVariable>');
   assert.equal(move.ok, true);
+});
+
+test('变量补丁必须拒绝目标外旁路变化，回滚只恢复本事务触碰路径', () => {
+  const state = { stat_data: { 玩家: { 生命: 10, 金钱: 5 }, 世界时钟: 7 } };
+  const validation = validatePatchOperations(state, [{ op: 'delta', path: '/玩家/生命', value: -2 }]);
+  assert.equal(validation.ok, true);
+  const contaminated = structuredClone(validation.expected);
+  contaminated.世界时钟 = 99;
+  const application = verifyPatchApplication({ stat_data: contaminated }, validation);
+  assert.equal(application.ok, false);
+  assert.match(application.errors.join('；'), /补丁外路径/);
+  const liveAfterOtherWork = { stat_data: { 玩家: { 生命: 8, 金钱: 12 }, 世界时钟: 8 } };
+  const restored = restoreTouchedData(liveAfterOtherWork, state, validation.rollbackPaths);
+  assert.equal(restored.ok, true);
+  assert.equal(restored.data.stat_data.玩家.生命, 10);
+  assert.equal(restored.data.stat_data.玩家.金钱, 12);
+  assert.equal(restored.data.stat_data.世界时钟, 8);
+  const snapshot = capturePathSnapshot(state, validation.rollbackPaths);
+  const restoredAgain = restorePathSnapshot(liveAfterOtherWork, snapshot);
+  assert.equal(verifyPathSnapshot(restoredAgain.data, snapshot), true);
 });
 
 test('当前角色卡存在Schema时拒绝Schema外insert，不把数据对象存在误判为可写', () => {

@@ -243,6 +243,15 @@ function parseJsonWithLocalRepair(text) {
 }
 
 const PATCH_OPERATIONS = new Set(['replace', 'delta', 'insert', 'remove', 'move']);
+export const VARIABLE_AUDIT_CATEGORIES = Object.freeze([
+  'opening_and_initialization',
+  'numeric_and_derived',
+  'inventory_and_transfer',
+  'dynamic_collections',
+  'relationship_and_mental_causality',
+  'time_location_and_cost',
+  'player_agency',
+]);
 
 export function parseUpdateVariableBlock(message) {
   const source = String(message || '');
@@ -272,8 +281,19 @@ export function parseUpdateVariableBlock(message) {
     }
     operations.push(operation);
   }
-  const block = `<UpdateVariable>\n<Analysis>变量医生仅提交经MVU解析验证的纠错补丁。</Analysis>\n<JSONPatch>\n${JSON.stringify(operations, null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
-  return { ok: true, operations, block, rawBlock };
+  const receiptText = rawBlock.match(/<AuditReceipt\b[^>]*>([\s\S]*?)<\/AuditReceipt\s*>/i)?.[1];
+  let receipt = null;
+  if (receiptText != null) {
+    try { receipt = parseJsonWithLocalRepair(receiptText); }
+    catch (error) { return { ok: false, error: `AuditReceipt无法解析：${error.message || error}`, operations: [] }; }
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return { ok: false, error: 'AuditReceipt必须是JSON对象', operations: [] };
+  }
+  const block = buildUpdateVariableBlock(operations, '变量医生仅提交经MVU解析验证的纠错补丁。');
+  return { ok: true, operations, block, rawBlock, receipt };
+}
+
+export function buildUpdateVariableBlock(operations, analysis = '变量更新。') {
+  return `<UpdateVariable>\n<Analysis>${String(analysis || '变量更新。').replace(/[<>]/g, '')}</Analysis>\n<JSONPatch>\n${JSON.stringify(Array.isArray(operations) ? operations : [], null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
 }
 
 function pointerParts(path) {
@@ -302,6 +322,170 @@ function pointerParent(root, path) {
     parent = parent[part];
   }
   return parent && typeof parent === 'object' ? { parent, key } : null;
+}
+
+function pointerPath(parts) {
+  return `/${(parts || []).map((part) => String(part).replace(/~/g, '~0').replace(/\//g, '~1')).join('/')}`;
+}
+
+function parentPointer(path) {
+  const parts = pointerParts(path);
+  return parts?.length > 1 ? pointerPath(parts.slice(0, -1)) : '/';
+}
+
+function setPointerValue(root, path, found, value) {
+  const parts = pointerParts(path);
+  if (!parts) return false;
+  if (!parts.length) return false;
+  const key = parts.pop();
+  let parent = root;
+  for (const part of parts) {
+    if (!parent || typeof parent !== 'object' || !Object.prototype.hasOwnProperty.call(parent, part)) return false;
+    parent = parent[part];
+  }
+  if (!parent || typeof parent !== 'object') return false;
+  if (!found) {
+    if (Array.isArray(parent)) {
+      const index = Number(key);
+      if (!Number.isInteger(index) || index < 0 || index >= parent.length) return true;
+      parent.splice(index, 1);
+    } else delete parent[key];
+    return true;
+  }
+  if (Array.isArray(parent)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || index > parent.length) return false;
+    if (index === parent.length) parent.push(deepClone(value));
+    else parent[index] = deepClone(value);
+  } else parent[key] = deepClone(value);
+  return true;
+}
+
+function jsonEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function pathOverlaps(left, right) {
+  if (left === '/' || right === '/') return true;
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function leafChanges(before, after, base = '', output = [], limit = 240) {
+  if (output.length >= limit || jsonEqual(before, after)) return output;
+  const beforeObject = before && typeof before === 'object';
+  const afterObject = after && typeof after === 'object';
+  if (!beforeObject || !afterObject || Array.isArray(before) || Array.isArray(after)) {
+    output.push({ path: base || '/', before: deepClone(before), after: deepClone(after) });
+    return output;
+  }
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (output.length >= limit) break;
+    const path = `${base}/${String(key).replace(/~/g, '~0').replace(/\//g, '~1')}`;
+    if (!Object.prototype.hasOwnProperty.call(before, key)) output.push({ path, beforeMissing: true, after: deepClone(after[key]) });
+    else if (!Object.prototype.hasOwnProperty.call(after, key)) output.push({ path, before: deepClone(before[key]), afterMissing: true });
+    else leafChanges(before[key], after[key], path, output, limit);
+  }
+  return output;
+}
+
+export function diffStatData(previousData, currentData, limit = 240) {
+  return leafChanges(statDataOf(previousData), statDataOf(currentData), '', [], Math.max(1, Number(limit) || 240));
+}
+
+function matchingStatePaths(data, pattern, limit = 12) {
+  const paths = [];
+  const walk = (value, base = '') => {
+    if (paths.length >= limit || !value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      const path = `${base}/${String(key).replace(/~/g, '~0').replace(/\//g, '~1')}`;
+      if (pattern.test(String(key))) paths.push(path);
+      if (child && typeof child === 'object') walk(child, path);
+      if (paths.length >= limit) break;
+    }
+  };
+  walk(statDataOf(data));
+  return [...new Set(paths)];
+}
+
+export function buildVariableAuditChecklist({ narrative = '', previousData = null, currentData = null, originalOperations = [] } = {}) {
+  const text = String(narrative || '');
+  const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
+  const rules = {
+    opening_and_initialization: {
+      risk: !hasPrevious,
+      reason: !hasPrevious ? '这是首个可用状态，必须核对初始化、基础值与派生值闭包' : '核对初始化字段是否被后续正文合法改变',
+      paths: matchingStatePaths(currentData, /初始|基础|属性|能力|等级|生命|法力|体力|力量|敏捷|智力|精神|魅力|幸运/u),
+    },
+    numeric_and_derived: {
+      risk: /\d|增加|减少|提升|下降|获得|消耗|恢复|损失|结算/u.test(text) || originalOperations.some((item) => item?.op === 'delta' || typeof item?.value === 'number'),
+      reason: '核对数值变化及由其决定的派生值，禁止只改来源不改结果或反向重复delta',
+      paths: matchingStatePaths(currentData, /数值|属性|生命|法力|体力|经验|等级|点数|上限|当前|余额|金钱|货币|UP|积分|负重/u),
+    },
+    inventory_and_transfer: {
+      risk: /获得|拿到|捡起|拾取|购买|装备|卸下|丢弃|扔下|放下|交给|递给|归还|失去|消耗|背包|物品|武器|护甲/u.test(text),
+      reason: '核对物品所有权、装备槽、数量、负重和交易双方，动作描述不能代替实际转移',
+      paths: matchingStatePaths(currentData, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
+    },
+    dynamic_collections: {
+      risk: /加入|离开|创建|解散|接受任务|完成任务|契约|队伍|成员|技能|状态|效果|事件|记录/u.test(text),
+      reason: '核对动态对象的新增、删除、成员关系和状态生命周期',
+      paths: matchingStatePaths(currentData, /任务|事件|队伍|成员|契约|技能|状态|效果|记录|列表/u),
+    },
+    relationship_and_mental_causality: {
+      risk: /好感|信任|亲密|关系|恐惧|敬畏|畏惧|盲信|崇拜|操纵|洗脑|控制|胁迫|威慑|催眠/u.test(text),
+      reason: '区分自愿关系变化、恐惧敬畏、强制操纵与暂时情绪；不得把控制结果伪装成好感提升',
+      paths: matchingStatePaths(currentData, /关系|好感|信任|亲密|恐惧|敬畏|服从|控制|精神|情绪|态度|印象/u),
+    },
+    time_location_and_cost: {
+      risk: /前往|抵达|离开|过去了|小时|分钟|天|夜|清晨|中午|傍晚|花费|支付|代价|受伤/u.test(text),
+      reason: '核对地点、时间、成本、伤势与已裁决后果，计划和尝试不能提前结算',
+      paths: matchingStatePaths(currentData, /时间|日期|地点|位置|场景|伤势|健康|状态|消耗|代价/u),
+    },
+    player_agency: {
+      risk: false,
+      reason: '确认补丁只记录玩家明确行动与已接受裁决，不替玩家补写同意、感受、动机或选择',
+      paths: [],
+    },
+  };
+  return VARIABLE_AUDIT_CATEGORIES.map((id) => ({ id, ...rules[id] }));
+}
+
+export function validateVariableAuditReceipt(parsed, { auditId = '', checklist = [], currentData = null, narrative = '' } = {}) {
+  if (!parsed?.ok) return { ok: false, error: parsed?.error || '变量输出不可用' };
+  const receipt = parsed.receipt;
+  if (!receipt) return { ok: false, error: '缺少AuditReceipt，不能证明变量审计实际覆盖了必查项' };
+  if (String(receipt.auditId || '') !== String(auditId || '')) return { ok: false, error: 'AuditReceipt没有回显本轮审计编号' };
+  const verdict = String(receipt.verdict || '').toLowerCase();
+  const expectedVerdict = parsed.operations.length ? 'repair' : 'nochange';
+  if (verdict !== expectedVerdict) return { ok: false, error: `AuditReceipt结论与补丁不一致：应为${expectedVerdict}` };
+  if (!Array.isArray(receipt.checks)) return { ok: false, error: 'AuditReceipt.checks必须是数组' };
+  const byCategory = new Map(receipt.checks.map((item) => [String(item?.category || ''), item]));
+  for (const item of checklist) {
+    const claim = byCategory.get(item.id);
+    if (!claim) return { ok: false, error: `AuditReceipt漏检：${item.id}` };
+    const status = String(claim.status || '').toLowerCase();
+    if (!['consistent', 'repair_required', 'not_applicable'].includes(status)) return { ok: false, error: `AuditReceipt状态无效：${item.id}` };
+    if (String(claim.evidence || '').trim().length < 4) return { ok: false, error: `AuditReceipt缺少可读证据：${item.id}` };
+    const statePaths = Array.isArray(claim.statePaths) ? [...new Set(claim.statePaths.map(String))] : [];
+    if (statePaths.some((path) => !pointerValue(statDataOf(currentData), path).found)) return { ok: false, error: `AuditReceipt引用了不存在的当前状态路径：${item.id}` };
+    const observations = Array.isArray(claim.stateObservations) ? claim.stateObservations : [];
+    for (const observation of observations) {
+      const hit = pointerValue(statDataOf(currentData), String(observation?.path || ''));
+      if (!hit.found || !jsonEqual(hit.value, observation?.value)) return { ok: false, error: `AuditReceipt的状态观察与真实当前值不一致：${item.id}` };
+    }
+    if (item.risk && item.paths.length && status === 'not_applicable') return { ok: false, error: `高风险检查不能在已有相关状态路径时标记不适用：${item.id}` };
+    if (item.risk && status === 'consistent' && item.paths.length && (!statePaths.length || !observations.length)) return { ok: false, error: `高风险检查必须提交当前状态路径和精确值观察：${item.id}` };
+    if (item.risk && status !== 'not_applicable' && item.id !== 'opening_and_initialization') {
+      const quote = String(claim.narrativeQuote || '').trim();
+      if (quote.length < 2 || !String(narrative || '').includes(quote)) return { ok: false, error: `高风险检查没有引用最终正文中的原文证据：${item.id}` };
+    }
+    if (!parsed.operations.length && status === 'repair_required') return { ok: false, error: `声明需要修复但没有提交补丁：${item.id}` };
+  }
+  if (parsed.operations.length && !receipt.checks.some((item) => String(item?.status || '').toLowerCase() === 'repair_required')) {
+    return { ok: false, error: '提交了补丁但AuditReceipt没有说明哪一类需要修复' };
+  }
+  return { ok: true, verdict, receipt };
 }
 
 function schemaNodeAt(schema, parts) {
@@ -340,9 +524,11 @@ function validateOperationSchema(currentData, operation, number) {
 }
 
 export function validatePatchOperations(currentData, operations) {
-  const expected = deepClone(statDataOf(currentData));
+  const before = deepClone(statDataOf(currentData));
+  const expected = deepClone(before);
   if (!expected || typeof expected !== 'object') return { ok: false, error: '当前MVU没有可验证的stat_data' };
   const touched = [];
+  const rollbackPaths = [];
   for (const [index, operation] of (operations || []).entries()) {
     const number = index + 1;
     const schemaError = validateOperationSchema(currentData, operation, number);
@@ -363,10 +549,13 @@ export function validatePatchOperations(currentData, operations) {
         destination.parent.splice(destinationIndex, 0, deepClone(hit.value));
       } else destination.parent[destination.key] = deepClone(hit.value);
       touched.push(operation.from, operation.to);
+      rollbackPaths.push(parentPointer(operation.from) === '/' ? operation.from : parentPointer(operation.from));
+      rollbackPaths.push(parentPointer(operation.to) === '/' ? operation.to : parentPointer(operation.to));
       continue;
     }
     const parent = pointerParent(expected, operation.path);
     const hit = pointerValue(expected, operation.path);
+    let touchedPath = operation.path;
     if (!parent) return { ok: false, error: `第${number}个操作的父路径不存在：${operation.path}` };
     if (operation.op === 'insert') {
       if (hit.found) return { ok: false, error: `第${number}个insert目标已经存在：${operation.path}` };
@@ -374,6 +563,7 @@ export function validatePatchOperations(currentData, operations) {
         const arrayIndex = parent.key === '-' ? parent.parent.length : Number(parent.key);
         if (!Number.isInteger(arrayIndex) || arrayIndex < 0 || arrayIndex > parent.parent.length) return { ok: false, error: `第${number}个insert数组位置无效：${operation.path}` };
         parent.parent.splice(arrayIndex, 0, deepClone(operation.value));
+        touchedPath = `${parentPointer(operation.path).replace(/\/$/, '')}/${arrayIndex}`;
       } else parent.parent[parent.key] = deepClone(operation.value);
     } else if (operation.op === 'replace') {
       if (!hit.found) return { ok: false, error: `第${number}个replace目标不存在：${operation.path}` };
@@ -391,9 +581,11 @@ export function validatePatchOperations(currentData, operations) {
       }
       else delete parent.parent[parent.key];
     }
-    touched.push(operation.path);
+    touched.push(touchedPath);
+    const rollbackPath = (Array.isArray(parent.parent) && ['insert', 'remove'].includes(operation.op)) ? parentPointer(operation.path) : operation.path;
+    rollbackPaths.push(rollbackPath === '/' ? operation.path : rollbackPath);
   }
-  return { ok: true, expected, touched };
+  return { ok: true, before, expected, touched: [...new Set(touched)], rollbackPaths: [...new Set(rollbackPaths)] };
 }
 
 export function verifyPatchOperations(data, validation) {
@@ -406,12 +598,80 @@ export function verifyPatchOperations(data, validation) {
   });
 }
 
+export function verifyPatchApplication(data, validation, allowPaths = []) {
+  if (!validation?.ok) return { ok: false, errors: ['缺少有效的补丁校验结果'] };
+  const stat = statDataOf(data);
+  const targetErrors = [];
+  for (const path of validation.touched || []) {
+    const expected = pointerValue(validation.expected, path);
+    const actual = pointerValue(stat, path);
+    if (expected.found !== actual.found || (expected.found && !jsonEqual(expected.value, actual.value))) targetErrors.push(`目标路径未按预期落地：${path}`);
+  }
+  const permitted = [...(validation.touched || []), ...(allowPaths || [])];
+  const unexpected = leafChanges(validation.before, stat).filter((change) => {
+    if (change.path.split('/').some((part) => part.startsWith('_'))) return false;
+    return !permitted.some((path) => pathOverlaps(change.path, path));
+  });
+  const errors = [...targetErrors, ...unexpected.slice(0, 12).map((change) => `补丁外路径发生变化：${change.path}`)];
+  return { ok: errors.length === 0, errors, unexpected };
+}
+
+export function restoreTouchedData(currentData, beforeData, rollbackPaths = []) {
+  const restored = deepClone(currentData);
+  const stat = statDataOf(restored);
+  const before = statDataOf(beforeData);
+  const paths = [...new Set((rollbackPaths || []).filter((path) => typeof path === 'string' && path !== '/'))]
+    .sort((left, right) => pointerParts(left).length - pointerParts(right).length)
+    .filter((path, index, all) => !all.slice(0, index).some((parent) => pathOverlaps(path, parent)));
+  for (const path of paths) {
+    const old = pointerValue(before, path);
+    if (!setPointerValue(stat, path, old.found, old.value)) return { ok: false, error: `无法恢复变量路径：${path}` };
+  }
+  return { ok: true, data: restored, paths };
+}
+
+export function verifyRestoredPaths(data, beforeData, paths = []) {
+  const stat = statDataOf(data);
+  const before = statDataOf(beforeData);
+  return (paths || []).every((path) => {
+    const expected = pointerValue(before, path);
+    const actual = pointerValue(stat, path);
+    return expected.found === actual.found && (!expected.found || jsonEqual(expected.value, actual.value));
+  });
+}
+
+export function capturePathSnapshot(data, paths = []) {
+  const stat = statDataOf(data);
+  return [...new Set(paths || [])].filter((path) => typeof path === 'string' && path !== '/').map((path) => {
+    const hit = pointerValue(stat, path);
+    return { path, found: hit.found, ...(hit.found ? { value: deepClone(hit.value) } : {}) };
+  });
+}
+
+export function restorePathSnapshot(currentData, snapshot = []) {
+  const restored = deepClone(currentData);
+  const stat = statDataOf(restored);
+  for (const item of snapshot || []) {
+    if (!item || typeof item.path !== 'string' || item.path === '/') return { ok: false, error: '变量快照包含无效路径' };
+    if (!setPointerValue(stat, item.path, Boolean(item.found), item.value)) return { ok: false, error: `无法恢复变量快照：${item.path}` };
+  }
+  return { ok: true, data: restored, paths: (snapshot || []).map((item) => item.path) };
+}
+
+export function verifyPathSnapshot(data, snapshot = []) {
+  const stat = statDataOf(data);
+  return (snapshot || []).every((item) => {
+    const actual = pointerValue(stat, item.path);
+    return actual.found === Boolean(item.found) && (!actual.found || jsonEqual(actual.value, item.value));
+  });
+}
+
 export function mergeUpdateVariableBlocks(originalMessage, correctionMessage) {
   const original = parseUpdateVariableBlock(originalMessage);
   const correction = parseUpdateVariableBlock(correctionMessage);
   if (!correction.ok) return correction;
   const operations = [...(original.ok ? original.operations : []), ...correction.operations];
-  const block = `<UpdateVariable>\n<Analysis>保留原变量更新，并追加医生已验证的纠错。</Analysis>\n<JSONPatch>\n${JSON.stringify(operations, null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
+  const block = buildUpdateVariableBlock(operations, '保留原变量更新，并追加医生已验证的纠错。');
   const source = String(originalMessage || '');
   const replaced = original.ok
     ? source.replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi, (match, offset) => (
@@ -695,11 +955,17 @@ export function diagnosticAdvice(kind, detail) {
   if (code === 'world_recovered') {
     return { severity: 'success', summary: '上次中断的世界候选已经从持久检查点恢复并完成读回。', action: '无需重复推进；可在“世界”页核对修订号和提交摘要。' };
   }
+  if (['variable_manual_completed', 'variable_recovered', 'variable_undo_completed'].includes(code)) {
+    return { severity: 'success', summary: 'MVU变量事务已经完成并取得读回证据。', action: '无需处理；可在完整报告中查看检查回执和路径快照。' };
+  }
+  if (code === 'variable_recovery_failed') {
+    return { severity: 'error', summary: '中断的MVU变量事务与当前正文或状态发生分叉。', action: '医生没有自动覆盖；请导出完整报告并先手动复检当前MVU变量。' };
+  }
   if (code === 'variable_failed') {
     return { severity: 'error', summary: 'MVU变量没有完成检查或修复，人物档案和世界推进尚未开始。', action: '保留当前正文，检查MVU/变量结构与模型连接后点击“重试MVU变量失败步骤”。' };
   }
   if (code === 'variable_schema_rejected') {
-    return { severity: 'warning', summary: '变量医生提出了当前角色卡Schema不允许的补丁，已拒绝并保持零写入。', action: '人物档案与世界推进仍会继续；若这是角色卡应支持的字段，请修正角色卡Schema而不是强行写入。' };
+    return { severity: 'error', summary: '变量医生提出了当前角色卡Schema不允许的补丁，本轮变量阶段失败。', action: '修正补丁或角色卡Schema后重试；人物档案与世界不会在变量未闭合时继续。' };
   }
   if (code === 'world_failed') {
     return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '点击“重试世界支线失败步骤”；旧世界记录会保留，格式错误会自动定向修复。' };

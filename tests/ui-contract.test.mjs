@@ -6,12 +6,12 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.4.4控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
+test('0.5.0控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
   }
-  for (const role of ['variableDoctor', 'variableTokens', 'apiEndpoint', 'apiKey', 'apiModel', 'additionalPrompt', 'models', 'testApi', 'profile-select', 'world-list', 'world-persistence', 'diagnostic-list', 'retry', 'cancel', 'exportFullReport']) {
+  for (const role of ['variableDoctor', 'variableTokens', 'apiEndpoint', 'apiKey', 'apiModel', 'additionalPrompt', 'models', 'testApi', 'profile-select', 'world-list', 'world-persistence', 'diagnostic-list', 'retry', 'manualVariableAudit', 'undoVariableRepair', 'cancel', 'exportFullReport']) {
     assert.match(source, new RegExp(`data-role=["']${role}["']`));
   }
   assert.match(source, /openAiChatEndpoint/);
@@ -23,11 +23,15 @@ test('0.4.4控制台包含变量、连接、人物、世界、诊断与恢复入
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.4.4');
-  assert.match(source, /variable:schema-rejected/);
-  assert.match(source, /localValidation\.code === 'schema_incompatible'/);
-  assert.match(source, /真实MVU干运行拒绝了变量建议/);
-  assert.doesNotMatch(source, /没有按补丁落地全部目标路径';\s*if \(attempt < attempts\) continue/u);
+  assert.equal(manifest.version, '0.5.0');
+  assert.match(source, /AuditReceipt/);
+  assert.match(source, /validateVariableAuditReceipt/);
+  assert.match(source, /variable:dry-run-failed/);
+  assert.match(source, /人物档案与世界不会在变量未闭合时继续/);
+  assert.doesNotMatch(source, /schemaRejected:\s*true/);
+  assert.match(source, /manualVariableRecheck/);
+  assert.match(source, /本次只处理变量；人物档案与世界引擎未运行/);
+  assert.match(source, /store\.fullRuns = store\.fullRuns\.slice\(0, 24\)/);
 });
 
 test('世界提交使用准备、提交、读回三段证明且MVU读取不能阻塞面板刷新', () => {
@@ -45,7 +49,7 @@ test('世界提交使用准备、提交、读回三段证明且MVU读取不能�
 test('metadata保持同一权威对象身份，不在每次读取时重建命名空间', () => {
   const body = source.match(/function metadata\([\s\S]*?\n  function combinedProfiles/)?.[0] || '';
   assert.match(body, /let current = context\.chatMetadata\[PLUGIN_ID\]/);
-  assert.match(body, /current\.schemaVersion = 4/);
+  assert.match(body, /current\.schemaVersion = 5/);
   assert.doesNotMatch(body, /context\.chatMetadata\[PLUGIN_ID\] = \{\s*\.\.\.current/);
 });
 
@@ -56,6 +60,24 @@ test('完整报告在用户点击阶段先取得文件句柄且MVU读取失败�
   assert.match(exporter, /currentMvuReadError/);
   assert.match(exporter, /createWritable/);
   assert.match(exporter, /JSON\.stringify\(report, null, 2\)/);
+});
+
+test('手动变量复检不串行触发人物或世界，变量提交按准备、写入、读回、正文保存排序', () => {
+  const manual = source.slice(source.indexOf('async function manualVariableRecheck'), source.indexOf('async function undoLastVariableRepair'));
+  assert.match(manual, /auditVariables/);
+  assert.match(manual, /force:\s*true/);
+  assert.doesNotMatch(manual, /commitProfiles|advanceWorld/);
+  assert.match(manual, /人物与世界未运行/);
+
+  const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
+  const prepared = audit.indexOf("status: 'prepared'");
+  const write = audit.indexOf('await Mvu.replaceMvuData(candidate');
+  const readback = audit.indexOf('const readback = await mvuDataAt', write);
+  const saveMessage = audit.indexOf('await saveMergedVariableBlock', readback);
+  assert.ok(prepared >= 0 && prepared < write);
+  assert.ok(write < readback && readback < saveMessage);
+  assert.match(audit, /Schema.*失败|本地补丁安全校验失败/);
+  assert.match(audit, /return \{ ok: false, error: `\$\{reason\}；零写入` \}/);
 });
 
 test('人物和世界内容使用textContent节点渲染且移动端为全屏控制台', () => {
