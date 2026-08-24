@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.4.0';
+  const DOCTOR_VERSION = '0.4.1';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -1436,6 +1436,9 @@
     current.diagnostics = Array.isArray(current.diagnostics) ? current.diagnostics : [];
     current.profiles = current.profiles && typeof current.profiles === 'object' ? current.profiles : {};
     current.fullRuns = Array.isArray(current.fullRuns) ? current.fullRuns : [];
+    current.replyCheckpoint = current.replyCheckpoint && typeof current.replyCheckpoint === 'object' && !Array.isArray(current.replyCheckpoint)
+      ? current.replyCheckpoint
+      : null;
     if (Number(current.world?.schemaVersion) !== runtime.core.WORLD_SCHEMA_VERSION) {
       const migrated = runtime.core.normalizeWorldState(current.world || {}, { chatId: String(context?.chatId || '') });
       const recovered = runtime.core.recoverLatestLegacyWorld(migrated, current.fullRuns, { chatId: String(context?.chatId || '') });
@@ -1533,6 +1536,94 @@
     try { context?.setExtensionPrompt?.(PROMPT_KEY, '', 1, 1, false, 0); } catch { /* host unavailable */ }
   }
 
+  function generationKind(type, params = {}) {
+    const values = [type, params?.type, params?.generationType, params?.generation_type];
+    const found = values.find((value) => typeof value === 'string' && value.trim());
+    return String(found || 'normal').trim().toLowerCase();
+  }
+
+  function isRerollGeneration(kind) {
+    return kind === 'regenerate' || kind === 'swipe';
+  }
+
+  function priorAssistantIndex(context, beforeIndex) {
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    for (let index = Math.min(Number(beforeIndex) - 1, chat.length - 1); index >= 0; index -= 1) {
+      if (chat[index] && !chat[index].is_user && !chat[index].is_system) return index;
+    }
+    return -1;
+  }
+
+  function generationTarget(context, kind) {
+    const latestAi = latestMessage(context, false);
+    const latestUser = latestMessage(context, true);
+    if (isRerollGeneration(kind)) {
+      return latestAi ? { targetIndex: latestAi.index, priorAssistantIndex: priorAssistantIndex(context, latestAi.index), reroll: true } : null;
+    }
+    if (kind === 'continue') {
+      return latestAi ? { targetIndex: latestAi.index, priorAssistantIndex: latestAi.index, reroll: false, continuation: true } : null;
+    }
+    if (!latestUser) return null;
+    return { targetIndex: latestUser.index + 1, priorAssistantIndex: latestAi?.index ?? -1, reroll: false };
+  }
+
+  function replyStateSnapshot(store) {
+    return {
+      profiles: runtime.core.deepClone(store.profiles || {}),
+      world: runtime.core.deepClone(store.world),
+    };
+  }
+
+  async function ensureReplyCheckpoint(context, target) {
+    if (!target || target.continuation) return null;
+    const store = metadata(context);
+    const current = store.replyCheckpoint;
+    if (current
+      && current.chatId === String(context?.chatId || '')
+      && Number(current.targetIndex) === Number(target.targetIndex)) return current;
+    const checkpoint = {
+      schemaVersion: 1,
+      chatId: String(context?.chatId || ''),
+      targetIndex: Number(target.targetIndex),
+      priorAssistantIndex: Number(target.priorAssistantIndex),
+      createdAt: new Date().toISOString(),
+      state: replyStateSnapshot(store),
+    };
+    store.replyCheckpoint = checkpoint;
+    await saveMetadata(context);
+    return checkpoint;
+  }
+
+  async function restoreReplyCheckpoint(context, target, reason = '重 roll') {
+    if (!target) return { restored: false, reason: '没有可恢复的助手楼层' };
+    const store = metadata(context);
+    const checkpoint = store.replyCheckpoint;
+    if (!checkpoint
+      || checkpoint.chatId !== String(context?.chatId || '')
+      || Number(checkpoint.targetIndex) !== Number(target.targetIndex)
+      || !checkpoint.state?.world
+      || !checkpoint.state?.profiles) {
+      return { restored: false, reason: '当前楼层没有生成前检查点；为避免继续污染，本次不会召回旧楼层状态' };
+    }
+    store.profiles = runtime.core.deepClone(checkpoint.state.profiles);
+    store.world = runtime.core.normalizeWorldState(runtime.core.deepClone(checkpoint.state.world), { chatId: String(context?.chatId || '') });
+    store.diagnostics = store.diagnostics.filter((entry) => entry?.messageId === null
+      || entry?.messageId === undefined
+      || Number(entry.messageId) !== Number(target.targetIndex));
+    store.fullRuns = store.fullRuns.filter((entry) => entry?.messageId === null
+      || entry?.messageId === undefined
+      || Number(entry.messageId) !== Number(target.targetIndex));
+    store.replyCheckpoint = checkpoint;
+    await saveMetadata(context);
+    const readback = metadata(getContext());
+    const profilesMatch = JSON.stringify(readback.profiles || {}) === JSON.stringify(checkpoint.state.profiles || {});
+    const worldMatch = readback.world?.digest === store.world?.digest
+      && Number(readback.world?.revision) === Number(store.world?.revision);
+    if (!profilesMatch || !worldMatch) throw new Error(`${reason}生成前存档点写入后读回不一致`);
+    setRetry(null);
+    return { restored: true, checkpoint };
+  }
+
   function setStatus(phase, detail = '', extra = {}) {
     runtime.status = { ...runtime.status, phase, detail, ...extra };
     const root = document.getElementById(`${PLUGIN_ID}-root`);
@@ -1549,7 +1640,14 @@
 
   function addDiagnostic(kind, detail, context = getContext()) {
     const store = metadata(context);
-    store.diagnostics.unshift({ at: new Date().toISOString(), kind, detail: runtime.core.redactDiagnostic(detail) });
+    const latestAi = latestMessage(context, false);
+    store.diagnostics.unshift({
+      at: new Date().toISOString(),
+      kind,
+      detail: runtime.core.redactDiagnostic(detail),
+      messageId: latestAi?.index ?? null,
+      swipeId: Number(latestAi?.message?.swipe_id) || 0,
+    });
     store.diagnostics = store.diagnostics.slice(0, 30);
     renderDiagnostics();
   }
@@ -1675,11 +1773,27 @@
     return api.mode === 'custom' ? '自定义API连接与模型响应正常' : '酒馆当前模型连接与响应正常';
   }
 
-  async function prepareGeneration() {
+  async function prepareGeneration(kind = 'normal') {
     const context = getContext();
     const config = settings(context);
     if (!config.enabled || !runtime.core || runtime.internalGeneration) return;
-    if (runtime.active) return;
+    const target = generationTarget(context, kind);
+    if (isRerollGeneration(kind)) {
+      if (runtime.active || runtime.timer || runtime.requestController) cancelCurrent('重 roll 已使旧医生任务失效');
+      clearInjection(context);
+    } else if (runtime.active) return;
+    let replyCheckpoint = null;
+    let checkpointRestored = false;
+    if (target && !target.continuation) {
+      if (target.reroll) {
+        const restored = await restoreReplyCheckpoint(context, target, '重 roll');
+        checkpointRestored = restored.restored;
+        replyCheckpoint = restored.checkpoint || null;
+        if (!restored.restored) addDiagnostic('reroll_checkpoint_missing', restored.reason, context);
+      } else {
+        replyCheckpoint = await ensureReplyCheckpoint(context, target);
+      }
+    }
     const chatId = String(context?.chatId || '');
     const latestAi = latestMessage(context, false);
     const latestUser = latestMessage(context, true);
@@ -1691,35 +1805,57 @@
       baselineText: latestAi?.message?.mes || '',
       startedAt: Date.now(),
       cancelled: false,
+      generationKind: kind,
+      targetIndex: target?.targetIndex ?? null,
+      checkpointRestored,
+      replyCheckpoint,
       tickets: runtime.core.generateTicketBatch(config.ticketCount, randomUnit),
     };
     runtime.active = session;
     let data = null;
     const Mvu = await getMvu();
-    if (Mvu && latestAi) data = await mvuDataAt(Mvu, latestAi.index);
-    data = dataWithRecoveredProfiles(data, context);
-    const profiles = combinedProfiles(data, context);
-    const sourceKey = `${chatId}:generation:${latestUser?.index ?? 'none'}:${latestAi?.index ?? 'none'}`;
+    const baselineMessageIndex = target?.reroll
+      ? Number(replyCheckpoint?.priorAssistantIndex ?? target?.priorAssistantIndex ?? -1)
+      : latestAi?.index;
+    if (Mvu && Number.isInteger(baselineMessageIndex) && baselineMessageIndex >= 0) data = await mvuDataAt(Mvu, baselineMessageIndex);
+    const safeData = target?.reroll && !checkpointRestored
+      ? (data || { stat_data: {} })
+      : dataWithRecoveredProfiles(data, context);
+    const profiles = target?.reroll && !checkpointRestored
+      ? runtime.core.profilesFromData(safeData)
+      : combinedProfiles(safeData, context);
+    const sourceKey = `${chatId}:generation:${kind}:${target?.targetIndex ?? 'none'}:${latestUser?.index ?? 'none'}:${latestAi?.index ?? 'none'}`;
+    const recallWorld = target?.reroll && !checkpointRestored
+      ? runtime.core.emptyWorldState(chatId)
+      : metadata(context).world;
     const recallPackage = runtime.core.prepareRecallPackage(
-      metadata(context).world,
+      recallWorld,
       latestUser?.message?.mes || '',
       profiles,
       config.recallLimit,
       { chatId, sourceKey },
     );
-    metadata(context).world = runtime.core.reserveRecallPackage(metadata(context).world, recallPackage);
-    await saveMetadata(context);
+    if (!(target?.reroll && !checkpointRestored)) {
+      metadata(context).world = runtime.core.reserveRecallPackage(metadata(context).world, recallPackage);
+      await saveMetadata(context);
+    }
     session.recallPackage = recallPackage;
     const injection = runtime.core.formatGenerationInjection({
       tickets: session.tickets,
       recall: recallPackage.items,
-      profileDigest: runtime.core.profileDigestFromData(dataWithRecoveredProfiles(data, context)),
+      profileDigest: runtime.core.profileDigestFromData(safeData),
     });
     session.injection = injection;
-    traceRun(session, 'generation:prepared', { tickets: session.tickets, recallPackage, profileDigest: runtime.core.profileDigestFromData(dataWithRecoveredProfiles(data, context)) });
+    traceRun(session, 'generation:prepared', { generationKind: kind, target, checkpointRestored, tickets: session.tickets, recallPackage, profileDigest: runtime.core.profileDigestFromData(safeData) });
     try {
       context.setExtensionPrompt(PROMPT_KEY, injection, 1, 1, false, 0);
-      setStatus('正文生成中', `已注入 ${session.tickets.length} 张候选票据和 ${recallPackage.items.length} 条本回合世界记录`);
+      const prefix = target?.reroll
+        ? checkpointRestored ? '已恢复本楼生成前存档点；' : '未找到旧版本检查点，已隔离旧楼层状态；'
+        : '';
+      setStatus('正文生成中', `${prefix}已注入 ${session.tickets.length} 张候选票据和 ${recallPackage.items.length} 条本回合世界记录`, {
+        profiles: Object.keys(profiles).length,
+        branches: activeWorldCount(recallWorld),
+      });
     } catch (error) {
       metadata(context).world = runtime.core.settleRecallPackage(metadata(context).world, recallPackage.packageId, 'released', { sourceKey }).world;
       await saveMetadata(context);
@@ -1734,6 +1870,31 @@
       await Mvu.replaceMvuData(runtime.core.deepClone(oldData), { type: 'message', message_id: messageId });
       return true;
     } catch { return false; }
+  }
+
+  async function restoreRerollProfileAuthority(session, messageId) {
+    if (!isRerollGeneration(session?.generationKind) || !session?.checkpointRestored) return { ok: true, skipped: true };
+    const baselineProfiles = session.replyCheckpoint?.state?.profiles;
+    if (!baselineProfiles || typeof baselineProfiles !== 'object') return { ok: false, error: '重 roll 检查点缺少人物档案基线' };
+    const Mvu = await getMvu();
+    if (!Mvu?.replaceMvuData) return { ok: false, error: 'MVU不可用，无法撤销旧回复的人物档案投影' };
+    const oldData = await mvuDataAt(Mvu, messageId);
+    if (!oldData) return { ok: false, error: '无法读取重 roll 新回复的MVU数据，旧档案投影未被冒险覆盖' };
+    const candidate = runtime.core.deepClone(oldData);
+    const stat = runtime.core.statDataOf(candidate);
+    stat.人物档案 = runtime.core.deepClone(baselineProfiles);
+    try {
+      await Mvu.replaceMvuData(candidate, { type: 'message', message_id: messageId });
+      const readback = await mvuDataAt(Mvu, messageId);
+      if (JSON.stringify(runtime.core.profilesFromData(readback)) !== JSON.stringify(baselineProfiles)) {
+        throw new Error('人物档案基线写入后读回不一致');
+      }
+      traceRun(session, 'reroll:profile-authority-restored', { messageId, profileCount: Object.keys(baselineProfiles).length });
+      return { ok: true, data: readback };
+    } catch (error) {
+      const rolledBack = await rollbackMvu(Mvu, oldData, messageId);
+      return { ok: false, error: `撤销旧回复人物档案投影失败；${rolledBack ? '已恢复写入前数据' : '写入前数据也未能恢复'}：${error.message || error}` };
+    }
   }
 
   function assertSessionCurrent(session) {
@@ -2128,6 +2289,11 @@ ${runtime.core.profileCompletionContract()}`;
     const context = getContext();
     if (session.cancelled || runtime.epoch !== session.epoch || String(context?.chatId || '') !== session.chatId) return;
     const latestAi = latestMessage(context, false);
+    if (session.targetIndex !== null && Number.isInteger(Number(session.targetIndex)) && Number(latestAi?.index) !== Number(session.targetIndex)) {
+      setStatus('最终正文目标已变化', '新回复没有落在本次生成绑定的楼层；旧医生任务已作废');
+      await finalizeRun(session, { ok: false, stage: 'accepted-final', error: '新回复楼层与生成前目标不一致' }, context);
+      return;
+    }
     if (!latestAi || (latestAi.index === session.baselineIndex && latestAi.message.mes === session.baselineText)) {
       setStatus('最终正文未确认', '500ms后没有读到新的最终助手消息');
       await finalizeRun(session, { ok: false, stage: 'accepted-final', error: '500ms后没有读到新的最终助手消息' }, context);
@@ -2145,6 +2311,14 @@ ${runtime.core.profileCompletionContract()}`;
       if (settled.changed) await saveMetadata(context);
     }
     traceRun(session, 'accepted-final', { messageId: latestAi.index, message: latestAi.message });
+    const rerollRestore = await restoreRerollProfileAuthority(session, latestAi.index);
+    if (!rerollRestore.ok) {
+      addDiagnostic('reroll_restore_failed', rerollRestore.error, context);
+      await saveMetadata(context);
+      setStatus('重 roll 状态恢复失败', rerollRestore.error, { durationMs: doctorElapsed(session) });
+      await finalizeRun(session, { ok: false, stage: 'reroll-restore', error: rerollRestore.error }, context);
+      return;
+    }
     setStatus('医生处理中', '先检查并修复MVU变量；人物与世界尚未开始');
     const variableResult = await auditVariables(session, latestAi.index, latestAi.message.mes);
     if (!variableResult.ok) {
@@ -2296,6 +2470,25 @@ ${runtime.core.profileCompletionContract()}`;
     }
     setRetry(null);
     setStatus(reason, '不会伪造档案或世界推进进度');
+  }
+
+  async function restoreLatestSwipe(value) {
+    const context = getContext();
+    const latestAi = latestMessage(context, false);
+    const requested = Number(value?.messageId ?? value?.message_id ?? value);
+    if (Number.isInteger(requested) && latestAi && requested !== latestAi.index) return false;
+    if (!latestAi) return false;
+    cancelCurrent('切换 swipe 已使旧医生任务失效');
+    clearInjection(context);
+    const target = { targetIndex: latestAi.index, priorAssistantIndex: priorAssistantIndex(context, latestAi.index), reroll: true };
+    const restored = await restoreReplyCheckpoint(context, target, '切换 swipe');
+    if (restored.restored) {
+      setStatus('已恢复本楼生成前状态', '旧 swipe 的人物与世界结果已撤销；等待当前 swipe 独立结算');
+    } else {
+      setStatus('旧楼层状态已隔离', restored.reason);
+    }
+    await refreshUiData();
+    return restored.restored;
   }
 
   function uiRoot() {
@@ -2826,12 +3019,15 @@ ${runtime.core.profileCompletionContract()}`;
     settings(context);
     mountUi();
     const types = context.eventTypes || context.event_types || {};
-    context.eventSource.on(types.GENERATION_STARTED || 'generation_started', async (_type, params = {}, dryRun) => {
+    context.eventSource.on(types.GENERATION_STARTED || 'generation_started', async (type, params = {}, dryRun) => {
       if (dryRun === true || params?.dryRun === true || params?.quiet === true || runtime.internalGeneration) return;
-      await prepareGeneration();
+      await prepareGeneration(generationKind(type, params));
     });
     context.eventSource.on(types.GENERATION_ENDED || 'generation_ended', endGeneration);
     context.eventSource.on(types.GENERATION_STOPPED || 'generation_stopped', () => cancelCurrent('生成已停止'));
+    context.eventSource.on(types.MESSAGE_SWIPED || 'message_swiped', (value) => {
+      void restoreLatestSwipe(value).catch((error) => setStatus('切换 swipe 回退失败', error.message || String(error)));
+    });
     for (const event of [types.CHAT_CHANGED || 'chat_changed', types.CHAT_LOADED || 'chat_loaded']) {
       context.eventSource.on(event, () => {
         cancelCurrent('聊天已切换');
