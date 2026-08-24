@@ -6,7 +6,7 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.4.3控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
+test('0.4.4控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -23,7 +23,11 @@ test('0.4.3控制台包含变量、连接、人物、世界、诊断与恢复入
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.4.3');
+  assert.equal(manifest.version, '0.4.4');
+  assert.match(source, /variable:schema-rejected/);
+  assert.match(source, /localValidation\.code === 'schema_incompatible'/);
+  assert.match(source, /真实MVU干运行拒绝了变量建议/);
+  assert.doesNotMatch(source, /没有按补丁落地全部目标路径';\s*if \(attempt < attempts\) continue/u);
 });
 
 test('世界提交使用准备、提交、读回三段证明且MVU读取不能阻塞面板刷新', () => {

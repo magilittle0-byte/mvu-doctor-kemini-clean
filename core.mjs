@@ -304,12 +304,49 @@ function pointerParent(root, path) {
   return parent && typeof parent === 'object' ? { parent, key } : null;
 }
 
+function schemaNodeAt(schema, parts) {
+  let node = schema;
+  for (const part of parts || []) {
+    if (!node || typeof node !== 'object') return null;
+    if (/^\d+$/.test(part) && node.type === 'array') node = node.elementType;
+    else if (node.type === 'object' && node.properties && Object.prototype.hasOwnProperty.call(node.properties, part)) node = node.properties[part];
+    else return null;
+  }
+  return node && typeof node === 'object' ? node : null;
+}
+
+function validateOperationSchema(currentData, operation, number) {
+  const schema = currentData?.schema;
+  if (!schema || typeof schema !== 'object') return null;
+  const operationPaths = operation.op === 'move' ? [operation.from, operation.to] : [operation.path];
+  for (const path of operationPaths) {
+    const parts = pointerParts(path);
+    if (!parts?.length) return `第${number}个操作没有可核对的Schema路径`;
+    if (operation.op !== 'insert' && !(operation.op === 'move' && path === operation.to)) {
+      if (!schemaNodeAt(schema, parts)) return `第${number}个操作的目标不在当前角色卡Schema中`;
+      continue;
+    }
+    const leaf = parts.at(-1);
+    const parentSchema = schemaNodeAt(schema, parts.slice(0, -1));
+    if (!parentSchema) return `第${number}个insert的父路径不在当前角色卡Schema中`;
+    if (parentSchema.type === 'object') {
+      const declared = parentSchema.properties && Object.prototype.hasOwnProperty.call(parentSchema.properties, leaf);
+      if (parentSchema.extensible === false && !declared) return `第${number}个insert试图扩展不可扩展的Schema对象`;
+    } else if (parentSchema.type === 'array') {
+      if (parentSchema.extensible !== true) return `第${number}个insert试图扩展不可扩展的Schema数组`;
+    } else return `第${number}个insert的父Schema不是集合`;
+  }
+  return null;
+}
+
 export function validatePatchOperations(currentData, operations) {
   const expected = deepClone(statDataOf(currentData));
   if (!expected || typeof expected !== 'object') return { ok: false, error: '当前MVU没有可验证的stat_data' };
   const touched = [];
   for (const [index, operation] of (operations || []).entries()) {
     const number = index + 1;
+    const schemaError = validateOperationSchema(currentData, operation, number);
+    if (schemaError) return { ok: false, code: 'schema_incompatible', error: schemaError };
     if (operation.op === 'move') {
       const source = pointerParent(expected, operation.from);
       const destination = pointerParent(expected, operation.to);
@@ -660,6 +697,9 @@ export function diagnosticAdvice(kind, detail) {
   }
   if (code === 'variable_failed') {
     return { severity: 'error', summary: 'MVU变量没有完成检查或修复，人物档案和世界推进尚未开始。', action: '保留当前正文，检查MVU/变量结构与模型连接后点击“重试MVU变量失败步骤”。' };
+  }
+  if (code === 'variable_schema_rejected') {
+    return { severity: 'warning', summary: '变量医生提出了当前角色卡Schema不允许的补丁，已拒绝并保持零写入。', action: '人物档案与世界推进仍会继续；若这是角色卡应支持的字段，请修正角色卡Schema而不是强行写入。' };
   }
   if (code === 'world_failed') {
     return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '点击“重试世界支线失败步骤”；旧世界记录会保留，格式错误会自动定向修复。' };

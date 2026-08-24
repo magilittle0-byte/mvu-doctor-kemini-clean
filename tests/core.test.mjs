@@ -111,6 +111,37 @@ test('变量纠错在交给MVU前拒绝不存在路径与复杂节点整块覆�
   assert.equal(move.ok, true);
 });
 
+test('当前角色卡存在Schema时拒绝Schema外insert，不把数据对象存在误判为可写', () => {
+  const state = {
+    stat_data: { 契约者: { 事件簿: {} } },
+    schema: {
+      type: 'object', extensible: false, properties: {
+        契约者: { type: 'object', extensible: false, properties: {} },
+      },
+    },
+  };
+  const validation = validatePatchOperations(state, [{ op: 'insert', path: '/契约者/事件簿/新记录', value: { 结果: '已发生' } }]);
+  assert.equal(validation.ok, false);
+  assert.equal(validation.code, 'schema_incompatible');
+  assert.match(validation.error, /Schema/);
+});
+
+test('Schema明确允许扩展的对象仍可执行insert并通过目标读回', () => {
+  const state = {
+    stat_data: { 契约者: { 事件簿: {} } },
+    schema: {
+      type: 'object', extensible: false, properties: {
+        契约者: { type: 'object', extensible: false, properties: {
+          事件簿: { type: 'object', extensible: true, properties: {} },
+        } },
+      },
+    },
+  };
+  const validation = validatePatchOperations(state, [{ op: 'insert', path: '/契约者/事件簿/新记录', value: { 结果: '已发生' } }]);
+  assert.equal(validation.ok, true, validation.error);
+  assert.equal(verifyPatchOperations({ stat_data: validation.expected }, validation), true);
+});
+
 test('独立API端点归一化、响应提取与诊断脱敏', () => {
   assert.equal(openAiChatEndpoint('https://example.com/v1'), 'https://example.com/v1/chat/completions');
   assert.equal(openAiChatEndpoint('https://example.com/v1/chat/completions'), 'https://example.com/v1/chat/completions');

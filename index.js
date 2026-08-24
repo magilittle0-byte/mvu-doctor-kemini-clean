@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.4.3';
+  const DOCTOR_VERSION = '0.4.4';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -328,12 +328,49 @@
       return parent && typeof parent === 'object' ? { parent, key } : null;
     }
 
+    function schemaNodeAt(schema, parts) {
+      let node = schema;
+      for (const part of parts || []) {
+        if (!node || typeof node !== 'object') return null;
+        if (/^\d+$/.test(part) && node.type === 'array') node = node.elementType;
+        else if (node.type === 'object' && node.properties && Object.prototype.hasOwnProperty.call(node.properties, part)) node = node.properties[part];
+        else return null;
+      }
+      return node && typeof node === 'object' ? node : null;
+    }
+
+    function validateOperationSchema(currentData, operation, number) {
+      const schema = currentData?.schema;
+      if (!schema || typeof schema !== 'object') return null;
+      const operationPaths = operation.op === 'move' ? [operation.from, operation.to] : [operation.path];
+      for (const path of operationPaths) {
+        const parts = pointerParts(path);
+        if (!parts?.length) return `第${number}个操作没有可核对的Schema路径`;
+        if (operation.op !== 'insert' && !(operation.op === 'move' && path === operation.to)) {
+          if (!schemaNodeAt(schema, parts)) return `第${number}个操作的目标不在当前角色卡Schema中`;
+          continue;
+        }
+        const leaf = parts.at(-1);
+        const parentSchema = schemaNodeAt(schema, parts.slice(0, -1));
+        if (!parentSchema) return `第${number}个insert的父路径不在当前角色卡Schema中`;
+        if (parentSchema.type === 'object') {
+          const declared = parentSchema.properties && Object.prototype.hasOwnProperty.call(parentSchema.properties, leaf);
+          if (parentSchema.extensible === false && !declared) return `第${number}个insert试图扩展不可扩展的Schema对象`;
+        } else if (parentSchema.type === 'array') {
+          if (parentSchema.extensible !== true) return `第${number}个insert试图扩展不可扩展的Schema数组`;
+        } else return `第${number}个insert的父Schema不是集合`;
+      }
+      return null;
+    }
+
     function validatePatchOperations(currentData, operations) {
       const expected = deepClone(statDataOf(currentData));
       if (!expected || typeof expected !== 'object') return { ok: false, error: '当前MVU没有可验证的stat_data' };
       const touched = [];
       for (const [index, operation] of (operations || []).entries()) {
         const number = index + 1;
+        const schemaError = validateOperationSchema(currentData, operation, number);
+        if (schemaError) return { ok: false, code: 'schema_incompatible', error: schemaError };
         if (operation.op === 'move') {
           const source = pointerParent(expected, operation.from);
           const destination = pointerParent(expected, operation.to);
@@ -684,6 +721,9 @@
       }
       if (code === 'variable_failed') {
         return { severity: 'error', summary: 'MVU变量没有完成检查或修复，人物档案和世界推进尚未开始。', action: '保留当前正文，检查MVU/变量结构与模型连接后点击“重试MVU变量失败步骤”。' };
+      }
+      if (code === 'variable_schema_rejected') {
+        return { severity: 'warning', summary: '变量医生提出了当前角色卡Schema不允许的补丁，已拒绝并保持零写入。', action: '人物档案与世界推进仍会继续；若这是角色卡应支持的字段，请修正角色卡Schema而不是强行写入。' };
       }
       if (code === 'world_failed') {
         return { severity: 'error', summary: '人物档案阶段已结束，但世界支线没有完成推进。', action: '点击“重试世界支线失败步骤”；旧世界记录会保留，格式错误会自动定向修复。' };
@@ -2155,6 +2195,12 @@
       if (!localValidation.ok) {
         reason = `本地补丁安全校验失败：${localValidation.error}`;
         traceRun(session, 'variable:validation-failed', { attempt, reason, parsed });
+        if (localValidation.code === 'schema_incompatible') {
+          const note = '变量建议触碰当前角色卡Schema之外的路径，已拒绝并保持零写入；人物档案与世界继续处理';
+          traceRun(session, 'variable:schema-rejected', { attempt, reason, parsed });
+          addDiagnostic('variable_schema_rejected', reason, context);
+          return { ok: true, changed: false, data: currentData, message: acceptedText, note, schemaRejected: true };
+        }
         if (attempt < attempts) continue;
         return { ok: false, error: `${reason}；零写入` };
       }
@@ -2167,8 +2213,10 @@
       }
       if (!runtime.core.verifyPatchOperations(candidate, localValidation)) {
         reason = 'MVU/Schema解析结果没有按补丁落地全部目标路径';
-        if (attempt < attempts) continue;
-        return { ok: false, error: `${reason}；零写入` };
+        const note = '真实MVU干运行拒绝了变量建议，已保持零写入；人物档案与世界继续处理';
+        traceRun(session, 'variable:schema-rejected', { attempt, reason, parsed });
+        addDiagnostic('variable_schema_rejected', reason, context);
+        return { ok: true, changed: false, data: currentData, message: acceptedText, note, schemaRejected: true };
       }
       assertSessionCurrent(session);
       const snapshot = runtime.core.deepClone(currentData);
@@ -2446,7 +2494,7 @@ ${runtime.core.profileCompletionContract()}`;
       await finalizeRun(session, { ok: false, stage: 'variable', error: variableResult.error }, context);
       return;
     }
-    setStatus('MVU变量已确认', variableResult.changed ? '纠错补丁已写入、读回并合并保存；正在校验人物档案' : '本轮变量无需纠错；正在校验人物档案');
+    setStatus('MVU变量已确认', variableResult.changed ? '纠错补丁已写入、读回并合并保存；正在校验人物档案' : variableResult.note || '本轮变量无需纠错；正在校验人物档案');
     const profileResult = await commitProfiles(session, latestAi.index, variableResult.message, variableResult.data);
     if (!profileResult.ok) {
       addDiagnostic('profile_failed', profileResult.error, context);
