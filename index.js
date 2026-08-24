@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.5.0';
+  const DOCTOR_VERSION = '0.5.1';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -3804,13 +3804,23 @@ ${runtime.core.profileCompletionContract()}`;
     for (const event of [types.CHAT_CHANGED || 'chat_changed', types.CHAT_LOADED || 'chat_loaded']) {
       context.eventSource.on(event, () => {
         cancelCurrent('聊天已切换');
+        runtime.uiProfiles = {};
+        const lifecycleChatId = String(getContext()?.chatId || '');
         void (async () => {
           const liveContext = getContext();
+          if (String(liveContext?.chatId || '') !== lifecycleChatId) return;
           metadata(liveContext);
           await recoverPreparedVariableRepair(liveContext);
+          if (String(getContext()?.chatId || '') !== lifecycleChatId) return;
           await recoverWorldCheckpoint(liveContext);
+          if (String(getContext()?.chatId || '') !== lifecycleChatId) return;
           await saveMetadata(liveContext);
+          if (String(getContext()?.chatId || '') !== lifecycleChatId) return;
           await refreshUiData();
+          if (String(getContext()?.chatId || '') !== lifecycleChatId) return;
+          if (!runtime.active && !runtime.timer && !runtime.requestController && !runtime.retrying) {
+            setStatus('医生已就绪', '当前聊天状态已重新载入', { durationMs: 0 });
+          }
         })().catch((error) => setStatus('世界存档恢复失败', error.message || String(error)));
       });
     }
