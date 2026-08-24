@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.4.2';
+  const DOCTOR_VERSION = '0.4.3';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -1009,6 +1009,113 @@
       };
     }
 
+    function worldLinkKey(value) {
+      return cleanText(value).toLocaleLowerCase();
+    }
+
+    function proposalThreadCandidates(previousInput, proposal) {
+      const previous = normalizeWorldState(previousInput, { chatId: previousInput?.chatId });
+      const proposed = (proposal.threads || []).map((entry, index) => normalizeThread(entry, index));
+      const byId = new Map(previous.threads.map((thread) => [thread.id, thread]));
+      for (const thread of proposed) byId.set(thread.id, thread);
+      return { proposed, all: [...byId.values()] };
+    }
+
+    function exactThreadCandidates(threads, action) {
+      const explicitTitle = worldLinkKey(action?.threadTitle || action?.thread || action?.sourceThreadTitle);
+      if (explicitTitle) {
+        const titleMatches = threads.filter((thread) => worldLinkKey(thread.title) === explicitTitle);
+        if (titleMatches.length) return { matches: titleMatches, method: 'exact_title' };
+      }
+      const actor = worldLinkKey(action?.actorId || action?.actor || action?.actorName);
+      if (actor) {
+        const actorMatches = threads.filter((thread) => cleanStringArray(thread.actorIds).some((id) => worldLinkKey(id) === actor));
+        if (actorMatches.length) return { matches: actorMatches, method: 'unique_actor_thread' };
+      }
+      return { matches: [], method: '' };
+    }
+
+    /**
+     * Repair only referential omissions that have one provable target. This is a
+     * format-normalization step, not semantic guessing: ambiguous links remain
+     * empty so strict validation can request a corrected model response.
+     */
+    function repairWorldProposalLinks(previousInput = {}, proposalInput = {}) {
+      const proposal = deepClone(proposalInput && typeof proposalInput === 'object' ? proposalInput : {});
+      proposal.threads = Array.isArray(proposal.threads) ? proposal.threads : [];
+      proposal.actorActions = Array.isArray(proposal.actorActions) ? proposal.actorActions : [];
+      proposal.adjudications = Array.isArray(proposal.adjudications) ? proposal.adjudications : [];
+      const candidates = proposalThreadCandidates(previousInput, proposal);
+      const repairs = [];
+
+      proposal.actorActions = proposal.actorActions.map((entry, index) => {
+        const action = { ...(entry || {}) };
+        if (cleanText(action.threadId)) return action;
+        let inferred = exactThreadCandidates(candidates.proposed, action);
+        if (inferred.matches.length !== 1 && candidates.proposed.length === 1) {
+          inferred = { matches: candidates.proposed, method: 'only_proposed_thread' };
+        }
+        if (inferred.matches.length === 0) inferred = exactThreadCandidates(candidates.all, action);
+        if (inferred.matches.length === 1) {
+          action.threadId = inferred.matches[0].id;
+          repairs.push({ kind: 'actorAction.threadId', index, method: inferred.method });
+        } else if (inferred.matches.length === 0 && cleanText(action.actorId || action.actor || action.actorName) && cleanText(action.action || action.intent)) {
+          const actorId = cleanText(action.actorId || action.actor || action.actorName);
+          const actionText = cleanText(action.action, cleanText(action.intent));
+          const title = cleanText(action.goal, cleanText(action.intent, actionText));
+          const derived = normalizeThread({
+            kind: 'personal',
+            title,
+            stage: 'advancing',
+            actorIds: [actorId],
+            locations: action.locations || action.location,
+            keywords: action.keywords,
+            summary: actionText,
+            offscreenBeat: actionText,
+            nextBeat: actionText,
+            stakes: cleanText(action.risk, cleanStringArray(action.resourceCosts).join('；')),
+            knowledge: action.visibility === 'observable' ? 'observed' : action.visibility === 'rumor' ? 'rumor' : 'hidden',
+          }, proposal.threads.length);
+          proposal.threads.push(derived);
+          candidates.proposed.push(derived);
+          candidates.all.push(derived);
+          action.threadId = derived.id;
+          repairs.push({ kind: 'thread.created', index: proposal.threads.length - 1, method: 'derived_from_unlinked_action' });
+          repairs.push({ kind: 'actorAction.threadId', index, method: 'derived_action_thread' });
+        }
+        return action;
+      });
+
+      proposal.adjudications = proposal.adjudications.map((entry, index) => {
+        const result = { ...(entry || {}) };
+        const actor = worldLinkKey(result.actorId || result.actor || result.actorName);
+        const threadId = cleanText(result.threadId);
+        const attemptId = cleanText(result.attemptId);
+        let actions = proposal.actorActions.filter((action) => {
+          if (actor && worldLinkKey(action.actorId || action.actor || action.actorName) !== actor) return false;
+          if (threadId && cleanText(action.threadId) !== threadId) return false;
+          if (attemptId && cleanText(action.attemptId) && cleanText(action.attemptId) !== attemptId) return false;
+          return Boolean(cleanText(action.threadId));
+        });
+        if (!actor && !threadId && !attemptId) actions = [];
+        if (!threadId && actions.length === 1) {
+          result.threadId = actions[0].threadId;
+          repairs.push({ kind: 'adjudication.threadId', index, method: 'unique_matching_action' });
+        }
+        if (!actor && actions.length === 1) {
+          result.actorId = cleanText(actions[0].actorId || actions[0].actor || actions[0].actorName);
+          repairs.push({ kind: 'adjudication.actorId', index, method: 'unique_matching_action' });
+        }
+        if (!attemptId && actions.length === 1 && cleanText(actions[0].attemptId)) {
+          result.attemptId = actions[0].attemptId;
+          repairs.push({ kind: 'adjudication.attemptId', index, method: 'unique_matching_action' });
+        }
+        return result;
+      });
+
+      return { proposal, repairs };
+    }
+
     function validateWorldProposal(proposal = {}) {
       const errors = [];
       if (cleanText(proposal.summary).length < 6) errors.push('summary需要用完整句说明本轮世界总体变化');
@@ -1383,7 +1490,7 @@
       return visit(value);
     }
 
-    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, parseUpdateVariableBlock, validatePatchOperations, verifyPatchOperations, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileNarrativeText, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, settleRecallPackage, formatGenerationInjection, profileDigestFromData, profilesFromData, removeApiFromExport });
+    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, parseUpdateVariableBlock, validatePatchOperations, verifyPatchOperations, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileNarrativeText, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, settleRecallPackage, formatGenerationInjection, profileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
@@ -2265,7 +2372,12 @@ ${runtime.core.profileCompletionContract()}`;
         const raw = await generateDoctorRaw({ systemPrompt, prompt, responseLength: settings(context).worldMaxTokens, task: '世界连续性引擎', session });
         previousRaw = raw;
         assertSessionCurrent(session);
-        const proposal = runtime.core.parseWorldProposal(raw);
+        const parsedProposal = runtime.core.parseWorldProposal(raw);
+        const linkRepair = runtime.core.repairWorldProposalLinks(baseline, parsedProposal);
+        const proposal = linkRepair.proposal;
+        if (linkRepair.repairs.length) {
+          traceRun(session, 'world:links-repaired', { attempt, repairs: linkRepair.repairs });
+        }
         const proposalValidation = runtime.core.validateWorldProposal(proposal);
         if (!proposalValidation.ok) throw new Error(`世界候选内容不足：${proposalValidation.errors.join('；')}`);
         const candidate = runtime.core.applyWorldProposal(baseline, proposal, {

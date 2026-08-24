@@ -11,6 +11,7 @@ import {
   prepareWorldTransaction,
   recoverLatestLegacyWorld,
   recoverPreparedWorldState,
+  repairWorldProposalLinks,
   reserveRecallPackage,
   settleRecallPackage,
   validateWorldProposal,
@@ -38,6 +39,59 @@ test('空壳或只有标题的世界返回不会被当作成功推进', () => {
   const sparse = validateWorldProposal({ summary: '世界局势继续发生变化。', threads: [{ title: '空标题支线' }] });
   assert.equal(sparse.ok, false);
   assert.match(sparse.errors.join('；'), /没有可用的进展/);
+});
+
+test('唯一可确定的缺失支线关联由本地补齐，不要求整段世界模型重试', () => {
+  const repaired = repairWorldProposalLinks(emptyWorldState('chat-a'), {
+    summary: '林澄追查药材来源并得到了部分结果。',
+    threads: [{ id: 't1', title: '药材短缺', actorIds: ['actor-lin'], summary: '货源线索出现变化' }],
+    actorActions: [{ actorId: 'actor-lin', action: '询问三家药商' }],
+    adjudications: [{ actorId: 'actor-lin', status: 'partial', resultSummary: '找到一条可疑转运线' }],
+  });
+  assert.equal(repaired.proposal.actorActions[0].threadId, 't1');
+  assert.equal(repaired.proposal.adjudications[0].threadId, 't1');
+  assert.equal(validateWorldProposal(repaired.proposal).ok, true);
+  assert.deepEqual(repaired.repairs.map((item) => item.kind), ['actorAction.threadId', 'adjudication.threadId']);
+});
+
+test('多个支线都可能匹配时不猜测关联，严格校验继续要求定向重试', () => {
+  const repaired = repairWorldProposalLinks(emptyWorldState('chat-a'), {
+    summary: '两条支线都与林澄有关，但模型没有说明行动属于哪一条。',
+    threads: [
+      { id: 't1', title: '药材短缺', actorIds: ['actor-lin'], summary: '货源变化' },
+      { id: 't2', title: '港口追踪', actorIds: ['actor-lin'], summary: '码头出现线索' },
+    ],
+    actorActions: [{ actorId: 'actor-lin', action: '继续追查' }],
+  });
+  assert.equal(repaired.proposal.actorActions[0].threadId, undefined);
+  assert.equal(repaired.repairs.length, 0);
+  assert.match(validateWorldProposal(repaired.proposal).errors.join('；'), /缺少threadId/);
+});
+
+test('完整人物行动没有任何候选支线时派生稳定个人支线，不丢弃行动或乱绑旧线', () => {
+  const baseline = applyWorldProposal(emptyWorldState('chat-a'), {
+    summary: '旧世界有两条无关支线。',
+    threads: [
+      { id: 't1', title: '北港修船', actorIds: ['actor-bo'], summary: '船工等待木料' },
+      { id: 't2', title: '城门盘查', actorIds: ['actor-qiu'], summary: '守卫加强检查' },
+    ],
+  }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
+  const input = {
+    summary: '林澄开始独立调查货源。',
+    threads: [
+      { id: 't1', title: '北港修船', actorIds: ['actor-bo'], summary: '木料仍未送达' },
+      { id: 't2', title: '城门盘查', actorIds: ['actor-qiu'], summary: '检查仍在继续' },
+    ],
+    actorActions: [{ actorId: 'actor-lin', goal: '查清药材来源', action: '询问三家药商', risk: '可能惊动中间人' }],
+  };
+  const first = repairWorldProposalLinks(baseline, input);
+  const second = repairWorldProposalLinks(baseline, input);
+  assert.equal(first.proposal.threads.length, 3);
+  assert.equal(first.proposal.actorActions[0].threadId, first.proposal.threads[2].id);
+  assert.equal(first.proposal.threads[2].actorIds[0], 'actor-lin');
+  assert.equal(first.proposal.actorActions[0].threadId, second.proposal.actorActions[0].threadId);
+  assert.equal(validateWorldProposal(first.proposal).ok, true);
+  assert.deepEqual(first.repairs.map((item) => item.kind), ['thread.created', 'actorAction.threadId']);
 });
 
 test('模型遗漏不会删除旧支线，明确解决才进入历史档案', () => {
