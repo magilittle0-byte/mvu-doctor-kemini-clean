@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.4.1';
+  const DOCTOR_VERSION = '0.4.2';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -1563,8 +1563,9 @@
     if (kind === 'continue') {
       return latestAi ? { targetIndex: latestAi.index, priorAssistantIndex: latestAi.index, reroll: false, continuation: true } : null;
     }
-    if (!latestUser) return null;
-    return { targetIndex: latestUser.index + 1, priorAssistantIndex: latestAi?.index ?? -1, reroll: false };
+    const userAlreadyAppended = !!latestUser && (!latestAi || latestUser.index > latestAi.index);
+    const targetIndex = userAlreadyAppended ? latestUser.index + 1 : (Array.isArray(context?.chat) ? context.chat.length + 1 : 1);
+    return { targetIndex, priorAssistantIndex: latestAi?.index ?? -1, reroll: false, userAlreadyAppended };
   }
 
   function replyStateSnapshot(store) {
@@ -1778,6 +1779,10 @@
     const config = settings(context);
     if (!config.enabled || !runtime.core || runtime.internalGeneration) return;
     const target = generationTarget(context, kind);
+    const atStartLatestUser = latestMessage(context, true);
+    const generationInputText = target?.reroll || target?.userAlreadyAppended
+      ? atStartLatestUser?.message?.mes || ''
+      : String(document.querySelector?.('#send_textarea')?.value || '');
     if (isRerollGeneration(kind)) {
       if (runtime.active || runtime.timer || runtime.requestController) cancelCurrent('重 roll 已使旧医生任务失效');
       clearInjection(context);
@@ -1830,7 +1835,7 @@
       : metadata(context).world;
     const recallPackage = runtime.core.prepareRecallPackage(
       recallWorld,
-      latestUser?.message?.mes || '',
+      generationInputText || latestUser?.message?.mes || '',
       profiles,
       config.recallLimit,
       { chatId, sourceKey },

@@ -6,7 +6,7 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.4.1控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
+test('0.4.2控制台包含变量、连接、人物、世界、诊断与恢复入口', () => {
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -23,7 +23,7 @@ test('0.4.1控制台包含变量、连接、人物、世界、诊断与恢复入
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.4.1');
+  assert.equal(manifest.version, '0.4.2');
 });
 
 test('世界提交使用准备、提交、读回三段证明且MVU读取不能阻塞面板刷新', () => {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-function runtimeHarness() {
+function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '进入场景' }]) {
   const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
   const handlers = new Map();
   const prompts = [];
@@ -21,7 +21,7 @@ function runtimeHarness() {
   };
   const context = {
     chatId: 'reroll-chat',
-    chat: [{ is_user: true, is_system: false, mes: '进入场景' }],
+    chat: structuredClone(initialChat),
     chatMetadata: {},
     extensionSettings: {},
     eventTypes: {
@@ -96,6 +96,29 @@ test('regenerate restores the logical floor checkpoint before building the new i
   const finalInjection = harness.prompts.filter(Boolean).at(-1);
   assert.ok(finalInjection);
   assert.doesNotMatch(finalInjection, /REJECTED_PROFILE|REJECTED_WORLD|被放弃的旧回复/);
+});
+
+test('real Tavern timing checkpoints the future assistant floor before the user message is appended', async () => {
+  const harness = runtimeHarness([{ is_user: false, is_system: false, mes: '默认开场' }]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  await harness.handlers.get('generation_started')('normal', {}, false);
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
+  assert.equal(store.replyCheckpoint.targetIndex, 2);
+  assert.equal(store.replyCheckpoint.priorAssistantIndex, 0);
+  harness.handlers.get('generation_stopped')();
+
+  harness.context.chat.push({ is_user: true, is_system: false, mes: '进入场景' });
+  harness.context.chat.push({ is_user: false, is_system: false, mes: '被放弃的旧回复', swipe_id: 0 });
+  harness.mvuByMessage.set(2, { stat_data: { 人物档案: { rejected: { profileId: 'rejected', name: 'REJECTED_PROFILE' } } } });
+  store.profiles = { rejected: { profileId: 'rejected', name: 'REJECTED_PROFILE' } };
+  store.world.summary = 'REJECTED_WORLD';
+
+  await harness.handlers.get('generation_started')('regenerate', {}, false);
+
+  assert.deepEqual(store.profiles, {});
+  assert.notEqual(store.world.summary, 'REJECTED_WORLD');
+  assert.doesNotMatch(harness.prompts.filter(Boolean).at(-1), /REJECTED_PROFILE|REJECTED_WORLD|被放弃的旧回复/);
 });
 
 test('manual latest-message swipe restores the same pre-generation authority state', async () => {
