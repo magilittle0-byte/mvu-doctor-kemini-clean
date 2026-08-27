@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.0';
+  const DOCTOR_VERSION = '0.6.1';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -267,6 +267,9 @@
     }
 
     const PATCH_OPERATIONS = new Set(['replace', 'delta', 'insert', 'remove', 'move']);
+    const PATCH_OPERATION_ALIASES = Object.freeze({
+      add: 'insert', set: 'replace', update: 'replace', change: 'replace', modify: 'replace', 修改: 'replace',
+    });
     const VARIABLE_AUDIT_CATEGORIES = Object.freeze([
       'opening_and_initialization',
       'numeric_and_derived',
@@ -280,7 +283,8 @@
     function parseUpdateVariableBlock(message) {
       const source = String(message || '');
       const blocks = [...source.matchAll(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi)];
-      const rawBlock = blocks.at(-1)?.[0] || '';
+      if (blocks.length > 1) return { ok: false, code: 'multiple-blocks', error: `检测到${blocks.length}个<UpdateVariable>区块，拒绝选择或合并`, operations: [] };
+      const rawBlock = blocks[0]?.[0] || '';
       if (!rawBlock) return { ok: false, error: '缺少完整的<UpdateVariable>区块', operations: [] };
       const patch = rawBlock.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/i)?.[1];
       if (patch == null) return { ok: false, error: 'UpdateVariable缺少完整的JSONPatch区块', operations: [] };
@@ -291,7 +295,8 @@
       const operations = [];
       for (const [index, raw] of parsed.entries()) {
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: `第${index + 1}个变量操作不是对象`, operations: [] };
-        const operation = { ...raw, op: raw.op === 'add' ? 'insert' : String(raw.op || '').toLowerCase() };
+        const rawVerb = String(raw.op || '').toLowerCase();
+        const operation = { ...raw, op: PATCH_OPERATION_ALIASES[rawVerb] || rawVerb };
         if (!PATCH_OPERATIONS.has(operation.op)) return { ok: false, error: `第${index + 1}个变量操作不受支持：${operation.op || '空'}`, operations: [] };
         if (['replace', 'delta', 'insert'].includes(operation.op) && !Object.prototype.hasOwnProperty.call(operation, 'value')) return { ok: false, error: `第${index + 1}个${operation.op}操作缺少value`, operations: [] };
         if (operation.op === 'move') {
@@ -305,15 +310,9 @@
         }
         operations.push(operation);
       }
-      const receiptText = rawBlock.match(/<AuditReceipt\b[^>]*>([\s\S]*?)<\/AuditReceipt\s*>/i)?.[1];
-      let receipt = null;
-      if (receiptText != null) {
-        try { receipt = parseJsonWithLocalRepair(receiptText); }
-        catch (error) { return { ok: false, error: `AuditReceipt无法解析：${error.message || error}`, operations: [] }; }
-        if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return { ok: false, error: 'AuditReceipt必须是JSON对象', operations: [] };
-      }
+      const analysis = rawBlock.match(/<Analysis\b[^>]*>([\s\S]*?)<\/Analysis\s*>/i)?.[1]?.trim() || '';
       const block = buildUpdateVariableBlock(operations, '变量医生仅提交经MVU解析验证的纠错补丁。');
-      return { ok: true, operations, block, rawBlock, receipt };
+      return { ok: true, operations, block, rawBlock, analysis };
     }
 
     function buildUpdateVariableBlock(operations, analysis = '变量更新。') {
@@ -432,84 +431,181 @@
       return [...new Set(paths)];
     }
 
+    function changedStatePaths(previousData, currentData, originalOperations = []) {
+      const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
+      if (hasPrevious) return diffStatData(previousData, currentData, 1200).map((item) => String(item.path || '')).filter(Boolean);
+      return originalOperations.flatMap((item) => [item?.path, item?.from, item?.to]).map(String).filter((path) => path.startsWith('/'));
+    }
+
+    function pathsMatching(paths, pattern, limit = 12) {
+      return [...new Set((paths || []).filter((path) => pattern.test(String(path))))].slice(0, limit);
+    }
+
     function buildVariableAuditChecklist({ narrative = '', previousData = null, currentData = null, originalOperations = [] } = {}) {
       const text = String(narrative || '');
       const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
+      const changedPaths = changedStatePaths(previousData, currentData, originalOperations);
       const rules = {
         opening_and_initialization: {
           risk: !hasPrevious,
           reason: !hasPrevious ? '这是首个可用状态，必须核对初始化、基础值与派生值闭包' : '核对初始化字段是否被后续正文合法改变',
           paths: matchingStatePaths(currentData, /初始|基础|属性|能力|等级|生命|法力|体力|力量|敏捷|智力|精神|魅力|幸运/u),
+          changedPaths: pathsMatching(changedPaths, /初始|基础|属性|能力|等级|生命|法力|体力|力量|敏捷|智力|精神|魅力|幸运/u),
         },
         numeric_and_derived: {
           risk: /\d|增加|减少|提升|下降|获得|消耗|恢复|损失|结算/u.test(text) || originalOperations.some((item) => item?.op === 'delta' || typeof item?.value === 'number'),
           reason: '核对数值变化及由其决定的派生值，禁止只改来源不改结果或反向重复delta',
           paths: matchingStatePaths(currentData, /数值|属性|生命|法力|体力|经验|等级|点数|上限|当前|余额|金钱|货币|UP|积分|负重/u),
+          changedPaths: pathsMatching(changedPaths, /数值|属性|生命|法力|体力|经验|等级|点数|上限|当前|余额|金钱|货币|UP|积分|负重/u),
         },
         inventory_and_transfer: {
           risk: /获得|拿到|捡起|拾取|购买|装备|卸下|丢弃|扔下|放下|交给|递给|归还|失去|消耗|背包|物品|武器|护甲/u.test(text),
           reason: '核对物品所有权、装备槽、数量、负重和交易双方，动作描述不能代替实际转移',
           paths: matchingStatePaths(currentData, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
+          changedPaths: pathsMatching(changedPaths, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
         },
         dynamic_collections: {
           risk: /加入|离开|创建|解散|接受任务|完成任务|契约|队伍|成员|技能|状态|效果|事件|记录/u.test(text),
           reason: '核对动态对象的新增、删除、成员关系和状态生命周期',
           paths: matchingStatePaths(currentData, /任务|事件|队伍|成员|契约|技能|状态|效果|记录|列表/u),
+          changedPaths: pathsMatching(changedPaths, /任务|事件|队伍|成员|契约|技能|状态|效果|记录|列表/u),
         },
         relationship_and_mental_causality: {
           risk: /好感|信任|亲密|关系|恐惧|敬畏|畏惧|盲信|崇拜|操纵|洗脑|控制|胁迫|威慑|催眠/u.test(text),
           reason: '区分自愿关系变化、恐惧敬畏、强制操纵与暂时情绪；不得把控制结果伪装成好感提升',
           paths: matchingStatePaths(currentData, /关系|好感|信任|亲密|恐惧|敬畏|服从|控制|精神|情绪|态度|印象/u),
+          changedPaths: pathsMatching(changedPaths, /关系|好感|信任|亲密|恐惧|敬畏|服从|控制|精神|情绪|态度|印象/u),
         },
         time_location_and_cost: {
           risk: /前往|抵达|离开|过去了|小时|分钟|天|夜|清晨|中午|傍晚|花费|支付|代价|受伤/u.test(text),
           reason: '核对地点、时间、成本、伤势与已裁决后果，计划和尝试不能提前结算',
           paths: matchingStatePaths(currentData, /时间|日期|地点|位置|场景|伤势|健康|状态|消耗|代价/u),
+          changedPaths: pathsMatching(changedPaths, /时间|日期|地点|位置|场景|伤势|健康|状态|消耗|代价/u),
         },
         player_agency: {
           risk: false,
           reason: '确认补丁只记录玩家明确行动与已接受裁决，不替玩家补写同意、感受、动机或选择',
           paths: [],
+          changedPaths: [],
         },
       };
       return VARIABLE_AUDIT_CATEGORIES.map((id) => ({ id, ...rules[id] }));
     }
 
-    function validateVariableAuditReceipt(parsed, { auditId = '', checklist = [], currentData = null, narrative = '' } = {}) {
-      if (!parsed?.ok) return { ok: false, error: parsed?.error || '变量输出不可用' };
-      const receipt = parsed.receipt;
-      if (!receipt) return { ok: false, error: '缺少AuditReceipt，不能证明变量审计实际覆盖了必查项' };
-      if (String(receipt.auditId || '') !== String(auditId || '')) return { ok: false, error: 'AuditReceipt没有回显本轮审计编号' };
-      const verdict = String(receipt.verdict || '').toLowerCase();
-      const expectedVerdict = parsed.operations.length ? 'repair' : 'nochange';
-      if (verdict !== expectedVerdict) return { ok: false, error: `AuditReceipt结论与补丁不一致：应为${expectedVerdict}` };
-      if (!Array.isArray(receipt.checks)) return { ok: false, error: 'AuditReceipt.checks必须是数组' };
-      const byCategory = new Map(receipt.checks.map((item) => [String(item?.category || ''), item]));
-      for (const item of checklist) {
-        const claim = byCategory.get(item.id);
-        if (!claim) return { ok: false, error: `AuditReceipt漏检：${item.id}` };
-        const status = String(claim.status || '').toLowerCase();
-        if (!['consistent', 'repair_required', 'not_applicable'].includes(status)) return { ok: false, error: `AuditReceipt状态无效：${item.id}` };
-        if (String(claim.evidence || '').trim().length < 4) return { ok: false, error: `AuditReceipt缺少可读证据：${item.id}` };
-        const statePaths = Array.isArray(claim.statePaths) ? [...new Set(claim.statePaths.map(String))] : [];
-        if (statePaths.some((path) => !pointerValue(statDataOf(currentData), path).found)) return { ok: false, error: `AuditReceipt引用了不存在的当前状态路径：${item.id}` };
-        const observations = Array.isArray(claim.stateObservations) ? claim.stateObservations : [];
-        for (const observation of observations) {
-          const hit = pointerValue(statDataOf(currentData), String(observation?.path || ''));
-          if (!hit.found || !jsonEqual(hit.value, observation?.value)) return { ok: false, error: `AuditReceipt的状态观察与真实当前值不一致：${item.id}` };
-        }
-        if (item.risk && item.paths.length && status === 'not_applicable') return { ok: false, error: `高风险检查不能在已有相关状态路径时标记不适用：${item.id}` };
-        if (item.risk && status === 'consistent' && item.paths.length && (!statePaths.length || !observations.length)) return { ok: false, error: `高风险检查必须提交当前状态路径和精确值观察：${item.id}` };
-        if (item.risk && status !== 'not_applicable' && item.id !== 'opening_and_initialization') {
-          const quote = String(claim.narrativeQuote || '').trim();
-          if (quote.length < 2 || !String(narrative || '').includes(quote)) return { ok: false, error: `高风险检查没有引用最终正文中的原文证据：${item.id}` };
-        }
-        if (!parsed.operations.length && status === 'repair_required') return { ok: false, error: `声明需要修复但没有提交补丁：${item.id}` };
+    function isValueWithDescription(value) {
+      return Array.isArray(value) && value.length === 2 && typeof value[1] === 'string' && !Array.isArray(value[0]);
+    }
+
+    function operationPathExists(stat, operation, path) {
+      if (typeof path !== 'string' || !path.startsWith('/')) return false;
+      if (operation === 'insert') {
+        const parent = parentPointer(path);
+        return parent === '/' ? Boolean(stat && typeof stat === 'object') : pointerValue(stat, parent).found;
       }
-      if (parsed.operations.length && !receipt.checks.some((item) => String(item?.status || '').toLowerCase() === 'repair_required')) {
-        return { ok: false, error: '提交了补丁但AuditReceipt没有说明哪一类需要修复' };
+      return pointerValue(stat, path).found;
+    }
+
+    function repairOperationPath(stat, operation, path) {
+      if (typeof path !== 'string' || !path.startsWith('/') || operationPathExists(stat, operation, path)) return { path, repair: '' };
+      const parts = pointerParts(path);
+      if (!parts) return { path, repair: '' };
+      const candidates = [];
+      if (parts[0] === 'stat_data' && !Object.prototype.hasOwnProperty.call(stat || {}, 'stat_data')) candidates.push(pointerPath(parts.slice(1)));
+      if (parts.some((part) => part === '')) candidates.push(pointerPath(parts.filter((part) => part !== '')));
+      if (parts[0] === 'stat_data' && parts.slice(1).some((part) => part === '') && !Object.prototype.hasOwnProperty.call(stat || {}, 'stat_data')) {
+        candidates.push(pointerPath(parts.slice(1).filter((part) => part !== '')));
       }
-      return { ok: true, verdict, receipt };
+      const fixed = candidates.find((candidate, index, all) => candidate !== path
+        && all.indexOf(candidate) === index
+        && operationPathExists(stat, operation, candidate));
+      return fixed ? { path: fixed, repair: `${path} → ${fixed}` } : { path, repair: '' };
+    }
+
+    function normalizeVariableOperations(currentData, operations = []) {
+      const stat = statDataOf(currentData);
+      const normalized = [];
+      const repairs = [];
+      for (const [index, raw] of operations.entries()) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: `第${index + 1}个变量操作不是对象`, operations: [], repairs };
+        const alias = PATCH_OPERATION_ALIASES[String(raw.op || '').toLowerCase()] || String(raw.op || '').toLowerCase();
+        const operation = { ...deepClone(raw), op: alias };
+        if (!PATCH_OPERATIONS.has(operation.op)) return { ok: false, error: `第${index + 1}个变量操作不受支持：${operation.op || '空'}`, operations: [], repairs };
+        for (const key of operation.op === 'move' ? ['from', 'to'] : ['path']) {
+          const fixed = repairOperationPath(stat, operation.op === 'move' && key === 'to' ? 'insert' : operation.op, operation[key]);
+          if (fixed.repair) repairs.push({ index, kind: 'path', detail: fixed.repair });
+          operation[key] = fixed.path;
+        }
+        if (operation.op === 'delta' && typeof operation.value === 'string' && operation.value.trim() !== '' && Number.isFinite(Number(operation.value))) {
+          operation.value = Number(operation.value);
+          repairs.push({ index, kind: 'delta-number', detail: '已把数字字符串转换为数值' });
+        }
+        if (operation.op === 'replace') {
+          const current = pointerValue(stat, operation.path);
+          if (current.found && isValueWithDescription(current.value) && isValueWithDescription(operation.value)) {
+            operation.value = deepClone(operation.value[0]);
+            repairs.push({ index, kind: 'value-with-description', detail: '已保留说明槽，只写入第一格真实值' });
+          }
+        }
+        if (operation.op === 'move') {
+          const source = pointerValue(stat, operation.from);
+          const destination = pointerValue(stat, operation.to);
+          const destinationParent = parentPointer(operation.to);
+          const parentExists = destinationParent === '/' || pointerValue(stat, destinationParent).found;
+          if (!source.found || destination.found || !parentExists) {
+            return { ok: false, error: `第${index + 1}个move无法安全拆解：来源必须存在、目标必须不存在且目标父路径必须存在`, operations: [], repairs };
+          }
+          normalized.push({ op: 'insert', path: operation.to, value: deepClone(source.value) }, { op: 'remove', path: operation.from });
+          repairs.push({ index, kind: 'move', detail: '已按MVU实际支持的语义拆成insert + remove' });
+          continue;
+        }
+        normalized.push(operation);
+      }
+      return { ok: true, operations: normalized, repairs };
+    }
+
+    function assessVariableBaseline({ narrative = '', previousData = null, currentData = null, original = null } = {}) {
+      const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
+      const diff = hasPrevious ? diffStatData(previousData, currentData, 1200) : [];
+      const checklist = buildVariableAuditChecklist({
+        narrative,
+        previousData,
+        currentData,
+        originalOperations: original?.ok ? original.operations : [],
+      });
+      const highRisk = checklist.filter((item) => item.risk).map((item) => item.id);
+      if (!hasPrevious) return { code: 'opening', requiresCorrection: false, diffCount: diff.length, highRisk, checklist };
+      if (!original?.ok) {
+        return {
+          code: diff.length ? 'unreadable_block_with_state_change' : 'missing_or_dead_block',
+          requiresCorrection: highRisk.length > 0 && diff.length === 0,
+          diffCount: diff.length,
+          highRisk,
+          checklist,
+          detail: original?.error || '正文没有可读取的变量更新区块',
+        };
+      }
+      const normalized = normalizeVariableOperations(previousData, original.operations);
+      if (!normalized.ok) return { code: 'original_patch_unsafe', requiresCorrection: true, diffCount: diff.length, highRisk, checklist, detail: normalized.error };
+      if (!normalized.operations.length) {
+        return {
+          code: diff.length ? 'empty_patch_with_state_change' : 'empty_patch',
+          requiresCorrection: highRisk.length > 0 && diff.length === 0,
+          diffCount: diff.length,
+          highRisk,
+          checklist,
+        };
+      }
+      const validation = validatePatchOperations(previousData, normalized.operations);
+      if (!validation.ok) return { code: 'original_patch_invalid', requiresCorrection: true, diffCount: diff.length, highRisk, checklist, detail: validation.error };
+      const reflected = verifyPatchOperations(currentData, validation);
+      return {
+        code: reflected ? 'original_patch_reflected' : 'original_patch_not_reflected',
+        requiresCorrection: !reflected,
+        diffCount: diff.length,
+        highRisk,
+        checklist,
+        repairs: normalized.repairs,
+      };
     }
 
     function schemaNodeAt(schema, parts) {
@@ -591,11 +687,18 @@
           } else parent.parent[parent.key] = deepClone(operation.value);
         } else if (operation.op === 'replace') {
           if (!hit.found) return { ok: false, error: `第${number}个replace目标不存在：${operation.path}` };
-          if (hit.value && typeof hit.value === 'object') return { ok: false, error: `第${number}个replace试图整体覆盖复杂节点：${operation.path}` };
-          parent.parent[parent.key] = deepClone(operation.value);
+          if (isValueWithDescription(hit.value)) {
+            if (operation.value && typeof operation.value === 'object') return { ok: false, error: `第${number}个replace必须只写值与说明结构的第一格：${operation.path}` };
+            parent.parent[parent.key][0] = deepClone(operation.value);
+          } else {
+            if (hit.value && typeof hit.value === 'object') return { ok: false, error: `第${number}个replace试图整体覆盖复杂节点：${operation.path}` };
+            parent.parent[parent.key] = deepClone(operation.value);
+          }
         } else if (operation.op === 'delta') {
-          if (!hit.found || typeof hit.value !== 'number' || typeof operation.value !== 'number' || !Number.isFinite(operation.value)) return { ok: false, error: `第${number}个delta目标或增量不是有效数字：${operation.path}` };
-          parent.parent[parent.key] = hit.value + operation.value;
+          const currentNumber = isValueWithDescription(hit.value) ? hit.value[0] : hit.value;
+          if (!hit.found || typeof currentNumber !== 'number' || typeof operation.value !== 'number' || !Number.isFinite(operation.value)) return { ok: false, error: `第${number}个delta目标或增量不是有效数字：${operation.path}` };
+          if (isValueWithDescription(hit.value)) parent.parent[parent.key][0] = currentNumber + operation.value;
+          else parent.parent[parent.key] = currentNumber + operation.value;
         } else if (operation.op === 'remove') {
           if (!hit.found) return { ok: false, error: `第${number}个remove目标不存在：${operation.path}` };
           if (Array.isArray(parent.parent)) {
@@ -1931,7 +2034,7 @@
       return visit(value);
     }
 
-    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, diffStatData, buildVariableAuditChecklist, validateVariableAuditReceipt, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileNarrativeText, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
+    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, diffStatData, buildVariableAuditChecklist, normalizeVariableOperations, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileNarrativeText, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
@@ -1944,6 +2047,7 @@
     retrying: false,
     uiProfiles: {},
     epoch: 0,
+    progress: { variable: 'idle', profiles: 'idle', world: 'idle', recall: 'idle' },
     status: { phase: '正在初始化', detail: '', profiles: 0, branches: 0, durationMs: 0 },
   };
 
@@ -2177,8 +2281,37 @@
     return { restored: true, checkpoint };
   }
 
+  function progressForPhase(phase, current = runtime.progress) {
+    const text = String(phase || '');
+    const next = { ...current };
+    if (/医生已就绪|正在初始化|聊天已切换/.test(text)) return { variable: 'idle', profiles: 'idle', world: 'idle', recall: 'idle' };
+    if (/正文生成中/.test(text)) return { variable: 'pending', profiles: 'pending', world: 'pending', recall: 'ready' };
+    if (/医生处理中|正在检查MVU|正在手动复检/.test(text)) return { variable: 'running', profiles: 'pending', world: 'pending', recall: 'consumed' };
+    if (/手动MVU变量复检完成|手动MVU变量复检已恢复|变量修复已撤销/.test(text)) return { variable: 'done', profiles: 'idle', world: 'idle', recall: 'idle' };
+    if (/MVU变量处理完成/.test(text)) return { variable: 'done', profiles: 'running', world: 'pending', recall: 'consumed' };
+    if (/正在修复人物/.test(text)) return { variable: 'done', profiles: 'running', world: 'pending', recall: next.recall === 'idle' ? 'idle' : 'consumed' };
+    if (/人物档案已完成/.test(text)) return { variable: 'done', profiles: 'done', world: 'running', recall: next.recall === 'idle' ? 'idle' : 'consumed' };
+    if (/本轮医生完成|失败步骤已恢复/.test(text)) return { variable: 'done', profiles: 'done', world: 'done', recall: 'done' };
+    if (/MVU变量.*失败|变量修复.*失败|变量重试失败|变量复检失败/.test(text)) return { ...next, variable: 'error', profiles: 'blocked', world: 'blocked' };
+    if (/人物档案.*失败/.test(text)) return { ...next, variable: 'done', profiles: 'error', world: 'blocked' };
+    if (/世界.*失败/.test(text)) return { ...next, variable: 'done', profiles: 'done', world: 'error' };
+    if (/已取消|生成已停止|目标已变化|未确认/.test(text)) {
+      return Object.fromEntries(Object.entries(next).map(([key, value]) => [key, value === 'running' || value === 'ready' ? 'cancelled' : value]));
+    }
+    return next;
+  }
+
+  function statusPresentation(phase = runtime.status.phase, detail = runtime.status.detail) {
+    const text = `${phase} ${detail}`;
+    if (/失败|无法|缺少|错误|不一致|未确认|回滚失败/.test(text)) return runtime.core?.diagnosticAdvice?.(phase, detail) || { severity: 'error', summary: phase, action: detail };
+    if (/已取消|已作废|生成已停止|目标已变化|旧楼层状态已隔离/.test(text)) return { severity: 'warning', summary: phase, action: detail || '旧结果没有写入新目标。' };
+    if (/完成|就绪|已确认|已恢复|已撤销|处理完成/.test(phase)) return { severity: 'success', summary: phase, action: detail || '无需处理。' };
+    return { severity: 'info', summary: phase, action: detail || '医生正在等待下一步。' };
+  }
+
   function setStatus(phase, detail = '', extra = {}) {
     runtime.status = { ...runtime.status, phase, detail, ...extra };
+    runtime.progress = extra.progress ? { ...runtime.progress, ...extra.progress } : progressForPhase(phase);
     const root = document.getElementById(`${PLUGIN_ID}-root`);
     if (!root) return;
     const phaseNode = root.querySelector('[data-role="phase"]');
@@ -2187,7 +2320,8 @@
     if (phaseNode) phaseNode.textContent = runtime.status.phase;
     if (detailNode) detailNode.textContent = runtime.status.detail;
     if (metricsNode) metricsNode.textContent = `档案 ${runtime.status.profiles} · 活跃世界项 ${runtime.status.branches} · ${Math.round(runtime.status.durationMs / 100) / 10}s`;
-    root.dataset.state = /失败|缺少|不可用|无法/.test(`${phase}${detail}`) ? 'error' : /完成|就绪|恢复/.test(phase) ? 'ready' : 'busy';
+    const advice = statusPresentation(phase, detail);
+    root.dataset.state = advice?.severity === 'error' ? 'error' : advice?.severity === 'warning' ? 'warning' : /完成|就绪|恢复/.test(phase) ? 'ready' : 'busy';
     renderStatusSurface(root);
     renderRetryControl();
   }
@@ -2680,25 +2814,26 @@
       narrative: runtime.core.stripProfileReceipt(acceptedText), previousData, currentData,
       originalOperations: original.ok ? original.operations : [],
     });
+    const baseline = runtime.core.assessVariableBaseline({
+      narrative: runtime.core.stripProfileReceipt(acceptedText), previousData, currentData, original,
+    });
     const reference = collectMvuReference(context, { opening: !previousData });
-    const auditId = `va-${session.id}-${messageId}-${textFingerprint(JSON.stringify(runtime.core.statDataOf(currentData)))}`;
     const systemPrompt = `你是正文接受后的MVU变量核验与修复器。你不是正文作者、人物档案器、数据库或世界引擎。当前stat_data已经包含正文原变量块的实际结果；只能提交叠加在当前状态上的漏更或错更修复，绝不能重放原delta。
 
 逐项核对给定检查表，尤其注意：首次状态必须闭合初始化与派生值；物品拿取、丢弃、装备、移交要同时核对所有权、装备槽、数量和负重；恐惧、敬畏、胁迫、操纵、盲信不能偷换成自愿好感；NPC尝试不等于世界已裁决成功。只记录最终接受正文中已经发生的事实，不替玩家决定行动、同意、感受或结果。
 
-严格服从本角色卡Schema、初始化条目与变量规则，不猜其他卡路径，不修改/人物档案，不写下划线开头路径。输出且只输出一个完整区块：
+严格服从本角色卡Schema、初始化条目与变量规则，不猜其他卡路径，不修改/人物档案，不写下划线开头路径。先在Analysis里用自然语言写清楚“正文事实、当前值、应有值”三者的对照；然后只提交必要修复。输出且只输出一个完整区块：
 <UpdateVariable>
-<Analysis>简洁说明</Analysis>
-<AuditReceipt>{"auditId":"原样回显","verdict":"repair或nochange","checks":[{"category":"检查项ID","status":"consistent或repair_required或not_applicable","evidence":"正文与状态的具体对照","narrativeQuote":"高风险项引用最终正文中的连续原文","statePaths":["实际核对过且存在的JSON Pointer叶路径"],"stateObservations":[{"path":"与statePaths一致的叶路径","value":"从当前stat_data原样抄录的JSON值"}]}]}</AuditReceipt>
+<Analysis>正文事实、当前值、应有值的简洁对照；没有修复时说明为什么当前状态已经闭合</Analysis>
 <JSONPatch>[replace|delta|insert|remove|move操作]</JSONPatch>
 </UpdateVariable>
 
-checks必须覆盖全部检查项。只要提交补丁，verdict必须是repair且至少一项为repair_required；空补丁的verdict必须是nochange。高风险项若当前状态存在相关路径，不能写not_applicable；判定consistent时必须给出最终正文原文、实际叶路径和该路径当前精确JSON值，脚本会逐字逐值核验。`;
+JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修复。不要为了证明自己检查过而复制大段正文、HTML或整份状态；脚本会独立校验路径、类型、MVU实际执行结果和写后读回。`;
     let reason = '';
     const attempts = Math.max(1, Math.min(4, Number(config.repairAttempts) + 1 || 1));
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       assertVariableTarget(session, messageId, target);
-      const prompt = `【审计编号，必须原样回显】\n${auditId}\n\n【检查表】\n${cropForModel(checklist, 18000)}\n\n【角色卡权威设定】\n${reference.character}\n\n【变量结构】\n${reference.schema}\n\n【初始化条目】\n${reference.initialization}\n\n【MVU更新规则】\n${reference.rules}\n\n【上一楼层stat_data】\n${cropForModel(runtime.core.statDataOf(previousData), 70000)}\n\n【上一楼层到当前的真实状态差异】\n${cropForModel(runtime.core.diffStatData(previousData, currentData), 50000)}\n\n【当前stat_data（正文原更新已经应用）】\n${cropForModel(runtime.core.statDataOf(currentData), 120000)}\n\n【正文原变量块解析状态】\n${original.ok ? JSON.stringify(original.operations) : original.error}\n\n【最终接受正文】\n${cropForModel(runtime.core.stripProfileReceipt(acceptedText), 50000)}\n\n${reason ? `上次输出未通过：${reason}\n根据失败原因重新逐项核验并输出完整区块。` : '逐项对照正文、差异和当前状态；只有全部闭合才能声明nochange。'}`;
+      const prompt = `【脚本本地基线检查】\n${cropForModel(baseline, 18000)}\n\n【检查表】\n${cropForModel(checklist, 18000)}\n\n【角色卡权威设定】\n${reference.character}\n\n【变量结构】\n${reference.schema}\n\n【初始化条目】\n${reference.initialization}\n\n【MVU更新规则】\n${reference.rules}\n\n【上一楼层stat_data】\n${cropForModel(runtime.core.statDataOf(previousData), 70000)}\n\n【上一楼层到当前的真实状态差异】\n${cropForModel(runtime.core.diffStatData(previousData, currentData), 50000)}\n\n【当前stat_data（正文原更新已经应用）】\n${cropForModel(runtime.core.statDataOf(currentData), 120000)}\n\n【正文原变量块解析状态】\n${original.ok ? JSON.stringify(original.operations) : original.error}\n\n【最终接受正文】\n${cropForModel(runtime.core.stripProfileReceipt(acceptedText), 50000)}\n\n${reason ? `上次输出未通过：${reason}\n保留上次已经正确的判断，只修正格式、路径或漏掉的必要补丁。` : '逐项对照正文、真实状态差异和当前值。修复目标是当前状态之后的绝对正确结果，不得重放原delta。'}`;
       let raw;
       try {
         setStatus('正在检查MVU变量', `第 ${attempt}/${attempts} 次审计；人物与世界尚未开始`);
@@ -2715,28 +2850,36 @@ checks必须覆盖全部检查项。只要提交补丁，verdict必须是repair�
         if (attempt < attempts) continue;
         return { ok: false, error: `变量医生输出无法解析：${reason}；零写入` };
       }
-      const receiptValidation = runtime.core.validateVariableAuditReceipt(parsed, { auditId, checklist, currentData, narrative: runtime.core.stripProfileReceipt(acceptedText) });
-      if (!receiptValidation.ok) {
-        reason = receiptValidation.error;
-        traceRun(session, 'variable:receipt-failed', { attempt, reason, parsed });
+      const normalized = runtime.core.normalizeVariableOperations(currentData, parsed.operations);
+      if (!normalized.ok) {
+        reason = `本地确定性修复后仍不安全：${normalized.error}`;
+        traceRun(session, 'variable:normalization-failed', { attempt, reason, parsed, normalized });
         if (attempt < attempts) continue;
-        return { ok: false, error: `变量审计证据不完整：${reason}；零写入` };
+        return { ok: false, error: `${reason}；零写入` };
       }
+      parsed.operations = normalized.operations;
+      parsed.block = runtime.core.buildUpdateVariableBlock(parsed.operations, parsed.analysis || '变量医生只提交当前状态之后的必要修复。');
       if (parsed.operations.some((operation) => [operation.path, operation.from, operation.to].filter(Boolean).some((path) => path === '/人物档案' || path.startsWith('/人物档案/')))) {
         reason = '变量医生越权触碰/人物档案';
         if (attempt < attempts) continue;
         return { ok: false, error: `${reason}；零写入` };
       }
       if (!parsed.operations.length) {
+        if (baseline.requiresCorrection) {
+          reason = `本地基线显示“${baseline.code}”，正文存在高风险变化但模型返回空补丁`;
+          traceRun(session, 'variable:unsafe-nochange-rejected', { attempt, reason, baseline, analysis: parsed.analysis });
+          if (attempt < attempts) continue;
+          return { ok: false, error: `${reason}；零写入` };
+        }
         const record = appendVariableRepair({
           repairId: `vr-${Date.now().toString(36)}-${Math.floor(randomUnit() * 0xffffff).toString(36)}`,
-          status: 'verified_nochange', auditId, at: new Date().toISOString(), target,
+          status: 'model_verified_nochange', at: new Date().toISOString(), target,
           messageId, manual: Boolean(session.manualVariableAudit), originalOperations: original.ok ? original.operations : [],
-          receipt: receiptValidation.receipt,
+          analysis: parsed.analysis, baseline, checklist,
         }, context);
         await saveMetadata(context);
-        traceRun(session, 'variable:nochange-verified', { attempt, originalPatch: original, receipt: receiptValidation.receipt, repairId: record.repairId });
-        return { ok: true, changed: false, verifiedNochange: true, data: currentData, message: acceptedText, receipt: receiptValidation.receipt };
+        traceRun(session, 'variable:nochange-model-reviewed', { attempt, originalPatch: original, analysis: parsed.analysis, baseline, repairId: record.repairId });
+        return { ok: true, changed: false, modelReviewedNochange: true, data: currentData, message: acceptedText, analysis: parsed.analysis, baseline, note: '模型核对未发现需追加的修复；脚本已保存本地基线、路径与真实状态差异。' };
       }
       let localValidation = runtime.core.validatePatchOperations(currentData, parsed.operations);
       if (!localValidation.ok) {
@@ -2775,10 +2918,10 @@ checks必须覆盖全部检查项。只要提交补丁，verdict必须是repair�
       const beforeSnapshot = runtime.core.capturePathSnapshot(currentData, localValidation.rollbackPaths);
       const expectedSnapshot = runtime.core.capturePathSnapshot(candidate, localValidation.rollbackPaths);
       appendVariableRepair({
-        repairId, status: 'prepared', auditId, at: new Date().toISOString(), target,
+        repairId, status: 'prepared', at: new Date().toISOString(), target,
         messageId, manual: Boolean(session.manualVariableAudit), originalOperations: original.ok ? original.operations : [],
         correctionOperations: parsed.operations, rollbackPaths: localValidation.rollbackPaths,
-        beforeSnapshot, expectedSnapshot, receipt: receiptValidation.receipt,
+        beforeSnapshot, expectedSnapshot, analysis: parsed.analysis, baseline, checklist, normalizationRepairs: normalized.repairs,
       }, context);
       await saveMetadata(context);
       assertVariableTarget(session, messageId, target);
@@ -2795,8 +2938,8 @@ checks必须覆盖全部检查项。只要提交补丁，verdict必须是repair�
         const mergedMessage = await saveMergedVariableBlock(context, messageId, acceptedText, parsed.block);
         patchVariableRepair(repairId, { status: 'applied', appliedAt: new Date().toISOString(), afterTarget: variableTarget(context, messageId) }, context);
         await saveMetadata(context);
-        traceRun(session, 'variable:committed', { attempt, originalPatch: original, correction: parsed, receipt: receiptValidation.receipt, readback, repairId });
-        return { ok: true, changed: true, data: readback, message: mergedMessage, repairId, receipt: receiptValidation.receipt };
+        traceRun(session, 'variable:committed', { attempt, originalPatch: original, correction: parsed, normalizationRepairs: normalized.repairs, baseline, readback, repairId });
+        return { ok: true, changed: true, data: readback, message: mergedMessage, repairId, analysis: parsed.analysis, baseline, normalizationRepairs: normalized.repairs };
       } catch (error) {
         const rolledBack = await rollbackMvuTouched(Mvu, currentData, localValidation, messageId);
         patchVariableRepair(repairId, { status: rolledBack.ok ? 'rolled_back' : 'rollback_failed', error: error.message || String(error), rollback: rolledBack }, context);
@@ -3067,7 +3210,7 @@ ${runtime.core.profileCompletionContract()}`;
       await finalizeRun(session, { ok: false, stage: 'variable', error: variableResult.error }, context);
       return;
     }
-    setStatus('MVU变量已确认', variableResult.changed ? '纠错补丁已写入、读回并合并保存；正在校验人物档案' : variableResult.note || '本轮变量无需纠错；正在校验人物档案');
+    setStatus('MVU变量处理完成', variableResult.changed ? '纠错补丁已写入、读回并合并保存；正在校验人物档案' : variableResult.note || '模型未发现需追加修复；正在校验人物档案');
     const profileResult = await commitProfiles(session, latestAi.index, variableResult.message, variableResult.data);
     if (!profileResult.ok) {
       addDiagnostic('profile_failed', profileResult.error, context);
@@ -3129,10 +3272,10 @@ ${runtime.core.profileCompletionContract()}`;
         await finalizeRun(session, { ok: false, stage: 'variable-manual', error: result.error }, context);
         return result;
       }
-      addDiagnostic('variable_manual_completed', result.changed ? '手动复检发现并提交了变量修复' : '手动复检逐项确认无需修改', context);
+      addDiagnostic('variable_manual_completed', result.changed ? '手动复检发现并提交了变量修复' : '手动复检模型未发现需追加修复；本地基线与状态差异已保存', context);
       await saveMetadata(context);
       if (runtime.retry?.kind === 'variable' || runtime.retry?.kind === 'variable-manual') setRetry(null);
-      setStatus('手动MVU变量复检完成', result.changed ? '纠错已原子写入并读回；人物与世界未运行' : '检查表与状态路径证据已保存；人物与世界未运行', { durationMs: doctorElapsed(session) });
+      setStatus('手动MVU变量复检完成', result.changed ? '纠错已原子写入并读回；人物与世界未运行' : '模型未发现需追加修复；本地基线与状态差异已保存，人物与世界未运行', { durationMs: doctorElapsed(session) });
       await finalizeRun(session, { ok: true, stage: 'variable-manual', variable: result }, context);
       await refreshUiData();
       return result;
@@ -3264,7 +3407,7 @@ ${runtime.core.profileCompletionContract()}`;
         workingMessage = getContext().chat?.[item.messageId]?.mes || variableResult.message;
         workingData = variableResult.data;
         if (item.kind === 'variable-manual') {
-          addDiagnostic('variable_manual_completed', variableResult.changed ? '手动变量复检重试已提交修复' : '手动变量复检重试已逐项确认无需修改', context);
+          addDiagnostic('variable_manual_completed', variableResult.changed ? '手动变量复检重试已提交修复' : '手动变量复检重试未发现需追加修复；本地基线与状态差异已保存', context);
           await saveMetadata(context);
           setRetry(null);
           setStatus('手动MVU变量复检已恢复', '本次只处理变量；人物档案与世界引擎未运行');
@@ -3557,7 +3700,7 @@ ${runtime.core.profileCompletionContract()}`;
     if (latestRepair) {
       const labels = {
         prepared: ['warning', '变量修复已准备但尚未确认终态'], applied: ['success', '变量修复已写入并读回'],
-        verified_nochange: ['success', '变量已逐项核对，无需修改'], rolled_back: ['warning', '变量写入失败，已按触碰路径回滚'],
+        model_verified_nochange: ['success', '变量模型未发现需追加修复'], verified_nochange: ['success', '变量模型未发现需追加修复（旧记录）'], rolled_back: ['warning', '变量写入失败，已按触碰路径回滚'],
         rollback_failed: ['error', '变量写入与回滚均失败'], undone: ['success', '上次变量修复已撤销'], recovery_required: ['error', '变量事务需要人工恢复'],
       };
       const [severity, title] = labels[latestRepair.status] || ['warning', `变量事务状态：${latestRepair.status}`];
@@ -3576,14 +3719,58 @@ ${runtime.core.profileCompletionContract()}`;
 
   function renderStatusSurface(root = uiRoot()) {
     if (!root?.querySelector) return;
-    const advice = runtime.core?.diagnosticAdvice?.(runtime.status.phase, runtime.status.detail);
+    const advice = statusPresentation();
     const summary = root.querySelector('[data-role="status-summary"]');
     const action = root.querySelector('[data-role="status-action"]');
     const badge = root.querySelector('[data-role="status-badge"]');
-    const actionable = advice && ['error', 'warning'].includes(advice.severity);
-    if (summary) summary.textContent = actionable ? advice.summary : runtime.status.phase;
-    if (action) action.textContent = actionable ? advice.action : runtime.status.detail;
+    const tone = root.querySelector('[data-role="status-tone"]');
+    const launcherState = root.querySelector('[data-role="launcher-state"]');
+    if (summary) summary.textContent = advice.summary || runtime.status.phase;
+    if (action) action.textContent = advice.action || runtime.status.detail;
+    if (tone) {
+      if (tone.dataset) tone.dataset.severity = advice.severity;
+      tone.textContent = advice.severity === 'error' ? '需要处理' : advice.severity === 'warning' ? '已安全暂停' : advice.severity === 'success' ? '运行正常' : '正在工作';
+    }
+    if (launcherState) launcherState.textContent = advice.severity === 'error'
+      ? '需要处理'
+      : advice.severity === 'warning'
+        ? '已安全暂停'
+        : advice.severity === 'success'
+          ? '医生已就绪'
+          : '医生处理中';
     if (badge) badge.textContent = runtime.status.profiles + runtime.status.branches > 0 ? String(runtime.status.profiles + runtime.status.branches) : '';
+    const metrics = {
+      'metric-profiles': String(runtime.status.profiles || 0),
+      'metric-world': String(runtime.status.branches || 0),
+      'metric-duration': runtime.status.durationMs ? `${Math.round(runtime.status.durationMs / 100) / 10}s` : '—',
+    };
+    for (const [role, value] of Object.entries(metrics)) {
+      const target = root.querySelector(`[data-role="${role}"]`);
+      if (target) target.textContent = value;
+    }
+    const stageLabels = { idle: '等待', pending: '待处理', ready: '已备妥', running: '处理中', done: '完成', consumed: '已消费', error: '失败', blocked: '未开始', cancelled: '已取消' };
+    for (const element of root.querySelectorAll?.('[data-stage]') || []) {
+      const value = runtime.progress[element.dataset?.stage] || 'idle';
+      if (element.dataset) element.dataset.stageState = value;
+      const state = element.querySelector('[data-stage-label]');
+      if (state) state.textContent = stageLabels[value] || value;
+    }
+    const config = settings();
+    const connectionText = config.api.mode === 'custom'
+      ? `独立模型 · ${config.api.model || '尚未填写模型'}`
+      : '继承酒馆当前模型';
+    for (const connection of root.querySelectorAll?.('[data-role="connection-summary"]') || []) connection.textContent = connectionText;
+    const lastRun = metadata().fullRuns?.[0];
+    const lastTitle = root.querySelector('[data-role="last-run-title"]');
+    const lastDetail = root.querySelector('[data-role="last-run-detail"]');
+    const lastTime = root.querySelector('[data-role="last-run-time"]');
+    if (lastTitle) lastTitle.textContent = !lastRun ? '当前聊天还没有完整医生运行' : lastRun.outcome?.ok ? '上一轮已完成全部阶段' : `上一轮停在${lastRun.outcome?.stage || '未知阶段'}`;
+    if (lastDetail) lastDetail.textContent = !lastRun
+      ? '生成一条新的助手回复后，这里会显示变量、档案、世界和召回的真实终态。'
+      : lastRun.outcome?.ok
+        ? `耗时 ${Math.round(Number(lastRun.durationMs || 0) / 100) / 10}s；人物与世界结果已进入持久化链。`
+        : `影响：${runtime.core.redactDiagnostic(lastRun.outcome?.error || '本轮没有完整结束')}；可在诊断页查看并重试失败步骤。`;
+    if (lastTime) lastTime.textContent = lastRun?.finishedAt ? new Date(lastRun.finishedAt).toLocaleString() : '';
   }
 
   function renderRetryControl() {
@@ -3595,6 +3782,7 @@ ${runtime.core.profileCompletionContract()}`;
       button.textContent = runtime.retrying ? '正在重试失败步骤…' : runtime.retry ? `重试${label}失败步骤` : '当前没有可重试任务';
     }
     const busy = Boolean(runtime.active || runtime.timer || runtime.requestController || runtime.retrying);
+    for (const button of root?.querySelectorAll?.('[data-role="cancel"]') || []) button.disabled = !busy;
     for (const button of root?.querySelectorAll?.('[data-role="manualVariableAudit"]') || []) {
       button.disabled = busy;
       button.textContent = busy ? '医生任务进行中…' : '重新检查当前MVU变量';
@@ -3611,6 +3799,8 @@ ${runtime.core.profileCompletionContract()}`;
     if (!root?.querySelectorAll) return;
     for (const button of root.querySelectorAll('[data-tab]')) button.setAttribute('aria-selected', String(button.dataset.tab === name));
     for (const panel of root.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== name;
+    const main = root.querySelector('.mvu-kc-main');
+    if (main) main.scrollTop = 0;
   }
 
   async function refreshUiData() {
@@ -3799,6 +3989,7 @@ ${runtime.core.profileCompletionContract()}`;
   }
 
   function setConsoleOpen(root, open, tab = 'overview') {
+    const wasOpen = root.classList.contains('open');
     root.classList.toggle('open', open);
     const consoleNode = root.querySelector('.mvu-kc-console');
     if (consoleNode) {
@@ -3806,8 +3997,13 @@ ${runtime.core.profileCompletionContract()}`;
       consoleNode.setAttribute('aria-hidden', String(!open));
     }
     if (open) {
+      if (!wasOpen) runtime.uiReturnFocus = document.activeElement;
       showTab(tab);
       void refreshUiData();
+      requestAnimationFrame(() => root.querySelector(`[data-tab="${tab}"]`)?.focus?.());
+    } else if (wasOpen) {
+      const focusTarget = runtime.uiReturnFocus?.isConnected ? runtime.uiReturnFocus : root.querySelector('.mvu-kc-toggle');
+      requestAnimationFrame(() => focusTarget?.focus?.());
     }
   }
 
@@ -3818,67 +4014,83 @@ ${runtime.core.profileCompletionContract()}`;
     root.dataset.state = 'busy';
     root.innerHTML = `
       <button class="mvu-kc-toggle" type="button" aria-label="打开MVU人物与世界医生">
-        <span aria-hidden="true">🩺</span><span class="mvu-kc-toggle-label">医生</span><span data-role="status-badge" class="mvu-kc-badge"></span>
+        <span class="mvu-kc-toggle-mark" aria-hidden="true">✦</span>
+        <span class="mvu-kc-toggle-copy"><strong>Doctor</strong><small data-role="launcher-state">MVU & World</small></span>
+        <span data-role="status-badge" class="mvu-kc-badge"></span>
       </button>
       <button class="mvu-kc-scrim" data-role="close" type="button" aria-label="关闭医生控制台"></button>
       <section class="mvu-kc-console" role="dialog" aria-modal="true" aria-hidden="true" aria-label="MVU人物与世界医生控制台" inert>
         <header class="mvu-kc-header">
-          <div><div class="mvu-kc-eyebrow">KEMINI CLEAN</div><h1>人物与世界医生</h1></div>
-          <button data-role="close" class="mvu-kc-icon-button" type="button" aria-label="关闭">×</button>
+          <div class="mvu-kc-brand">
+            <span class="mvu-kc-brand-mark" aria-hidden="true">✦</span>
+            <div><div class="mvu-kc-eyebrow">KEMINI CLEAN · ${DOCTOR_VERSION}</div><h1>人物与世界医生</h1></div>
+          </div>
+          <div class="mvu-kc-header-actions"><span data-role="status-tone" class="mvu-kc-tone" data-severity="info">正在工作</span><button data-role="close" class="mvu-kc-icon-button" type="button" aria-label="关闭">×</button></div>
         </header>
-        <section class="mvu-kc-live">
-          <div><strong data-role="phase">正在初始化</strong><p data-role="detail"></p></div>
+        <section class="mvu-kc-live" aria-live="polite">
+          <div class="mvu-kc-live-copy"><span class="mvu-kc-live-pulse" aria-hidden="true"></span><div><strong data-role="phase">正在初始化</strong><p data-role="detail"></p></div></div>
           <div data-role="metrics" class="mvu-kc-metrics">档案 0 · 活跃世界项 0 · 0s</div>
         </section>
+        <section class="mvu-kc-progress" aria-label="本轮医生处理进度">
+          <div data-stage="recall"><span class="mvu-kc-step-icon">01</span><span><strong>召回</strong><small data-stage-label>等待</small></span></div>
+          <div data-stage="variable"><span class="mvu-kc-step-icon">02</span><span><strong>MVU</strong><small data-stage-label>等待</small></span></div>
+          <div data-stage="profiles"><span class="mvu-kc-step-icon">03</span><span><strong>档案</strong><small data-stage-label>等待</small></span></div>
+          <div data-stage="world"><span class="mvu-kc-step-icon">04</span><span><strong>世界</strong><small data-stage-label>等待</small></span></div>
+        </section>
         <nav class="mvu-kc-tabs" aria-label="医生页面">
-          <button data-tab="overview" aria-selected="true" type="button">总览</button>
-          <button data-tab="connection" aria-selected="false" type="button">连接</button>
-          <button data-tab="profiles" aria-selected="false" type="button">人物</button>
-          <button data-tab="world" aria-selected="false" type="button">世界</button>
-          <button data-tab="diagnostics" aria-selected="false" type="button">诊断</button>
+          <button data-tab="overview" aria-selected="true" type="button"><span>⌂</span><small>总览</small></button>
+          <button data-tab="connection" aria-selected="false" type="button"><span>◎</span><small>连接</small></button>
+          <button data-tab="profiles" aria-selected="false" type="button"><span>♙</span><small>人物</small></button>
+          <button data-tab="world" aria-selected="false" type="button"><span>◇</span><small>世界</small></button>
+          <button data-tab="diagnostics" aria-selected="false" type="button"><span>⌁</span><small>诊断</small></button>
         </nav>
         <main class="mvu-kc-main">
           <section data-panel="overview">
-            <div class="mvu-kc-status-card"><span class="mvu-kc-status-dot"></span><div><h2 data-role="status-summary">医生正在初始化</h2><p data-role="status-action">请稍候。</p></div></div>
-            <div class="mvu-kc-card"><h2>基础运行</h2><div class="mvu-kc-form-grid">
-              <label><span>启用医生</span><input data-role="enabled" type="checkbox"></label>
-              <label><span>正文后修复MVU变量</span><input data-role="variableDoctor" type="checkbox"></label>
-              <label><span>正文后推进世界</span><input data-role="world" type="checkbox"></label>
+            <div class="mvu-kc-status-card mvu-kc-status-hero"><span class="mvu-kc-status-dot"></span><div><span class="mvu-kc-card-kicker">当前结论</span><h2 data-role="status-summary">医生正在初始化</h2><p data-role="status-action">请稍候。</p></div></div>
+            <div class="mvu-kc-stat-grid">
+              <article><span>完整人物档案</span><strong data-role="metric-profiles">0</strong><small>当前聊天</small></article>
+              <article><span>活跃世界事项</span><strong data-role="metric-world">0</strong><small>支线与行动</small></article>
+              <article><span>本轮医生耗时</span><strong data-role="metric-duration">—</strong><small>正文结束后</small></article>
+            </div>
+            <article class="mvu-kc-card mvu-kc-last-run"><div class="mvu-kc-card-head"><div><span class="mvu-kc-card-kicker">最近一次完整运行</span><h2 data-role="last-run-title">当前聊天还没有完整医生运行</h2></div><time data-role="last-run-time"></time></div><p data-role="last-run-detail" class="mvu-kc-muted">生成一条新的助手回复后，这里会显示真实终态。</p></article>
+            <article class="mvu-kc-card"><div class="mvu-kc-card-head"><div><span class="mvu-kc-card-kicker">快速恢复</span><h2>只做你点下的这一步</h2></div><span data-role="connection-summary" class="mvu-kc-chip">继承酒馆当前模型</span></div><div class="mvu-kc-actions mvu-kc-actions-grid"><button data-role="manualVariableAudit" class="mvu-kc-primary" type="button">重新检查当前MVU变量</button><button data-role="undoVariableRepair" type="button" disabled>没有可撤销的变量修复</button><button data-role="retry" type="button" disabled>当前没有可重试任务</button><button data-role="cancel" class="mvu-kc-danger" type="button">取消当前任务</button></div></article>
+            <details class="mvu-kc-settings-group"><summary><span><strong>基础运行设置</strong><small>自动医生、票据、召回与重试</small></span><span aria-hidden="true">⌄</span></summary><div class="mvu-kc-settings-body"><div class="mvu-kc-form-grid">
+              <label class="mvu-kc-switch"><span><strong>启用医生</strong><small>正文结束后运行处理链</small></span><input data-role="enabled" type="checkbox"></label>
+              <label class="mvu-kc-switch"><span><strong>修复MVU变量</strong><small>先于人物与世界处理</small></span><input data-role="variableDoctor" type="checkbox"></label>
+              <label class="mvu-kc-switch"><span><strong>推进私密世界</strong><small>正文只接收公开投影</small></span><input data-role="world" type="checkbox"></label>
               <label><span>候选人物票据</span><input data-role="tickets" type="number" min="1" max="24"></label>
               <label><span>召回世界项上限</span><input data-role="recall" type="number" min="1" max="16"></label>
               <label><span>失败后额外重试次数</span><input data-role="repairs" type="number" min="0" max="3"></label>
-            </div><button data-role="save" class="mvu-kc-primary" type="button">保存基础设置</button></div>
-            <div class="mvu-kc-actions"><button data-role="manualVariableAudit" class="mvu-kc-primary" type="button">重新检查当前MVU变量</button><button data-role="undoVariableRepair" type="button" disabled>没有可撤销的变量修复</button><button data-role="retry" type="button" disabled>当前没有可重试任务</button><button data-role="cancel" class="mvu-kc-danger" type="button">取消当前任务</button></div>
+            </div><div class="mvu-kc-actions"><button data-role="save" class="mvu-kc-primary" type="button">保存基础设置</button></div></div></details>
           </section>
           <section data-panel="connection" hidden>
-            <div class="mvu-kc-card"><h2>医生模型连接</h2><p class="mvu-kc-muted">可以继承酒馆当前模型，也可以使用独立的OpenAI兼容API。人物修复与世界推进共用此连接。</p>
+            <div class="mvu-kc-section-head"><div><span class="mvu-kc-card-kicker">MODEL ROUTING</span><h2>医生模型连接</h2><p>人物修复与世界推进共用一条清楚的连接；所有模块只继承这一处全局附加提示词。</p></div></div>
+            <details class="mvu-kc-settings-group" open><summary><span><strong>连接与模型</strong><small data-role="connection-summary">继承酒馆当前模型</small></span><span aria-hidden="true">⌄</span></summary><div class="mvu-kc-settings-body">
               <label class="mvu-kc-field"><span>连接方式</span><select data-role="apiMode"><option value="tavern">继承酒馆当前模型</option><option value="custom">自定义OpenAI兼容API</option></select></label>
-              <label class="mvu-kc-field"><span>API地址</span><input data-role="apiEndpoint" data-custom-api type="url" placeholder="https://example.com/v1"></label>
+              <div class="mvu-kc-form-grid"><label class="mvu-kc-field"><span>API地址</span><input data-role="apiEndpoint" data-custom-api type="url" placeholder="https://example.com/v1"></label><label class="mvu-kc-field"><span>模型</span><input data-role="apiModel" data-custom-api list="mvu-kc-models" type="text" placeholder="model-name"><datalist id="mvu-kc-models"></datalist></label></div>
               <label class="mvu-kc-field"><span>API密钥</span><input data-role="apiKey" data-custom-api type="password" autocomplete="off" placeholder="可留空用于本地服务"></label>
-              <label class="mvu-kc-reveal"><input data-role="revealKey" type="checkbox"><span>显示密钥</span></label>
-              <label class="mvu-kc-field"><span>模型</span><input data-role="apiModel" data-custom-api list="mvu-kc-models" type="text" placeholder="model-name"><datalist id="mvu-kc-models"></datalist></label>
-              <div class="mvu-kc-form-grid"><label><span>变量医生输出上限</span><input data-role="variableTokens" type="number" min="1000" max="32768"></label><label><span>人物输出上限</span><input data-role="profileTokens" type="number" min="1000" max="32768"></label><label><span>世界输出上限</span><input data-role="worldTokens" type="number" min="512" max="16384"></label></div>
-              <label class="mvu-kc-field"><span>全局模型适配附加提示词</span><textarea data-role="additionalPrompt" rows="5" placeholder="可留空。人物档案修复与世界推进都会追加这段提示词。"></textarea></label>
-              <p class="mvu-kc-muted">只有这一个全局入口；不会写入预设、世界书或聊天诊断。</p>
+              <label class="mvu-kc-reveal"><input data-role="revealKey" type="checkbox"><span>临时显示密钥</span></label>
               <div class="mvu-kc-actions"><button data-role="save" class="mvu-kc-primary" type="button">保存连接</button><button data-role="models" data-custom-api type="button">获取模型</button><button data-role="testApi" type="button">测试连接</button></div>
-              <p data-role="api-status" class="mvu-kc-api-status">尚未测试连接。</p>
-            </div>
+              <p data-role="api-status" class="mvu-kc-api-status" data-severity="info">尚未测试连接。</p>
+            </div></details>
+            <details class="mvu-kc-settings-group"><summary><span><strong>输出预算</strong><small>只限制医生模型输出，不裁剪任务总时长</small></span><span aria-hidden="true">⌄</span></summary><div class="mvu-kc-settings-body"><div class="mvu-kc-form-grid"><label><span>变量医生上限</span><input data-role="variableTokens" type="number" min="1000" max="32768"></label><label><span>人物档案上限</span><input data-role="profileTokens" type="number" min="1000" max="32768"></label><label><span>世界引擎上限</span><input data-role="worldTokens" type="number" min="512" max="16384"></label></div><button data-role="save" class="mvu-kc-primary" type="button">保存输出预算</button></div></details>
+            <details class="mvu-kc-settings-group"><summary><span><strong>全局模型适配</strong><small>唯一入口 · 向医生模型追加</small></span><span aria-hidden="true">⌄</span></summary><div class="mvu-kc-settings-body"><label class="mvu-kc-field"><span>附加提示词</span><textarea data-role="additionalPrompt" rows="6" placeholder="可留空。变量、人物和世界医生都会追加这段提示词。"></textarea></label><p class="mvu-kc-muted">不会写入预设、世界书或聊天诊断；模块级覆盖不在基础界面制造重复入口。</p><button data-role="save" class="mvu-kc-primary" type="button">保存适配提示词</button></div></details>
           </section>
           <section data-panel="profiles" hidden>
-            <div class="mvu-kc-toolbar"><div><h2>人物档案</h2><span data-role="profile-count">0 人</span></div><button data-role="refresh" type="button">刷新读取</button></div>
-            <label class="mvu-kc-field"><span>选择人物</span><select data-role="profile-select"></select></label>
+            <div class="mvu-kc-section-head mvu-kc-toolbar"><div><span class="mvu-kc-card-kicker">ACTOR ARCHIVE</span><h2>完整人物档案</h2><p><span data-role="profile-count">0 人</span> · 只显示已经原子提交并能读回的档案</p></div><button data-role="refresh" type="button">刷新读取</button></div>
+            <label class="mvu-kc-field mvu-kc-select-hero"><span>选择人物</span><select data-role="profile-select"></select></label>
             <div data-role="profile-content" class="mvu-kc-profile-content"></div>
           </section>
           <section data-panel="world" hidden>
-            <div class="mvu-kc-toolbar"><div><h2>世界与支线</h2><span>医生可查看完整私有状态；正文只接收公开投影</span></div><button data-role="refresh" type="button">刷新显示</button></div>
-            <div class="mvu-kc-card"><h3>世界摘要</h3><p data-role="world-summary"></p></div>
+            <div class="mvu-kc-section-head mvu-kc-toolbar"><div><span class="mvu-kc-card-kicker">PRIVATE CONTINUITY</span><h2>世界与支线</h2><p>这里可查看医生私有真相；正文只接收公开表象、线索与合法揭示。</p></div><button data-role="refresh" type="button">刷新显示</button></div>
+            <article class="mvu-kc-card mvu-kc-world-summary"><span class="mvu-kc-card-kicker">本轮世界摘要</span><h3>持续发生的世界</h3><p data-role="world-summary"></p></article>
             <p data-role="world-persistence" class="mvu-kc-api-status">世界状态尚未读取。</p>
             <div data-role="world-list" class="mvu-kc-world-list"></div>
           </section>
           <section data-panel="diagnostics" hidden>
-            <div class="mvu-kc-toolbar"><div><h2>诊断与恢复</h2><span>保存当前聊天诊断、最近24次完整运行及变量修复事务</span></div><button data-role="refresh" type="button">刷新</button></div>
-            <p class="mvu-kc-warning">“完整报告”不脱敏，会包含正文、变量、人物、世界、医生提示和模型原始返回；只排除API连接与凭据。仅用于你本地分析。</p>
-            <div class="mvu-kc-actions"><button data-role="manualVariableAudit" class="mvu-kc-primary" type="button">重新检查当前MVU变量</button><button data-role="undoVariableRepair" type="button" disabled>没有可撤销的变量修复</button><button data-role="retry" type="button" disabled>当前没有可重试任务</button><button data-role="copyDiagnostics" type="button">复制脱敏诊断</button><button data-role="exportFullReport" type="button">导出完整报告（除API）</button><button data-role="clearDiagnostics" class="mvu-kc-danger" type="button">清空诊断</button></div>
+            <div class="mvu-kc-section-head mvu-kc-toolbar"><div><span class="mvu-kc-card-kicker">RECOVERY & EVIDENCE</span><h2>诊断与恢复</h2><p>先显示成功、失败、影响和下一步；技术证据保留在完整报告。</p></div><button data-role="refresh" type="button">刷新</button></div>
+            <article class="mvu-kc-warning"><strong>完整报告不会脱敏。</strong><span>它包含正文、变量、人物、世界、医生提示与模型原始返回，只排除API连接和凭据。仅用于本地分析。</span></article>
+            <article class="mvu-kc-card"><div class="mvu-kc-card-head"><div><span class="mvu-kc-card-kicker">恢复操作</span><h3>每个按钮只处理对应目标</h3></div></div><div class="mvu-kc-actions"><button data-role="manualVariableAudit" class="mvu-kc-primary" type="button">重新检查当前MVU变量</button><button data-role="undoVariableRepair" type="button" disabled>没有可撤销的变量修复</button><button data-role="retry" type="button" disabled>当前没有可重试任务</button><button data-role="copyDiagnostics" type="button">复制脱敏诊断</button><button data-role="exportFullReport" type="button">导出完整报告（除API）</button><button data-role="clearDiagnostics" class="mvu-kc-danger" type="button">清空诊断</button></div></article>
             <div data-role="diagnostic-list" class="mvu-kc-diagnostic-list"></div>
           </section>
         </main>

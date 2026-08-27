@@ -6,8 +6,8 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.6.0控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
-  assert.match(source, /const DOCTOR_VERSION = '0\.6\.0'/);
+test('0.6.1控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
+  assert.match(source, /const DOCTOR_VERSION = '0\.6\.1'/);
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -24,9 +24,10 @@ test('0.6.0控制台包含变量、连接、人物、世界、诊断与独立手
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.6.0');
-  assert.match(source, /AuditReceipt/);
-  assert.match(source, /validateVariableAuditReceipt/);
+  assert.equal(manifest.version, '0.6.1');
+  assert.match(source, /normalizeVariableOperations/);
+  assert.match(source, /assessVariableBaseline/);
+  assert.doesNotMatch(source, /<AuditReceipt>/);
   assert.match(source, /variable:dry-run-failed/);
   assert.match(source, /人物档案与世界不会在变量未闭合时继续/);
   assert.doesNotMatch(source, /schemaRejected:\s*true/);
@@ -96,8 +97,6 @@ test('人物和世界内容使用textContent节点渲染且移动端为全屏控
   assert.match(source, /profileSection\(/);
   assert.match(source, /renderWorld\(/);
   assert.match(source, /redactDiagnostic/);
-  assert.match(css, /@media \(max-width: 720px\)/);
-  assert.match(css, /width: 100vw/);
-  assert.match(css, /height: 100dvh/);
+  assert.match(css, /@media \(max-width: \d+px\)[\s\S]*?\.mvu-kc-console \{ inset: 0; width: 100vw; height: 100vh; height: 100dvh;/);
   assert.match(css, /prefers-reduced-motion/);
 });

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assessVariableBaseline,
   buildProfilePatch,
   buildVariableAuditChecklist,
   capturePathSnapshot,
@@ -12,6 +13,7 @@ import {
   mergeProfileRootDirect,
   mergeProfileCandidates,
   mergeUpdateVariableBlocks,
+  normalizeVariableOperations,
   normalizeProfileCandidates,
   parseProfileReceipt,
   parseUpdateVariableBlock,
@@ -27,7 +29,6 @@ import {
   selectWorldRecall,
   statDataOf,
   validatePatchOperations,
-  validateVariableAuditReceipt,
   verifyCommittedProfiles,
   verifyPatchOperations,
   verifyPatchApplication,
@@ -106,28 +107,41 @@ test('变量医生解析无限回廊UpdateVariable并把原更新与纠错合并
   assert.equal((merged.message.match(/<UpdateVariable/g) || []).length, 1);
 });
 
-test('空补丁必须带本轮逐项审计回执，不能把模型的一句nochange当成功', () => {
-  const currentData = { stat_data: { 背包: { 武器: '短剑' }, 关系: { 林澄: { 好感: 0, 恐惧: 3 } } } };
-  const checklist = buildVariableAuditChecklist({ narrative: '她因胁迫而恐惧，并把短剑交给守卫。', currentData });
-  const missing = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>');
-  assert.equal(validateVariableAuditReceipt(missing, { auditId: 'a-1', checklist, currentData }).ok, false);
-  const checks = checklist.map((item) => ({
-    category: item.id,
-    status: item.risk && item.paths.length ? 'consistent' : 'not_applicable',
-    evidence: item.risk ? '已逐项对照正文事件与当前状态' : '本轮正文没有该类已裁决变化',
-    narrativeQuote: item.risk && item.id !== 'opening_and_initialization' ? '她因' : '',
-    statePaths: item.risk && item.paths.length ? [item.paths[0]] : [],
-    stateObservations: item.risk && item.paths.length ? [{
-      path: item.paths[0],
-      value: item.paths[0].split('/').slice(1).reduce((value, key) => value?.[key], currentData.stat_data),
-    }] : [],
-  }));
-  const raw = `<UpdateVariable><AuditReceipt>${JSON.stringify({ auditId: 'a-1', verdict: 'nochange', checks })}</AuditReceipt><JSONPatch>[]</JSONPatch></UpdateVariable>`;
-  const parsed = parseUpdateVariableBlock(raw);
-  assert.equal(validateVariableAuditReceipt(parsed, { auditId: 'a-1', checklist, currentData, narrative: '她因胁迫而恐惧，并把短剑交给守卫。' }).ok, true);
-  checks.find((item) => item.category === 'inventory_and_transfer').statePaths = ['/背包/不存在'];
-  const invalidPath = parseUpdateVariableBlock(`<UpdateVariable><AuditReceipt>${JSON.stringify({ auditId: 'a-1', verdict: 'nochange', checks })}</AuditReceipt><JSONPatch>[]</JSONPatch></UpdateVariable>`);
-  assert.equal(validateVariableAuditReceipt(invalidPath, { auditId: 'a-1', checklist, currentData, narrative: '她因胁迫而恐惧，并把短剑交给守卫。' }).ok, false);
+test('变量区块只接受单一写入源，并保留模型分析但不要求伪证式回执', () => {
+  const one = parseUpdateVariableBlock('<UpdateVariable><Analysis>逐项核对后无需修复。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>');
+  assert.equal(one.ok, true);
+  assert.equal(one.analysis, '逐项核对后无需修复。');
+  const two = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable><UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>');
+  assert.equal(two.ok, false);
+  assert.equal(two.code, 'multiple-blocks');
+});
+
+test('变量操作在脚本侧确定性修复常见MVU写法而不猜不存在路径', () => {
+  const currentData = { stat_data: { 契约者: { 经济: { UP: [10, '通用点数'] }, 背包: { 旧物: '钥匙' } } } };
+  const normalized = normalizeVariableOperations(currentData, [
+    { op: 'set', path: '/stat_data/契约者/经济/UP/', value: [12, '通用点数'] },
+    { op: 'delta', path: '/契约者/经济/UP', value: '3' },
+    { op: 'move', from: '/契约者/背包/旧物', to: '/契约者/背包/钥匙' },
+  ]);
+  assert.equal(normalized.ok, true);
+  assert.deepEqual(normalized.operations, [
+    { op: 'replace', path: '/契约者/经济/UP', value: 12 },
+    { op: 'delta', path: '/契约者/经济/UP', value: 3 },
+    { op: 'insert', path: '/契约者/背包/钥匙', value: '钥匙' },
+    { op: 'remove', path: '/契约者/背包/旧物' },
+  ]);
+  assert.equal(normalizeVariableOperations(currentData, [{ op: 'replace', path: '/完全不存在', value: 1 }]).operations[0].path, '/完全不存在');
+});
+
+test('变量基线用真实前后状态识别死区块与已落地原更新', () => {
+  const previousData = { stat_data: { 玩家: { 金钱: 10 } } };
+  const unchanged = { stat_data: { 玩家: { 金钱: 10 } } };
+  const suspicious = assessVariableBaseline({ narrative: '支付了三枚金币。', previousData, currentData: unchanged, original: { ok: false, error: '缺少区块' } });
+  assert.equal(suspicious.requiresCorrection, true);
+  const original = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"delta","path":"/玩家/金钱","value":-3}]</JSONPatch></UpdateVariable>');
+  const reflected = assessVariableBaseline({ narrative: '支付了三枚金币。', previousData, currentData: { stat_data: { 玩家: { 金钱: 7 } } }, original });
+  assert.equal(reflected.code, 'original_patch_reflected');
+  assert.equal(reflected.requiresCorrection, false);
 });
 
 test('变量纠错在交给MVU前拒绝不存在路径与复杂节点整块覆盖', () => {
@@ -140,6 +154,10 @@ test('变量纠错在交给MVU前拒绝不存在路径与复杂节点整块覆�
   assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/经济', value: {} }]).ok, false);
   const move = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"move","from":"/契约者/经济/UP","to":"/契约者/经济/余额"}]</JSONPatch></UpdateVariable>');
   assert.equal(move.ok, true);
+  const described = { stat_data: { 契约者: { 经济: { UP: [10, '通用点数'] } } } };
+  const vwd = validatePatchOperations(described, [{ op: 'delta', path: '/契约者/经济/UP', value: 2 }]);
+  assert.equal(vwd.ok, true);
+  assert.deepEqual(vwd.expected.契约者.经济.UP, [12, '通用点数']);
 });
 
 test('变量补丁必须拒绝目标外旁路变化，回滚只恢复本事务触碰路径', () => {

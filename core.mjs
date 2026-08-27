@@ -243,6 +243,9 @@ function parseJsonWithLocalRepair(text) {
 }
 
 const PATCH_OPERATIONS = new Set(['replace', 'delta', 'insert', 'remove', 'move']);
+const PATCH_OPERATION_ALIASES = Object.freeze({
+  add: 'insert', set: 'replace', update: 'replace', change: 'replace', modify: 'replace', 修改: 'replace',
+});
 export const VARIABLE_AUDIT_CATEGORIES = Object.freeze([
   'opening_and_initialization',
   'numeric_and_derived',
@@ -256,7 +259,8 @@ export const VARIABLE_AUDIT_CATEGORIES = Object.freeze([
 export function parseUpdateVariableBlock(message) {
   const source = String(message || '');
   const blocks = [...source.matchAll(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi)];
-  const rawBlock = blocks.at(-1)?.[0] || '';
+  if (blocks.length > 1) return { ok: false, code: 'multiple-blocks', error: `检测到${blocks.length}个<UpdateVariable>区块，拒绝选择或合并`, operations: [] };
+  const rawBlock = blocks[0]?.[0] || '';
   if (!rawBlock) return { ok: false, error: '缺少完整的<UpdateVariable>区块', operations: [] };
   const patch = rawBlock.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/i)?.[1];
   if (patch == null) return { ok: false, error: 'UpdateVariable缺少完整的JSONPatch区块', operations: [] };
@@ -267,7 +271,8 @@ export function parseUpdateVariableBlock(message) {
   const operations = [];
   for (const [index, raw] of parsed.entries()) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: `第${index + 1}个变量操作不是对象`, operations: [] };
-    const operation = { ...raw, op: raw.op === 'add' ? 'insert' : String(raw.op || '').toLowerCase() };
+    const rawVerb = String(raw.op || '').toLowerCase();
+    const operation = { ...raw, op: PATCH_OPERATION_ALIASES[rawVerb] || rawVerb };
     if (!PATCH_OPERATIONS.has(operation.op)) return { ok: false, error: `第${index + 1}个变量操作不受支持：${operation.op || '空'}`, operations: [] };
     if (['replace', 'delta', 'insert'].includes(operation.op) && !Object.prototype.hasOwnProperty.call(operation, 'value')) return { ok: false, error: `第${index + 1}个${operation.op}操作缺少value`, operations: [] };
     if (operation.op === 'move') {
@@ -281,15 +286,9 @@ export function parseUpdateVariableBlock(message) {
     }
     operations.push(operation);
   }
-  const receiptText = rawBlock.match(/<AuditReceipt\b[^>]*>([\s\S]*?)<\/AuditReceipt\s*>/i)?.[1];
-  let receipt = null;
-  if (receiptText != null) {
-    try { receipt = parseJsonWithLocalRepair(receiptText); }
-    catch (error) { return { ok: false, error: `AuditReceipt无法解析：${error.message || error}`, operations: [] }; }
-    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return { ok: false, error: 'AuditReceipt必须是JSON对象', operations: [] };
-  }
+  const analysis = rawBlock.match(/<Analysis\b[^>]*>([\s\S]*?)<\/Analysis\s*>/i)?.[1]?.trim() || '';
   const block = buildUpdateVariableBlock(operations, '变量医生仅提交经MVU解析验证的纠错补丁。');
-  return { ok: true, operations, block, rawBlock, receipt };
+  return { ok: true, operations, block, rawBlock, analysis };
 }
 
 export function buildUpdateVariableBlock(operations, analysis = '变量更新。') {
@@ -408,84 +407,181 @@ function matchingStatePaths(data, pattern, limit = 12) {
   return [...new Set(paths)];
 }
 
+function changedStatePaths(previousData, currentData, originalOperations = []) {
+  const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
+  if (hasPrevious) return diffStatData(previousData, currentData, 1200).map((item) => String(item.path || '')).filter(Boolean);
+  return originalOperations.flatMap((item) => [item?.path, item?.from, item?.to]).map(String).filter((path) => path.startsWith('/'));
+}
+
+function pathsMatching(paths, pattern, limit = 12) {
+  return [...new Set((paths || []).filter((path) => pattern.test(String(path))))].slice(0, limit);
+}
+
 export function buildVariableAuditChecklist({ narrative = '', previousData = null, currentData = null, originalOperations = [] } = {}) {
   const text = String(narrative || '');
   const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
+  const changedPaths = changedStatePaths(previousData, currentData, originalOperations);
   const rules = {
     opening_and_initialization: {
       risk: !hasPrevious,
       reason: !hasPrevious ? '这是首个可用状态，必须核对初始化、基础值与派生值闭包' : '核对初始化字段是否被后续正文合法改变',
       paths: matchingStatePaths(currentData, /初始|基础|属性|能力|等级|生命|法力|体力|力量|敏捷|智力|精神|魅力|幸运/u),
+      changedPaths: pathsMatching(changedPaths, /初始|基础|属性|能力|等级|生命|法力|体力|力量|敏捷|智力|精神|魅力|幸运/u),
     },
     numeric_and_derived: {
       risk: /\d|增加|减少|提升|下降|获得|消耗|恢复|损失|结算/u.test(text) || originalOperations.some((item) => item?.op === 'delta' || typeof item?.value === 'number'),
       reason: '核对数值变化及由其决定的派生值，禁止只改来源不改结果或反向重复delta',
       paths: matchingStatePaths(currentData, /数值|属性|生命|法力|体力|经验|等级|点数|上限|当前|余额|金钱|货币|UP|积分|负重/u),
+      changedPaths: pathsMatching(changedPaths, /数值|属性|生命|法力|体力|经验|等级|点数|上限|当前|余额|金钱|货币|UP|积分|负重/u),
     },
     inventory_and_transfer: {
       risk: /获得|拿到|捡起|拾取|购买|装备|卸下|丢弃|扔下|放下|交给|递给|归还|失去|消耗|背包|物品|武器|护甲/u.test(text),
       reason: '核对物品所有权、装备槽、数量、负重和交易双方，动作描述不能代替实际转移',
       paths: matchingStatePaths(currentData, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
+      changedPaths: pathsMatching(changedPaths, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
     },
     dynamic_collections: {
       risk: /加入|离开|创建|解散|接受任务|完成任务|契约|队伍|成员|技能|状态|效果|事件|记录/u.test(text),
       reason: '核对动态对象的新增、删除、成员关系和状态生命周期',
       paths: matchingStatePaths(currentData, /任务|事件|队伍|成员|契约|技能|状态|效果|记录|列表/u),
+      changedPaths: pathsMatching(changedPaths, /任务|事件|队伍|成员|契约|技能|状态|效果|记录|列表/u),
     },
     relationship_and_mental_causality: {
       risk: /好感|信任|亲密|关系|恐惧|敬畏|畏惧|盲信|崇拜|操纵|洗脑|控制|胁迫|威慑|催眠/u.test(text),
       reason: '区分自愿关系变化、恐惧敬畏、强制操纵与暂时情绪；不得把控制结果伪装成好感提升',
       paths: matchingStatePaths(currentData, /关系|好感|信任|亲密|恐惧|敬畏|服从|控制|精神|情绪|态度|印象/u),
+      changedPaths: pathsMatching(changedPaths, /关系|好感|信任|亲密|恐惧|敬畏|服从|控制|精神|情绪|态度|印象/u),
     },
     time_location_and_cost: {
       risk: /前往|抵达|离开|过去了|小时|分钟|天|夜|清晨|中午|傍晚|花费|支付|代价|受伤/u.test(text),
       reason: '核对地点、时间、成本、伤势与已裁决后果，计划和尝试不能提前结算',
       paths: matchingStatePaths(currentData, /时间|日期|地点|位置|场景|伤势|健康|状态|消耗|代价/u),
+      changedPaths: pathsMatching(changedPaths, /时间|日期|地点|位置|场景|伤势|健康|状态|消耗|代价/u),
     },
     player_agency: {
       risk: false,
       reason: '确认补丁只记录玩家明确行动与已接受裁决，不替玩家补写同意、感受、动机或选择',
       paths: [],
+      changedPaths: [],
     },
   };
   return VARIABLE_AUDIT_CATEGORIES.map((id) => ({ id, ...rules[id] }));
 }
 
-export function validateVariableAuditReceipt(parsed, { auditId = '', checklist = [], currentData = null, narrative = '' } = {}) {
-  if (!parsed?.ok) return { ok: false, error: parsed?.error || '变量输出不可用' };
-  const receipt = parsed.receipt;
-  if (!receipt) return { ok: false, error: '缺少AuditReceipt，不能证明变量审计实际覆盖了必查项' };
-  if (String(receipt.auditId || '') !== String(auditId || '')) return { ok: false, error: 'AuditReceipt没有回显本轮审计编号' };
-  const verdict = String(receipt.verdict || '').toLowerCase();
-  const expectedVerdict = parsed.operations.length ? 'repair' : 'nochange';
-  if (verdict !== expectedVerdict) return { ok: false, error: `AuditReceipt结论与补丁不一致：应为${expectedVerdict}` };
-  if (!Array.isArray(receipt.checks)) return { ok: false, error: 'AuditReceipt.checks必须是数组' };
-  const byCategory = new Map(receipt.checks.map((item) => [String(item?.category || ''), item]));
-  for (const item of checklist) {
-    const claim = byCategory.get(item.id);
-    if (!claim) return { ok: false, error: `AuditReceipt漏检：${item.id}` };
-    const status = String(claim.status || '').toLowerCase();
-    if (!['consistent', 'repair_required', 'not_applicable'].includes(status)) return { ok: false, error: `AuditReceipt状态无效：${item.id}` };
-    if (String(claim.evidence || '').trim().length < 4) return { ok: false, error: `AuditReceipt缺少可读证据：${item.id}` };
-    const statePaths = Array.isArray(claim.statePaths) ? [...new Set(claim.statePaths.map(String))] : [];
-    if (statePaths.some((path) => !pointerValue(statDataOf(currentData), path).found)) return { ok: false, error: `AuditReceipt引用了不存在的当前状态路径：${item.id}` };
-    const observations = Array.isArray(claim.stateObservations) ? claim.stateObservations : [];
-    for (const observation of observations) {
-      const hit = pointerValue(statDataOf(currentData), String(observation?.path || ''));
-      if (!hit.found || !jsonEqual(hit.value, observation?.value)) return { ok: false, error: `AuditReceipt的状态观察与真实当前值不一致：${item.id}` };
-    }
-    if (item.risk && item.paths.length && status === 'not_applicable') return { ok: false, error: `高风险检查不能在已有相关状态路径时标记不适用：${item.id}` };
-    if (item.risk && status === 'consistent' && item.paths.length && (!statePaths.length || !observations.length)) return { ok: false, error: `高风险检查必须提交当前状态路径和精确值观察：${item.id}` };
-    if (item.risk && status !== 'not_applicable' && item.id !== 'opening_and_initialization') {
-      const quote = String(claim.narrativeQuote || '').trim();
-      if (quote.length < 2 || !String(narrative || '').includes(quote)) return { ok: false, error: `高风险检查没有引用最终正文中的原文证据：${item.id}` };
-    }
-    if (!parsed.operations.length && status === 'repair_required') return { ok: false, error: `声明需要修复但没有提交补丁：${item.id}` };
+function isValueWithDescription(value) {
+  return Array.isArray(value) && value.length === 2 && typeof value[1] === 'string' && !Array.isArray(value[0]);
+}
+
+function operationPathExists(stat, operation, path) {
+  if (typeof path !== 'string' || !path.startsWith('/')) return false;
+  if (operation === 'insert') {
+    const parent = parentPointer(path);
+    return parent === '/' ? Boolean(stat && typeof stat === 'object') : pointerValue(stat, parent).found;
   }
-  if (parsed.operations.length && !receipt.checks.some((item) => String(item?.status || '').toLowerCase() === 'repair_required')) {
-    return { ok: false, error: '提交了补丁但AuditReceipt没有说明哪一类需要修复' };
+  return pointerValue(stat, path).found;
+}
+
+function repairOperationPath(stat, operation, path) {
+  if (typeof path !== 'string' || !path.startsWith('/') || operationPathExists(stat, operation, path)) return { path, repair: '' };
+  const parts = pointerParts(path);
+  if (!parts) return { path, repair: '' };
+  const candidates = [];
+  if (parts[0] === 'stat_data' && !Object.prototype.hasOwnProperty.call(stat || {}, 'stat_data')) candidates.push(pointerPath(parts.slice(1)));
+  if (parts.some((part) => part === '')) candidates.push(pointerPath(parts.filter((part) => part !== '')));
+  if (parts[0] === 'stat_data' && parts.slice(1).some((part) => part === '') && !Object.prototype.hasOwnProperty.call(stat || {}, 'stat_data')) {
+    candidates.push(pointerPath(parts.slice(1).filter((part) => part !== '')));
   }
-  return { ok: true, verdict, receipt };
+  const fixed = candidates.find((candidate, index, all) => candidate !== path
+    && all.indexOf(candidate) === index
+    && operationPathExists(stat, operation, candidate));
+  return fixed ? { path: fixed, repair: `${path} → ${fixed}` } : { path, repair: '' };
+}
+
+export function normalizeVariableOperations(currentData, operations = []) {
+  const stat = statDataOf(currentData);
+  const normalized = [];
+  const repairs = [];
+  for (const [index, raw] of operations.entries()) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: `第${index + 1}个变量操作不是对象`, operations: [], repairs };
+    const alias = PATCH_OPERATION_ALIASES[String(raw.op || '').toLowerCase()] || String(raw.op || '').toLowerCase();
+    const operation = { ...deepClone(raw), op: alias };
+    if (!PATCH_OPERATIONS.has(operation.op)) return { ok: false, error: `第${index + 1}个变量操作不受支持：${operation.op || '空'}`, operations: [], repairs };
+    for (const key of operation.op === 'move' ? ['from', 'to'] : ['path']) {
+      const fixed = repairOperationPath(stat, operation.op === 'move' && key === 'to' ? 'insert' : operation.op, operation[key]);
+      if (fixed.repair) repairs.push({ index, kind: 'path', detail: fixed.repair });
+      operation[key] = fixed.path;
+    }
+    if (operation.op === 'delta' && typeof operation.value === 'string' && operation.value.trim() !== '' && Number.isFinite(Number(operation.value))) {
+      operation.value = Number(operation.value);
+      repairs.push({ index, kind: 'delta-number', detail: '已把数字字符串转换为数值' });
+    }
+    if (operation.op === 'replace') {
+      const current = pointerValue(stat, operation.path);
+      if (current.found && isValueWithDescription(current.value) && isValueWithDescription(operation.value)) {
+        operation.value = deepClone(operation.value[0]);
+        repairs.push({ index, kind: 'value-with-description', detail: '已保留说明槽，只写入第一格真实值' });
+      }
+    }
+    if (operation.op === 'move') {
+      const source = pointerValue(stat, operation.from);
+      const destination = pointerValue(stat, operation.to);
+      const destinationParent = parentPointer(operation.to);
+      const parentExists = destinationParent === '/' || pointerValue(stat, destinationParent).found;
+      if (!source.found || destination.found || !parentExists) {
+        return { ok: false, error: `第${index + 1}个move无法安全拆解：来源必须存在、目标必须不存在且目标父路径必须存在`, operations: [], repairs };
+      }
+      normalized.push({ op: 'insert', path: operation.to, value: deepClone(source.value) }, { op: 'remove', path: operation.from });
+      repairs.push({ index, kind: 'move', detail: '已按MVU实际支持的语义拆成insert + remove' });
+      continue;
+    }
+    normalized.push(operation);
+  }
+  return { ok: true, operations: normalized, repairs };
+}
+
+export function assessVariableBaseline({ narrative = '', previousData = null, currentData = null, original = null } = {}) {
+  const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
+  const diff = hasPrevious ? diffStatData(previousData, currentData, 1200) : [];
+  const checklist = buildVariableAuditChecklist({
+    narrative,
+    previousData,
+    currentData,
+    originalOperations: original?.ok ? original.operations : [],
+  });
+  const highRisk = checklist.filter((item) => item.risk).map((item) => item.id);
+  if (!hasPrevious) return { code: 'opening', requiresCorrection: false, diffCount: diff.length, highRisk, checklist };
+  if (!original?.ok) {
+    return {
+      code: diff.length ? 'unreadable_block_with_state_change' : 'missing_or_dead_block',
+      requiresCorrection: highRisk.length > 0 && diff.length === 0,
+      diffCount: diff.length,
+      highRisk,
+      checklist,
+      detail: original?.error || '正文没有可读取的变量更新区块',
+    };
+  }
+  const normalized = normalizeVariableOperations(previousData, original.operations);
+  if (!normalized.ok) return { code: 'original_patch_unsafe', requiresCorrection: true, diffCount: diff.length, highRisk, checklist, detail: normalized.error };
+  if (!normalized.operations.length) {
+    return {
+      code: diff.length ? 'empty_patch_with_state_change' : 'empty_patch',
+      requiresCorrection: highRisk.length > 0 && diff.length === 0,
+      diffCount: diff.length,
+      highRisk,
+      checklist,
+    };
+  }
+  const validation = validatePatchOperations(previousData, normalized.operations);
+  if (!validation.ok) return { code: 'original_patch_invalid', requiresCorrection: true, diffCount: diff.length, highRisk, checklist, detail: validation.error };
+  const reflected = verifyPatchOperations(currentData, validation);
+  return {
+    code: reflected ? 'original_patch_reflected' : 'original_patch_not_reflected',
+    requiresCorrection: !reflected,
+    diffCount: diff.length,
+    highRisk,
+    checklist,
+    repairs: normalized.repairs,
+  };
 }
 
 function schemaNodeAt(schema, parts) {
@@ -567,11 +663,18 @@ export function validatePatchOperations(currentData, operations) {
       } else parent.parent[parent.key] = deepClone(operation.value);
     } else if (operation.op === 'replace') {
       if (!hit.found) return { ok: false, error: `第${number}个replace目标不存在：${operation.path}` };
-      if (hit.value && typeof hit.value === 'object') return { ok: false, error: `第${number}个replace试图整体覆盖复杂节点：${operation.path}` };
-      parent.parent[parent.key] = deepClone(operation.value);
+      if (isValueWithDescription(hit.value)) {
+        if (operation.value && typeof operation.value === 'object') return { ok: false, error: `第${number}个replace必须只写值与说明结构的第一格：${operation.path}` };
+        parent.parent[parent.key][0] = deepClone(operation.value);
+      } else {
+        if (hit.value && typeof hit.value === 'object') return { ok: false, error: `第${number}个replace试图整体覆盖复杂节点：${operation.path}` };
+        parent.parent[parent.key] = deepClone(operation.value);
+      }
     } else if (operation.op === 'delta') {
-      if (!hit.found || typeof hit.value !== 'number' || typeof operation.value !== 'number' || !Number.isFinite(operation.value)) return { ok: false, error: `第${number}个delta目标或增量不是有效数字：${operation.path}` };
-      parent.parent[parent.key] = hit.value + operation.value;
+      const currentNumber = isValueWithDescription(hit.value) ? hit.value[0] : hit.value;
+      if (!hit.found || typeof currentNumber !== 'number' || typeof operation.value !== 'number' || !Number.isFinite(operation.value)) return { ok: false, error: `第${number}个delta目标或增量不是有效数字：${operation.path}` };
+      if (isValueWithDescription(hit.value)) parent.parent[parent.key][0] = currentNumber + operation.value;
+      else parent.parent[parent.key] = currentNumber + operation.value;
     } else if (operation.op === 'remove') {
       if (!hit.found) return { ok: false, error: `第${number}个remove目标不存在：${operation.path}` };
       if (Array.isArray(parent.parent)) {
