@@ -827,6 +827,23 @@ function asList(value) {
   return usableScalar(value) ? [value] : [];
 }
 
+export function profileCompletenessReport(profile, fallbackLabel = '人物档案') {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+    return { ok: false, errors: [`${fallbackLabel}不是对象`] };
+  }
+  const label = String(profile.name || fallbackLabel);
+  const errors = [];
+  for (const path of REQUIRED_TEXT_PATHS) {
+    if (!isNonEmptyText(at(profile, path))) errors.push(`${label}缺少可用字段：${path}`);
+  }
+  if (!Array.isArray(profile.aliases)) errors.push(`${label}的aliases不是数组`);
+  for (const path of REQUIRED_ARRAYS) {
+    const value = at(profile, path);
+    if (!Array.isArray(value) || value.length < 1) errors.push(`${label}缺少完整列表：${path}`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 export function profileNarrativeText(text) {
   return String(text || '')
     .replace(/<gm_chain\b[^>]*>[\s\S]*?<\/gm_chain\s*>/gi, '')
@@ -835,6 +852,99 @@ export function profileNarrativeText(text) {
     .replace(/<options?\b[^>]*>[\s\S]*?<\/options?\s*>/gi, '')
     .replace(/<人物档案(?:更新|无变化)\b[^>]*>[\s\S]*?<\/人物档案(?:更新|无变化)\s*>/gi, '')
     .replace(/<人物档案无变化\s*\/>/gi, '');
+}
+
+const PROFILE_SUBJECT_BLOCKLIST = new Set([
+  '系统', '旁白', '正文', '选项', '玩家', '用户', '助手', '角色', '人物', '众人', '人群',
+  '大家', '所有人', '其他人', '对方', '来人', '声音', '脚步声', '当前环境', '核心状态总览',
+  '战力与物资库', '人际与过往记录', '副本情报', '敌情警戒', '回廊地图', '职业树', '状态档案',
+  '时间', '地点', '状态', '任务', '目标', '说明', '注意', '提示', '分析', '结果', '回合', '场景', '环境',
+  '当前时间', '当前地点',
+]);
+const PROFILE_GENERIC_ROLE = new Set(['守卫', '卫兵', '店员', '老板', '掌柜', '医师', '医生', '护士', '队长', '领队', '船长', '祭司', '导师', '侍者', '佣兵', '商人', '学徒', '管理员', '少女', '少年', '男人', '女人', '老人', '男孩', '女孩', '旅人', '冒险者']);
+const PROFILE_ROLE_SUFFIX = /(?:接待员|引导者|守卫|卫兵|店员|老板|掌柜|医师|医生|护士|队长|领队|船长|祭司|导师|侍者|佣兵|商人|旅店老板|学徒|书记员|管理员|少女|少年|男人|女人|老人|男孩|女孩|旅人|冒险者)$/u;
+const PROFILE_ACTION_VERB = '(?:说(?:道)?|问(?:道)?|答(?:道)?|回答|喊(?:道)?|叫(?:道)?|开口|回应|解释|提醒|补充|嘀咕|咕哝|点头|摇头|抬手|伸手|转身|走进|走来|推开|递出|取出|收起|挡住|看向|望向|站起|坐下|笑(?:道)?|皱眉)';
+
+function normalizedSubjectLabel(value) {
+  let label = String(value || '')
+    .replace(/^[\s\[【(（“”"'‘’《》<>]+|[\s\]】)）“”"'‘’《》<>，,。.!！?？:：;；]+$/gu, '')
+    .replace(/^(?:这时|随后|忽然|只见|接着|于是|然后|此时|而后|片刻后|与此同时)+/u, '')
+    .replace(/^(?:那名|那位|那个|这名|这位|这个|一名|一位|一名看起来|一位看起来)/u, '')
+    .replace(/^.{1,10}(?:里的|中的|旁的|后的)/u, '')
+    .replace(/(?:轻声|低声|高声|缓缓|忽然|立刻|随即|平静地|认真地|小声地|冷冷地)?(?:说道|说|问道|问|答道|回答|喊道|喊|叫道|叫|开口|回应|解释|提醒|补充|嘀咕|咕哝|笑道)$/u, '')
+    .trim();
+  if (label.endsWith('们')) label = '';
+  return label;
+}
+
+function usableObservedSubject(label, source) {
+  if (!label || label.length > 24 || PROFILE_SUBJECT_BLOCKLIST.has(label)) return false;
+  if (/^(?:你|我|他|她|它|他们|她们|它们|自己|有人|某人|一个人|那人|此人)$/u.test(label)) return false;
+  if (/^(?:NPC[-_ ]?\d+|[A-Za-z][A-Za-z0-9_.-]{1,23})$/iu.test(label)) return true;
+  if (!/^[\p{Script=Han}A-Za-z0-9_.\-·]{2,24}$/u.test(label)) return false;
+  if (PROFILE_GENERIC_ROLE.has(label)) return source === 'speaker-label';
+  if (/\p{Script=Han}/u.test(label) && label.length <= 4) return true;
+  if (PROFILE_ROLE_SUFFIX.test(label)) return source === 'speaker-label' || label.length <= 12;
+  return source === 'speaker-label' && label.length <= 12;
+}
+
+function profileNamesFromInput(profiles) {
+  const values = Array.isArray(profiles) ? profiles : Object.values(profiles || {});
+  return new Set(values
+    .filter((profile) => profileCompletenessReport(profile).ok)
+    .flatMap((profile) => normalizedNames(profile)));
+}
+
+/**
+ * Conservatively discovers stable, directly participating subjects from the accepted narrative.
+ * This is an identity/coverage gate only: it never infers profile facts from free text.
+ */
+export function discoverProfileSubjects(text, options = {}) {
+  const narrative = profileNarrativeText(text).replace(/<[^>]+>/g, '\n');
+  const excluded = new Set([
+    ...profileNamesFromInput(options.existingProfiles),
+    ...(options.excludedNames || []).map((value) => String(value || '').trim().toLocaleLowerCase()),
+  ].filter(Boolean));
+  const found = new Map();
+  const record = (rawLabel, source, index) => {
+    const label = normalizedSubjectLabel(rawLabel);
+    const normalized = label.toLocaleLowerCase();
+    if (!usableObservedSubject(label, source) || excluded.has(normalized)) return;
+    const start = Math.max(0, Number(index) - 28);
+    const evidence = narrative.slice(start, Math.min(narrative.length, Number(index) + String(rawLabel || '').length + 48)).replace(/\s+/g, ' ').trim();
+    const current = found.get(normalized);
+    if (current) {
+      if (evidence && !current.evidence.includes(evidence)) current.evidence.push(evidence);
+      if (!current.sources.includes(source)) current.sources.push(source);
+      return;
+    }
+    found.set(normalized, { label, aliases: [label], evidence: evidence ? [evidence] : [], sources: [source], firstIndex: Number(index) || 0 });
+  };
+
+  const speakerLabels = /(?:^|\n)\s*(?:[-*>]\s*)?([^\n：:]{2,24})\s*[：:]/gu;
+  for (const match of narrative.matchAll(speakerLabels)) record(match[1], 'speaker-label', (match.index || 0) + match[0].indexOf(match[1]));
+
+  const stableIds = /\b(?:NPC[-_ ]?\d+|[A-Za-z][A-Za-z0-9_.-]{1,23})\b(?=\s*(?:[：:]|说|问|答|喊|开口|回应|点头|摇头|抬手|伸手|转身|走进|推开|看向))/giu;
+  for (const match of narrative.matchAll(stableIds)) record(match[0], 'stable-id', match.index || 0);
+
+  const actionSubjects = new RegExp(`(?:^|[。！？!?；;，,\\n“”"'‘’])\\s*([\\p{Script=Han}]{2,18}?)\\s*(?:轻声|低声|高声|缓缓|忽然|立刻|随即|平静地|认真地|小声地|冷冷地)?${PROFILE_ACTION_VERB}`, 'gu');
+  for (const match of narrative.matchAll(actionSubjects)) record(match[1], 'direct-action', (match.index || 0) + match[0].indexOf(match[1]));
+
+  return [...found.values()].sort((left, right) => left.firstIndex - right.firstIndex);
+}
+
+export function validateProfileSubjectCoverage(profiles, requiredSubjects = []) {
+  const coveredNames = new Set((Array.isArray(profiles) ? profiles : []).flatMap((profile) => normalizedNames(profile)));
+  const missing = (requiredSubjects || []).filter((subject) => {
+    const anchors = [subject?.label, ...(Array.isArray(subject?.aliases) ? subject.aliases : [])]
+      .map((value) => String(value || '').trim().toLocaleLowerCase()).filter(Boolean);
+    return !anchors.some((anchor) => coveredNames.has(anchor));
+  });
+  return {
+    ok: missing.length === 0,
+    missing,
+    errors: missing.map((subject) => `最终正文中的稳定出场人物“${subject.label}”没有被任何档案name或aliases覆盖`),
+  };
 }
 
 export function normalizeProfileCandidates(rawProfiles, acceptedText = '') {
@@ -967,14 +1077,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
     if (ids.has(profileId)) errors.push(`档案批次内profileId重复：${profileId}`);
     ids.add(profileId);
 
-    for (const path of REQUIRED_TEXT_PATHS) {
-      if (!isNonEmptyText(at(profile, path))) errors.push(`${profile.name || `第${index + 1}张档案`}缺少可用字段：${path}`);
-    }
-    if (!Array.isArray(profile.aliases)) errors.push(`${profile.name || profileId}的aliases不是数组`);
-    for (const path of REQUIRED_ARRAYS) {
-      const value = at(profile, path);
-      if (!Array.isArray(value) || value.length < 1) errors.push(`${profile.name || profileId}缺少完整列表：${path}`);
-    }
+    errors.push(...profileCompletenessReport(profile, `第${index + 1}张档案`).errors);
     prepared.push(profile);
   }
   return { ok: errors.length === 0, errors, profiles: prepared };
@@ -1799,7 +1902,23 @@ export function parseWorldState(raw, previous = {}) {
 }
 
 function tokens(text) {
-  return [...new Set(String(text || '').toLocaleLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) || [])];
+  const stop = new Set(['继续', '然后', '这个', '那个', '现在', '已经', '可以', '一个', '我们', '你们', '他们', '她们', '自己', '进行', '一下']);
+  const result = new Set();
+  const segments = String(text || '').toLocaleLowerCase().match(/[\p{Script=Han}]+|[A-Za-z0-9_.-]{2,}/gu) || [];
+  for (const segment of segments) {
+    if (!/\p{Script=Han}/u.test(segment)) {
+      if (!stop.has(segment)) result.add(segment);
+      continue;
+    }
+    if (segment.length <= 8 && !stop.has(segment)) result.add(segment);
+    for (const size of [2, 3]) {
+      for (let index = 0; index <= segment.length - size && result.size < 512; index += 1) {
+        const term = segment.slice(index, index + size);
+        if (!stop.has(term)) result.add(term);
+      }
+    }
+  }
+  return [...result];
 }
 
 function safePublicText(value) {
@@ -1871,23 +1990,22 @@ export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
       ...normalized.threads.map((entry) => ({ ...entry, recordType: 'thread' })),
       ...normalized.attempts.slice(-40).map((entry) => ({ ...entry, recordType: 'attempt', adjudication: resultsByAttempt.get(entry.attemptId) || null })),
     ].map((entry) => {
-      const haystack = tokens(JSON.stringify(entry));
+      const projection = entry.recordType === 'thread'
+        ? narrativeThreadProjection(entry)
+        : narrativeAttemptProjection(entry, entry.adjudication);
+      if (!projection) return null;
+      const haystack = tokens(JSON.stringify(projection));
       let score = Number(entry.urgency) || (entry.recordType === 'attempt' ? 3 : 2);
+      let relevance = 0;
       for (const token of haystack) {
-        if (needle.has(token)) score += 5;
-        else if ([...needle].some((part) => token.includes(part) || part.includes(token))) score += 2;
+        if (needle.has(token)) relevance += token.length >= 3 ? 5 : 2;
       }
-      return { ...entry, score };
-    }).sort((a, b) => b.score - a.score || String(b.updatedAt || b.sourceRef?.at || '').localeCompare(String(a.updatedAt || a.sourceRef?.at || '')));
-    return records
-      .map((entry) => {
-        const projected = entry.recordType === 'thread'
-          ? narrativeThreadProjection(entry)
-          : narrativeAttemptProjection(entry, entry.adjudication);
-        return projected ? { ...projected, score: entry.score } : null;
-      })
-      .filter(Boolean)
-      .slice(0, Math.max(1, Math.min(16, Number(limit) || 8)));
+      return { projection, score: score + relevance, relevance, updatedAt: entry.updatedAt || entry.sourceRef?.at || '' };
+    }).filter(Boolean).sort((a, b) => b.score - a.score || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    const relevant = records.filter((entry) => entry.relevance > 0);
+    const selected = relevant.length ? relevant : records.slice(0, Math.min(2, records.length));
+    return selected.slice(0, Math.max(1, Math.min(16, Number(limit) || 8)))
+      .map((entry) => ({ ...entry.projection, score: entry.score }));
   }
   return selectWorldRecall(normalizeWorldState(world, { chatId: world?.chatId }), userInput, profiles, limit);
 }
@@ -1905,11 +2023,77 @@ export function reserveRecallPackage(worldInput, recallPackage) {
   return world;
 }
 
+function recallComparableText(value) {
+  return String(value || '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function recallBigrams(value) {
+  const text = recallComparableText(value);
+  const result = new Set();
+  for (let index = 0; index < text.length - 1; index += 1) result.add(text.slice(index, index + 2));
+  return result;
+}
+
+function recallPublicFragments(item) {
+  return [
+    item?.publicSurface,
+    ...(Array.isArray(item?.publicClues) ? item.publicClues : []),
+    ...(Array.isArray(item?.rumors) ? item.rumors : []),
+    item?.revealedSummary,
+    item?.visibleAction,
+    item?.observableConsequence,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function recallFragmentAppears(narrative, fragment) {
+  const body = recallComparableText(narrative);
+  const target = recallComparableText(fragment);
+  if (target.length < 4) return false;
+  if (body.includes(target)) return true;
+  if (target.length < 6) return false;
+  const targetBigrams = recallBigrams(target);
+  const bodyBigrams = recallBigrams(body);
+  let shared = 0;
+  for (const gram of targetBigrams) if (bodyBigrams.has(gram)) shared += 1;
+  return shared >= 3 && shared / Math.max(1, targetBigrams.size) >= 0.42;
+}
+
+/** Verifies that a one-turn public recall projection actually surfaced in the accepted narrative. */
+export function assessRecallConsumption(narrative, recallPackage) {
+  const items = Array.isArray(recallPackage?.items) ? recallPackage.items : [];
+  const itemResults = items.map((item, index) => {
+    const fragments = recallPublicFragments(item);
+    const matchedFragments = fragments.filter((fragment) => recallFragmentAppears(narrative, fragment));
+    return { index, consumed: matchedFragments.length > 0, matchedFragments };
+  });
+  const consumedItemCount = itemResults.filter((item) => item.consumed).length;
+  return {
+    consumed: consumedItemCount > 0,
+    consumedItemCount,
+    totalItemCount: items.length,
+    itemResults,
+    reason: items.length < 1
+      ? '本轮没有可注入的公开世界召回项'
+      : consumedItemCount > 0
+        ? `最终正文可核对地采用了${consumedItemCount}/${items.length}条公开召回投影`
+        : '最终正文没有出现任何可核对的公开召回投影，不能记为已消费',
+  };
+}
+
 export function settleRecallPackage(worldInput, packageId, status, options = {}) {
   const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
   const pending = world.recall.pending;
   if (!pending || pending.packageId !== packageId) return { changed: false, world };
-  world.recall.receipts.push({ packageId, status: ['consumed', 'released'].includes(status) ? status : 'released', sourceKey: cleanText(options.sourceKey), messageId: Number.isInteger(Number(options.messageId)) ? Number(options.messageId) : null, at: options.at || new Date().toISOString() });
+  world.recall.receipts.push({
+    packageId,
+    status: ['consumed', 'released'].includes(status) ? status : 'released',
+    sourceKey: cleanText(options.sourceKey),
+    messageId: Number.isInteger(Number(options.messageId)) ? Number(options.messageId) : null,
+    consumedItemCount: Math.max(0, Number(options.consumedItemCount) || 0),
+    totalItemCount: Math.max(0, Number(options.totalItemCount) || 0),
+    reason: cleanText(options.reason),
+    at: options.at || new Date().toISOString(),
+  });
   world.recall.receipts = world.recall.receipts.slice(-80);
   world.recall.pending = null;
   world.digest = worldDigest(world);

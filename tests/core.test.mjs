@@ -7,6 +7,7 @@ import {
   capturePathSnapshot,
   chatCompletionText,
   diagnosticAdvice,
+  discoverProfileSubjects,
   generateTicketBatch,
   openAiChatEndpoint,
   openAiModelsEndpoint,
@@ -20,6 +21,7 @@ import {
   applyWorldProposal,
   parseWorldProposal,
   prepareProfileBatch,
+  profileCompletenessReport,
   profileCompletionContract,
   profileNarrativeText,
   redactDiagnostic,
@@ -29,6 +31,7 @@ import {
   selectWorldRecall,
   statDataOf,
   validatePatchOperations,
+  validateProfileSubjectCoverage,
   verifyCommittedProfiles,
   verifyPatchOperations,
   verifyPatchApplication,
@@ -95,6 +98,41 @@ test('人物档案只把最终叙事当作已发生事实', () => {
   const narrative = profileNarrativeText('<gm_chain>计划让甲登场</gm_chain><content>乙正在柜台后说话。</content><options>去找甲</options><UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>');
   assert.doesNotMatch(narrative, /计划让甲登场|去找甲|JSONPatch/);
   assert.match(narrative, /乙正在柜台后说话/);
+});
+
+test('脚本从最终正文提取实际说话或行动的稳定人物锚点，并排除角色卡主体与已存档人物', () => {
+  const subjects = discoverProfileSubjects(
+    '<gm_chain>让黑衣人下回合登场</gm_chain><content>白露低声说道：“先等等。”\n独眼守卫：谁在那里？\n当前环境：雨势渐大。少女点头后退。</content><options>询问黑衣人</options>',
+    {
+      excludedNames: ['白露'],
+      existingProfiles: { existing: { name: '药房老板', aliases: ['老周'] } },
+    },
+  );
+  assert.deepEqual(subjects.map((subject) => subject.label), ['独眼守卫']);
+  assert.equal(subjects[0].sources.includes('speaker-label'), true);
+  assert.doesNotMatch(JSON.stringify(subjects), /黑衣人/);
+});
+
+test('人物档案批次必须以name或aliases逐一覆盖脚本确认的稳定出场锚点', () => {
+  const required = [{ label: '独眼守卫', aliases: ['独眼守卫'], evidence: ['独眼守卫：站住。'] }];
+  const missing = validateProfileSubjectCoverage([{ name: '格雷', aliases: [] }], required);
+  assert.equal(missing.ok, false);
+  assert.match(missing.errors[0], /独眼守卫/);
+  const covered = validateProfileSubjectCoverage([{ name: '格雷', aliases: ['独眼守卫'] }], required);
+  assert.equal(covered.ok, true);
+});
+
+test('同名半档案不是可用既有人物，再次出场仍必须进入补全门', () => {
+  const subjects = discoverProfileSubjects('林澄说道：“今天照常营业。”', {
+    existingProfiles: { partial: { profileId: 'partial', name: '林澄', aliases: [] } },
+  });
+  assert.deepEqual(subjects.map((subject) => subject.label), ['林澄']);
+  assert.equal(profileCompletenessReport({ profileId: 'partial', name: '林澄', aliases: [] }).ok, false);
+
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const complete = completeProfile(ticket);
+  const excluded = discoverProfileSubjects('林澄说道：“今天照常营业。”', { existingProfiles: { complete } });
+  assert.deepEqual(excluded, []);
 });
 
 test('变量医生解析无限回廊UpdateVariable并把原更新与纠错合并', () => {

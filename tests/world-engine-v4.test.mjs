@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   WORLD_SCHEMA_VERSION,
   activeWorldCount,
+  assessRecallConsumption,
   applyWorldProposal,
   emptyWorldState,
   formatGenerationInjection,
@@ -160,6 +161,24 @@ test('召回包有单回合预约和消费回执，不会重复消费', () => {
   assert.equal(settleRecallPackage(settled.world, packet.packageId, 'consumed').changed, false);
 });
 
+test('召回只有被最终正文可核对地采用才算消费，忽略的注入明确释放', () => {
+  const packet = {
+    packageId: 'recall-proof',
+    items: [{ recordType: 'sensory_surface', publicSurface: '南街药房门口贴出了限购告示。', publicClues: [] }],
+  };
+  const adopted = assessRecallConsumption('走到南街药房门口，门板上果然挂着限购告示。', packet);
+  assert.equal(adopted.consumed, true);
+  assert.equal(adopted.consumedItemCount, 1);
+  const ignored = assessRecallConsumption('你转身去了北港，潮水正在石阶下起伏。', packet);
+  assert.equal(ignored.consumed, false);
+  assert.match(ignored.reason, /不能记为已消费/);
+
+  const reserved = reserveRecallPackage(emptyWorldState('chat-a'), packet);
+  const settled = settleRecallPackage(reserved, packet.packageId, ignored.consumed ? 'consumed' : 'released', ignored);
+  assert.equal(settled.world.recall.receipts[0].status, 'released');
+  assert.equal(settled.world.recall.receipts[0].totalItemCount, 1);
+});
+
 test('隐藏支线只把表象和线索投影给正文，私有真相与下一步不进入注入', () => {
   const secret = '岚音在袖口遮挡下把旅人甲的名字写进小本本，并决定暗中评估他的弱点。';
   const world = applyWorldProposal(emptyWorldState('chat-a'), {
@@ -204,6 +223,25 @@ test('隐藏行动的可观察后果不携带行动者、目的、私有裁决�
   assert.match(text, /崭新的铜锁/);
   assert.doesNotMatch(text, /林澄|阻止追查|趁夜更换|旧钥匙已经失效/);
   assert.equal(packet.items.some((item) => item.recordType === 'unattributed_observation'), true);
+});
+
+test('召回相关性只看公开投影，不用私密摘要命中，也不拿无关项凑满上限', () => {
+  const world = applyWorldProposal(emptyWorldState('chat-a'), {
+    summary: '两地都在继续变化。',
+    threads: [
+      { id: 'south', title: '隐藏的南街计划', summary: '秘密关键词只存在私密摘要', publicSurface: '南街药房挂出了限购告示。', knowledge: 'hidden' },
+      { id: 'north', title: '北港修船', summary: '船工等待木料', publicSurface: '北港船坞堆着新到的木料。', knowledge: 'hidden', urgency: 5 },
+      { id: 'east', title: '东门排队', summary: '旅客入城', publicSurface: '东门外排起了入城长队。', knowledge: 'hidden', urgency: 4 },
+    ],
+  }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
+  const north = prepareRecallPackage(world, '去北港看看木料', {}, 8, { chatId: 'chat-a', sourceKey: 'g2' });
+  assert.equal(north.items.length, 1);
+  assert.match(JSON.stringify(north.items), /北港船坞/);
+  assert.doesNotMatch(JSON.stringify(north.items), /南街药房|东门外/);
+
+  const hiddenNeedle = prepareRecallPackage(world, '秘密关键词', {}, 8, { chatId: 'chat-a', sourceKey: 'g3' });
+  assert.equal(hiddenNeedle.items.length, 2);
+  assert.doesNotMatch(JSON.stringify(hiddenNeedle.items), /秘密关键词|隐藏的南街计划/);
 });
 
 test('公开投影拒绝全知措辞，隐藏事实转为已揭示必须引用本轮最终正文原文', () => {
