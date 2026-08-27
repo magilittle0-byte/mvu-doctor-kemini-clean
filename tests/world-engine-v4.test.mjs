@@ -5,13 +5,16 @@ import {
   activeWorldCount,
   applyWorldProposal,
   emptyWorldState,
+  formatGenerationInjection,
   markWorldReadback,
   normalizeWorldState,
+  privateProfileDigestFromData,
   prepareRecallPackage,
   prepareWorldTransaction,
   recoverLatestLegacyWorld,
   recoverPreparedWorldState,
   repairWorldProposalLinks,
+  profileDigestFromData,
   reserveRecallPackage,
   settleRecallPackage,
   validateWorldProposal,
@@ -143,9 +146,11 @@ test('两阶段世界事务只有提交号、版本与摘要读回一致才通�
 });
 
 test('召回包有单回合预约和消费回执，不会重复消费', () => {
-  const world = applyWorldProposal(emptyWorldState('chat-a'), { threads: [{ id: 't1', title: '药材短缺', actorIds: ['林澄'], locations: ['南街'] }] }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
+  const world = applyWorldProposal(emptyWorldState('chat-a'), { threads: [{ id: 't1', title: '药材短缺', actorIds: ['林澄'], locations: ['南街'], publicTitle: '南街药房动静', publicSurface: '南街药房门口贴出了限购告示。' }] }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
   const packet = prepareRecallPackage(world, '去南街找林澄', { 'actor-lin': profile }, 8, { chatId: 'chat-a', sourceKey: 'g2', at: '2026-08-23T00:00:00.000Z' });
-  assert.equal(packet.items[0].id, 't1');
+  assert.equal(packet.items[0].recordType, 'sensory_surface');
+  assert.equal(packet.items[0].publicSurface, '南街药房门口贴出了限购告示。');
+  assert.equal('id' in packet.items[0], false);
   const reserved = reserveRecallPackage(world, packet);
   assert.equal(reserved.recall.pending.packageId, packet.packageId);
   const settled = settleRecallPackage(reserved, packet.packageId, 'consumed', { sourceKey: 'm2', messageId: 2 });
@@ -153,6 +158,90 @@ test('召回包有单回合预约和消费回执，不会重复消费', () => {
   assert.equal(settled.world.recall.pending, null);
   assert.equal(settled.world.recall.receipts[0].status, 'consumed');
   assert.equal(settleRecallPackage(settled.world, packet.packageId, 'consumed').changed, false);
+});
+
+test('隐藏支线只把表象和线索投影给正文，私有真相与下一步不进入注入', () => {
+  const secret = '岚音在袖口遮挡下把旅人甲的名字写进小本本，并决定暗中评估他的弱点。';
+  const world = applyWorldProposal(emptyWorldState('chat-a'), {
+    summary: '岚音维持柔弱表象，同时在医生私有层推进自己的观察计划。',
+    threads: [{
+      id: 'synthetic-private', kind: 'personal', title: '岚音的秘密记录', stage: 'advancing',
+      actorIds: ['actor-lan'], summary: secret, offscreenBeat: secret, nextBeat: '继续暗中记录其他成员',
+      publicTitle: '新队友的谨慎表现', publicSurface: '岚音始终低着头，抱紧法杖，看起来柔弱而谨慎。',
+      publicClues: ['她的袖口边缘沾着一点尚未干透的墨迹。'], knowledge: 'hidden',
+    }],
+  }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
+  const packet = prepareRecallPackage(world, '观察岚音', {}, 8, { chatId: 'chat-a', sourceKey: 'g2' });
+  const injection = formatGenerationInjection({ tickets: [], recall: packet.items, profileDigest: [] });
+  assert.match(injection, /岚音始终低着头/);
+  assert.match(injection, /袖口边缘沾着一点/);
+  assert.doesNotMatch(injection, /小本本|暗中评估|秘密记录|继续暗中记录/);
+  assert.equal(packet.items[0].recordType, 'sensory_surface');
+  assert.equal('id' in packet.items[0], false);
+  assert.equal('actorIds' in packet.items[0], false);
+});
+
+test('完全没有公开表象或可观察后果的隐藏行动不会进入正文召回', () => {
+  const world = applyWorldProposal(emptyWorldState('chat-a'), {
+    summary: '镜头外人物推进了一次完全隐蔽的尝试。',
+    threads: [{ id: 't-secret', title: '密信', summary: '某人烧毁密信', offscreenBeat: '灰烬也被带走', knowledge: 'hidden' }],
+    actorActions: [{ actorId: 'actor-lin', actorName: '林澄', threadId: 't-secret', action: '在无人处烧毁密信', visibility: 'hidden' }],
+    adjudications: [{ actorId: 'actor-lin', threadId: 't-secret', status: 'success', resultSummary: '密信已销毁' }],
+  }, { chatId: 'chat-a', turn: 2, sourceRef: { sourceKey: 'm2' }, profiles: [profile] });
+  const packet = prepareRecallPackage(world, '询问林澄', { 'actor-lin': profile }, 8, { chatId: 'chat-a', sourceKey: 'g3' });
+  assert.deepEqual(packet.items, []);
+});
+
+test('隐藏行动的可观察后果不携带行动者、目的、私有裁决或因果归属', () => {
+  const world = applyWorldProposal(emptyWorldState('chat-a'), {
+    summary: '药房后门出现了无法立即解释的变化。',
+    threads: [{ id: 't-door', title: '后门处理', summary: '林澄换了锁', publicSurface: '药房后门换上了一把崭新的铜锁。', knowledge: 'hidden' }],
+    actorActions: [{ actorId: 'actor-lin', actorName: '林澄', threadId: 't-door', goal: '阻止追查', action: '趁夜更换后门锁', visibility: 'hidden' }],
+    adjudications: [{ actorId: 'actor-lin', threadId: 't-door', status: 'success', resultSummary: '旧钥匙已经失效', observableConsequence: '药房后门换上了一把崭新的铜锁。' }],
+  }, { chatId: 'chat-a', turn: 3, sourceRef: { sourceKey: 'm3' }, profiles: [profile] });
+  const packet = prepareRecallPackage(world, '去药房后门', { 'actor-lin': profile }, 8, { chatId: 'chat-a', sourceKey: 'g4' });
+  const text = JSON.stringify(packet.items);
+  assert.match(text, /崭新的铜锁/);
+  assert.doesNotMatch(text, /林澄|阻止追查|趁夜更换|旧钥匙已经失效/);
+  assert.equal(packet.items.some((item) => item.recordType === 'unattributed_observation'), true);
+});
+
+test('公开投影拒绝全知措辞，隐藏事实转为已揭示必须引用本轮最终正文原文', () => {
+  const leaked = validateWorldProposal({
+    summary: '岚音继续自己的隐秘观察。',
+    threads: [{ id: 'b1', title: '观察', summary: '岚音记录队友', publicSurface: '岚音其实在伪装柔弱并暗中记仇。', knowledge: 'hidden' }],
+  });
+  assert.equal(leaked.ok, false);
+  assert.match(leaked.errors.join('；'), /公开投影/);
+
+  const acceptedText = '你翻开岚音遗落的本子，第一页清楚写着旅人乙的名字和当时的冲突经过。';
+  const reveal = {
+    summary: '岚音的记录已经被玩家亲眼发现。',
+    threads: [{ id: 'b1', title: '观察', summary: '岚音记录队友', knowledge: 'observed', revealedSummary: '岚音曾记录旅人乙的冲突。', revealEvidence: '第一页清楚写着旅人乙的名字和当时的冲突经过' }],
+  };
+  assert.equal(validateWorldProposal(reveal, { previous: emptyWorldState('chat-a'), acceptedText }).ok, true);
+  assert.equal(validateWorldProposal({ ...reveal, threads: [{ ...reveal.threads[0], revealEvidence: '正文中不存在的证据' }] }, { previous: emptyWorldState('chat-a'), acceptedText }).ok, false);
+  assert.equal(validateWorldProposal({ ...reveal, threads: [{ ...reveal.threads[0], revealedSummary: '' }] }, { previous: emptyWorldState('chat-a'), acceptedText }).ok, false);
+});
+
+test('v4统一世界状态升级到v5时保留原threads、重算摘要并撤销旧版读回证明', () => {
+  const world = normalizeWorldState({ schemaVersion: 4, chatId: 'chat-a', digest: 'v4-old-digest', persistence: { status: 'verified', digest: 'v4-old-digest' }, threads: [{ id: 'v4-thread', title: '旧统一支线', summary: '旧状态仍需保留' }] });
+  assert.equal(world.schemaVersion, WORLD_SCHEMA_VERSION);
+  assert.equal(world.threads.length, 1);
+  assert.equal(world.threads[0].id, 'v4-thread');
+  assert.equal(world.migration.fromSchema, 4);
+  assert.notEqual(world.digest, 'v4-old-digest');
+  assert.equal(world.persistence.status, 'unverified');
+});
+
+test('正文注入的人物摘要不泄漏医生补全的职业、目标与人格，私有摘要仍供医生使用', () => {
+  const data = { stat_data: { 人物档案: { byActorId: { 'actor-lin': { ...profile, name: '未公开真名', aliases: ['药房来客'], narrativeKnownNames: ['药房来客'], identity: { occupation: '密探' }, personality: { coreDesire: '掌控情报' }, evidence: ['未公开真名其实是密探。'], inferences: ['真实任务尚未公开'] } } } } };
+  const publicDigest = profileDigestFromData(data);
+  const privateDigest = privateProfileDigestFromData(data);
+  assert.deepEqual(Object.keys(publicDigest[0]).sort(), ['doNotRerandomize', 'knownNames', 'profileHandle']);
+  assert.deepEqual(publicDigest[0].knownNames, ['药房来客']);
+  assert.doesNotMatch(JSON.stringify(publicDigest), /未公开真名|actor-lin|密探|掌控情报|真实任务/);
+  assert.match(JSON.stringify(privateDigest), /未公开真名|密探|掌控情报|真实任务/);
 });
 
 test('迁移时可从同一聊天完整运行记录恢复比旧存档更多的世界项', () => {

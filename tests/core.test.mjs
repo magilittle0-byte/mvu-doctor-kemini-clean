@@ -266,9 +266,11 @@ test('人物修复保留最佳候选并只归一化缺项，不重新生成整�
   assert.deepEqual(normalized[0].aliases, ['小澄']);
   assert.equal(normalized[0].ticketId, ticket.ticketId);
   assert.equal(normalized[0].evidence.length, 1);
+  merged[0].narrativeKnownNames = ['模型自行声称已公开的隐藏姓名'];
   const prepared = prepareProfileBatch(merged, [ticket], { stat_data: {} }, '林澄正在药房柜台后整理新送到的药材。');
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   assert.deepEqual(prepared.profiles[0].relationships, firstCandidate.relationships);
+  assert.deepEqual(prepared.profiles[0].narrativeKnownNames, ['林澄']);
   assert.match(prepared.profiles[0].inferences[0], /‘草稿’/);
 });
 
@@ -374,13 +376,14 @@ test('多新人即使模型返回顺序颠倒，也按最终正文首次出现�
 
 test('世界引擎JSON归一化且召回当前相关人物', () => {
   const proposal = parseWorldProposal(`\`\`\`json
-  {"summary":"南街出现药材短缺。","branches":[{"id":"b1","title":"药材短缺","actor":"林澄","location":"南街","keywords":["药房"],"status":"active","intent":"调查货源"},{"id":"b2","title":"北港修船","actor":"赵石","location":"北港","status":"waiting"}],"npcIntents":[],"agreements":[],"hostilePlans":[]}
+  {"summary":"南街出现药材短缺。","threads":[{"id":"b1","title":"药材短缺","actorIds":["林澄"],"locations":["南街"],"keywords":["药房"],"stage":"advancing","summary":"林澄暗中调查货源","publicTitle":"南街药房的限购","publicSurface":"南街药房门口贴出了限购告示。","knowledge":"hidden"},{"id":"b2","title":"北港修船","actorIds":["赵石"],"locations":["北港"],"stage":"dormant","summary":"船工等待木料","knowledge":"hidden"}]}
   \`\`\``);
   const world = applyWorldProposal({}, proposal, { chatId: 'chat-world', turn: 1 });
   const recalled = selectWorldRecall(world, '我去南街药房找林澄', {}, 1);
   assert.equal(recalled.length, 1);
-  assert.equal(recalled[0].id, 'b1');
-  assert.equal(recalled[0].stage, 'advancing');
+  assert.equal(recalled[0].recordType, 'sensory_surface');
+  assert.equal(recalled[0].publicSurface, '南街药房门口贴出了限购告示。');
+  assert.equal('id' in recalled[0], false);
 });
 
 test('世界引擎可修复裸键、单引号、缺逗号和尾逗号', () => {

@@ -836,7 +836,14 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
     const requestedId = String(profile.profileId || '').trim();
     let profileId = String(matchedId || (requestedId && existing[requestedId] ? requestedId : '')).trim();
     const isExisting = Boolean(profileId && existing[profileId]);
+    const persistedNarrativeKnownNames = isExisting
+      ? cleanStringArray(existing[profileId]?.narrativeKnownNames, 24)
+      : [];
     if (isExisting) profile = mergeCandidateValue(existing[profileId], profile);
+    const namesSeenInNarrative = [profile?.name, ...(Array.isArray(profile?.aliases) ? profile.aliases : [])]
+      .map((item) => cleanText(item))
+      .filter((item) => item && narrative.includes(item.toLocaleLowerCase()));
+    profile.narrativeKnownNames = cleanStringArray([...persistedNarrativeKnownNames, ...namesSeenInNarrative], 24);
     let ticket = ticketMap.get(String(profile.ticketId || ''));
     if (!isExisting) {
       if (!ticket) {
@@ -1010,7 +1017,9 @@ export function diagnosticAdvice(kind, detail) {
   return { severity: 'info', summary: '医生记录了一条运行信息。', action: '展开详情核对；若影响当前回合，可在修正配置后重试失败步骤。' };
 }
 
-export const WORLD_SCHEMA_VERSION = 4;
+export const WORLD_SCHEMA_VERSION = 5;
+
+const PUBLIC_PROJECTION_LEAK_MARKERS = /(?:内心|真实(?:想法|目的|身份)|暗中|私下|偷偷|无人(?:看见|察觉|知道)|其实|伪装|装作|盘算|谋划|记仇|秘密|小本本|悄无声息地(?:写|记|记录)|背地里|不为人知|(?:袖中|袖口|背后|暗处).{0,16}(?:写|记录|记下)|(?:写下|记下|记录).{0,16}(?:名字|名单|信息|弱点)|评估.{0,12}(?:价值|弱点|威胁))/u;
 
 function cleanText(value, fallback = '') {
   const text = String(value ?? '').trim();
@@ -1020,6 +1029,17 @@ function cleanText(value, fallback = '') {
 function cleanStringArray(value, limit = 24) {
   return [...new Set((Array.isArray(value) ? value : value == null ? [] : [value])
     .map((item) => cleanText(item)).filter(Boolean))].slice(0, limit);
+}
+
+function publicProjectionLeak(value) {
+  const texts = Array.isArray(value) ? value : [value];
+  return texts.map((item) => cleanText(item)).find((item) => item && PUBLIC_PROJECTION_LEAK_MARKERS.test(item)) || '';
+}
+
+function exactNarrativeEvidence(acceptedText, evidence) {
+  const source = String(acceptedText || '');
+  const quote = cleanText(evidence);
+  return quote.length >= 4 && quote.length <= 180 && source.includes(quote);
 }
 
 function stableWorldId(prefix, ...parts) {
@@ -1037,6 +1057,7 @@ function worldDigestPayload(world) {
   delete copy.digest;
   delete copy.persistence;
   delete copy.checkpoint;
+  delete copy.migration;
   if (copy.recall) delete copy.recall.pending;
   return copy;
 }
@@ -1104,12 +1125,16 @@ function legacyWorldRecords(world = {}) {
     keywords: cleanStringArray(entry?.keywords, 16),
     summary: cleanText(entry?.consequence, cleanText(entry?.intent)),
     offscreenBeat: cleanText(entry?.intent),
+    publicTitle: '',
+    publicSurface: '',
+    publicClues: [],
     trigger: '',
     nextBeat: cleanText(entry?.intent),
     stakes: cleanText(entry?.consequence),
     urgency: key === 'hostilePlans' ? 4 : 2,
     knowledge: 'hidden',
     causedBy: [], effects: [], rumors: [],
+    revealedSummary: '', revealEvidence: '', knownByActorIds: [],
     createdTurn: 0, lastAdvancedTurn: 0,
     sourceRef: normalizeSourceRef({}, { at: entry?.updatedAt }),
     updatedAt: cleanText(entry?.updatedAt, world?.updatedAt || new Date().toISOString()),
@@ -1132,6 +1157,9 @@ function normalizeThread(entry, index = 0, fallbackSource = {}) {
     keywords: cleanStringArray(entry?.keywords, 16),
     summary: cleanText(entry?.summary, cleanText(entry?.consequence, cleanText(entry?.intent))),
     offscreenBeat: cleanText(entry?.offscreenBeat, cleanText(entry?.intent)),
+    publicTitle: cleanText(entry?.publicTitle),
+    publicSurface: cleanText(entry?.publicSurface),
+    publicClues: cleanStringArray(entry?.publicClues, 16),
     trigger: cleanText(entry?.trigger),
     nextBeat: cleanText(entry?.nextBeat, cleanText(entry?.intent)),
     stakes: cleanText(entry?.stakes, cleanText(entry?.consequence)),
@@ -1140,6 +1168,9 @@ function normalizeThread(entry, index = 0, fallbackSource = {}) {
     causedBy: cleanStringArray(entry?.causedBy),
     effects: cleanStringArray(entry?.effects),
     rumors: cleanStringArray(entry?.rumors),
+    revealedSummary: cleanText(entry?.revealedSummary),
+    revealEvidence: cleanText(entry?.revealEvidence).slice(0, 180),
+    knownByActorIds: cleanStringArray(entry?.knownByActorIds, 40),
     createdTurn: Math.max(0, Number(entry?.createdTurn) || Number(fallbackSource.turn) || 0),
     lastAdvancedTurn: Math.max(0, Number(entry?.lastAdvancedTurn) || Number(fallbackSource.turn) || 0),
     sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
@@ -1194,6 +1225,8 @@ function normalizeAttempt(entry, index = 0, fallbackSource = {}) {
     expectedDuration: cleanText(entry?.expectedDuration),
     risk: cleanText(entry?.risk),
     visibility: ['hidden', 'rumor', 'observable'].includes(entry?.visibility) ? entry.visibility : 'hidden',
+    publicSurface: cleanText(entry?.publicSurface),
+    publicClues: cleanStringArray(entry?.publicClues, 12),
     playerDecisionRequired: Boolean(entry?.playerDecisionRequired),
     status: ['pending_world', 'settled', 'blocked_unready', 'cancelled'].includes(entry?.status) ? entry.status : 'pending_world',
     sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
@@ -1212,6 +1245,7 @@ function normalizeAdjudication(entry, index = 0, fallbackSource = {}) {
     actualCosts: cleanStringArray(entry?.actualCosts),
     actualDuration: cleanText(entry?.actualDuration),
     observableConsequence: cleanText(entry?.observableConsequence, cleanText(entry?.consequence)),
+    publicClues: cleanStringArray(entry?.publicClues, 12),
     appliedStateChanges: cleanStringArray(entry?.appliedStateChanges),
     revealPath: cleanText(entry?.revealPath),
     sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
@@ -1222,8 +1256,10 @@ function normalizeAdjudication(entry, index = 0, fallbackSource = {}) {
 export function normalizeWorldState(input = {}, options = {}) {
   const source = input && typeof input === 'object' ? input : {};
   const base = emptyWorldState(options.chatId || source.chatId || '');
-  const legacy = Number(source.schemaVersion) !== WORLD_SCHEMA_VERSION;
-  const threads = legacy ? legacyWorldRecords(source) : (Array.isArray(source.threads) ? source.threads : []);
+  const fromSchema = Number(source.schemaVersion) || 3;
+  const hasLegacyArrays = ['branches', 'npcIntents', 'agreements', 'hostilePlans'].some((key) => Array.isArray(source?.[key]));
+  const needsMigration = fromSchema !== WORLD_SCHEMA_VERSION;
+  const threads = Array.isArray(source.threads) ? source.threads : (hasLegacyArrays ? legacyWorldRecords(source) : []);
   const fallbackSource = normalizeSourceRef({}, { chatId: options.chatId || source.chatId, at: source.updatedAt });
   const world = {
     ...base,
@@ -1258,11 +1294,18 @@ export function normalizeWorldState(input = {}, options = {}) {
     failures: (Array.isArray(source.failures) ? source.failures : []).slice(-40).map((entry) => ({ ...entry })),
     checkpoint: source.checkpoint && typeof source.checkpoint === 'object' ? { ...base.checkpoint, ...deepClone(source.checkpoint) } : base.checkpoint,
     persistence: source.persistence && typeof source.persistence === 'object' ? { ...base.persistence, ...source.persistence } : base.persistence,
-    migration: source.migration || (legacy ? { fromSchema: Number(source.schemaVersion) || 3, at: new Date().toISOString(), legacyItems: threads.length } : null),
+    migration: source.migration || (needsMigration ? { fromSchema, at: new Date().toISOString(), legacyItems: hasLegacyArrays ? threads.length : 0, unifiedItems: Array.isArray(source.threads) ? threads.length : 0 } : null),
     updatedAt: cleanText(source.updatedAt, base.updatedAt),
   };
   for (const legacyKey of ['branches', 'npcIntents', 'agreements', 'hostilePlans']) delete world[legacyKey];
-  world.digest = cleanText(source.digest, worldDigest(world));
+  if (needsMigration) {
+    world.persistence = {
+      status: 'unverified', revision: world.revision, commitId: world.commitId,
+      digest: '', readbackAt: '', error: `世界状态已从v${fromSchema}升级到v${WORLD_SCHEMA_VERSION}，等待下一次保存读回证明`,
+    };
+  }
+  world.digest = needsMigration ? worldDigest(world) : cleanText(source.digest, worldDigest(world));
+  if (needsMigration) world.persistence.digest = world.digest;
   return world;
 }
 
@@ -1354,9 +1397,12 @@ export function repairWorldProposalLinks(previousInput = {}, proposalInput = {})
         keywords: action.keywords,
         summary: actionText,
         offscreenBeat: actionText,
+        publicTitle: cleanText(action.publicTitle),
+        publicSurface: cleanText(action.publicSurface),
+        publicClues: cleanStringArray(action.publicClues, 16),
         nextBeat: actionText,
         stakes: cleanText(action.risk, cleanStringArray(action.resourceCosts).join('；')),
-        knowledge: action.visibility === 'observable' ? 'observed' : action.visibility === 'rumor' ? 'rumor' : 'hidden',
+        knowledge: ['hidden', 'rumor', 'observed'].includes(action.threadKnowledge) ? action.threadKnowledge : 'hidden',
       }, proposal.threads.length);
       proposal.threads.push(derived);
       candidates.proposed.push(derived);
@@ -1398,7 +1444,7 @@ export function repairWorldProposalLinks(previousInput = {}, proposalInput = {})
   return { proposal, repairs };
 }
 
-export function validateWorldProposal(proposal = {}) {
+export function validateWorldProposal(proposal = {}, options = {}) {
   const errors = [];
   if (cleanText(proposal.summary).length < 6) errors.push('summary需要用完整句说明本轮世界总体变化');
   const threads = Array.isArray(proposal.threads) ? proposal.threads : [];
@@ -1406,24 +1452,43 @@ export function validateWorldProposal(proposal = {}) {
   const adjudications = Array.isArray(proposal.adjudications) ? proposal.adjudications : [];
   const factions = Array.isArray(proposal.factions) ? proposal.factions : [];
   const environment = proposal.environment && typeof proposal.environment === 'object' ? proposal.environment : {};
+  const previousWorld = normalizeWorldState(options.previous || {}, { chatId: options.previous?.chatId });
   const environmentHasContent = [environment.summary, environment.economy, ...(environment.incidents || []), ...(environment.trends || []), ...(environment.winds || [])].some((item) => cleanText(item));
   if (!threads.length && !actions.length && !adjudications.length && !factions.length && !environmentHasContent && !(proposal.resolvedThreadIds || []).length) {
     errors.push('本轮没有任何连续性、人物、阵营、环境或解决历史变化');
   }
   threads.forEach((entry, index) => {
+    const old = previousWorld.threads.find((thread) => cleanText(thread.id) === cleanText(entry?.id));
+    const merged = old ? { ...old, ...entry } : entry;
     if (!cleanText(entry?.title)) errors.push(`threads[${index}]缺少title`);
     if (![entry?.summary, entry?.offscreenBeat, entry?.nextBeat, entry?.stakes, entry?.intent, entry?.consequence].some((item) => cleanText(item))) {
       errors.push(`threads[${index}]没有可用的进展、下一步或代价`);
+    }
+    const publicLeak = publicProjectionLeak([merged?.publicTitle, merged?.publicSurface, ...(Array.isArray(merged?.publicClues) ? merged.publicClues : [])]);
+    if (publicLeak) errors.push(`threads[${index}]公开投影含有不可直接公开的隐秘叙述：${publicLeak.slice(0, 80)}`);
+    if (merged?.knowledge === 'rumor' && publicProjectionLeak(merged?.rumors)) {
+      errors.push(`threads[${index}]传闻字段写成了确定的隐秘事实`);
+    }
+    if (merged?.knowledge === 'observed') {
+      const alreadyObserved = old?.knowledge === 'observed' && cleanText(old?.revealedSummary) === cleanText(merged?.revealedSummary);
+      if (!alreadyObserved && !exactNarrativeEvidence(options.acceptedText, merged?.revealEvidence)) {
+        errors.push(`threads[${index}]声明已揭示但revealEvidence不是本轮最终正文的精确原文`);
+      }
+      if (!cleanText(merged?.revealedSummary)) errors.push(`threads[${index}]已揭示但缺少只覆盖已公开范围的revealedSummary`);
     }
   });
   actions.forEach((entry, index) => {
     if (!cleanText(entry?.actorId || entry?.actor || entry?.actorName)) errors.push(`actorActions[${index}]缺少人物标识`);
     if (!cleanText(entry?.threadId)) errors.push(`actorActions[${index}]缺少threadId`);
     if (!cleanText(entry?.action || entry?.intent)) errors.push(`actorActions[${index}]缺少具体行动尝试`);
+    const publicLeak = publicProjectionLeak([entry?.publicSurface, ...(Array.isArray(entry?.publicClues) ? entry.publicClues : [])]);
+    if (publicLeak) errors.push(`actorActions[${index}]公开投影含有不可直接公开的隐秘叙述：${publicLeak.slice(0, 80)}`);
   });
   adjudications.forEach((entry, index) => {
     if (!cleanText(entry?.threadId) && !cleanText(entry?.attemptId)) errors.push(`adjudications[${index}]缺少threadId或attemptId`);
     if (!cleanText(entry?.resultSummary || entry?.observableConsequence || entry?.consequence)) errors.push(`adjudications[${index}]缺少裁决结果`);
+    const publicLeak = publicProjectionLeak([entry?.observableConsequence, ...(Array.isArray(entry?.publicClues) ? entry.publicClues : [])]);
+    if (publicLeak) errors.push(`adjudications[${index}]可观察后果泄露了隐秘原因：${publicLeak.slice(0, 80)}`);
   });
   return { ok: errors.length === 0, errors };
 }
@@ -1446,7 +1511,11 @@ export function applyWorldProposal(previousInput, proposalInput, options = {}) {
   const now = cleanText(options.at, new Date().toISOString());
   const turn = Math.max(Number(previous.observedThrough?.turn) + 1, Number(options.turn) || 0);
   const sourceRef = normalizeSourceRef(options.sourceRef, { chatId: options.chatId || previous.chatId, turn, at: now });
-  const normalizedUpdates = (proposal.threads || []).map((entry, index) => normalizeThread(entry, index, sourceRef));
+  const priorThreads = new Map(previous.threads.map((thread) => [cleanText(thread.id), thread]));
+  const normalizedUpdates = (proposal.threads || []).map((entry, index) => {
+    const prior = priorThreads.get(cleanText(entry?.id));
+    return normalizeThread(prior ? { ...prior, ...entry } : entry, index, sourceRef);
+  });
   const resolvedIds = new Set(cleanStringArray(proposal.resolvedThreadIds));
   for (const thread of normalizedUpdates) if (thread.stage === 'resolved') resolvedIds.add(thread.id);
   const mergedThreads = mergeByStableId(previous.threads, normalizedUpdates, (entry, index) => normalizeThread(entry, index, sourceRef));
@@ -1580,7 +1649,9 @@ export function recoverLatestLegacyWorld(currentInput, fullRuns = [], options = 
     }
   }
   if (!best) return { changed: false, world };
-  const recoveredThreads = legacyWorldRecords(best.candidate);
+  const recoveredThreads = Array.isArray(best.candidate?.threads)
+    ? normalizeWorldState(best.candidate, { chatId: options.chatId }).threads
+    : legacyWorldRecords(best.candidate);
   const merged = mergeByStableId(world.threads, recoveredThreads, (entry, index) => normalizeThread(entry, index, { chatId: options.chatId }));
   if (merged.length <= world.threads.length) return { changed: false, world };
   const recoveredItems = merged.length - world.threads.length;
@@ -1604,7 +1675,7 @@ export function worldConsistencyReport(worldInput, fullRuns = [], options = {}) 
     }
   }
   if (!latest) return { ok: true, status: 'no_report', detail: '当前聊天还没有可比较的世界提交报告。' };
-  if (Number(latest.candidate.schemaVersion) === WORLD_SCHEMA_VERSION) {
+  if (Number(latest.candidate.schemaVersion) >= 4 || Array.isArray(latest.candidate?.threads)) {
     const candidate = normalizeWorldState(latest.candidate, { chatId: world.chatId });
     const ok = candidate.revision < world.revision || (candidate.revision === world.revision && candidate.digest === world.digest && candidate.commitId === world.commitId);
     return ok
@@ -1628,6 +1699,63 @@ function tokens(text) {
   return [...new Set(String(text || '').toLocaleLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) || [])];
 }
 
+function safePublicText(value) {
+  const text = cleanText(value);
+  return publicProjectionLeak(text) ? '' : text;
+}
+
+function safePublicArray(value, limit = 16) {
+  return cleanStringArray(value, limit).filter((item) => !publicProjectionLeak(item));
+}
+
+function narrativeThreadProjection(entry) {
+  const knowledge = ['hidden', 'rumor', 'observed'].includes(entry?.knowledge) ? entry.knowledge : 'hidden';
+  const publicSurface = safePublicText(entry?.publicSurface);
+  const publicClues = safePublicArray(entry?.publicClues, 16);
+  const rumors = knowledge === 'rumor' ? safePublicArray(entry?.rumors, 12) : [];
+  const revealedSummary = knowledge === 'observed' ? cleanText(entry?.revealedSummary) : '';
+  if (!publicSurface && !publicClues.length && !rumors.length && !revealedSummary) return null;
+  const projection = {
+    recordType: knowledge === 'observed' ? 'revealed_continuity' : knowledge === 'rumor' ? 'unverified_rumor' : 'sensory_surface',
+    title: safePublicText(entry?.publicTitle) || (knowledge === 'observed' ? '已揭示事项' : ''),
+    publicSurface,
+    publicClues,
+    rumors,
+    revealedSummary,
+    instruction: knowledge === 'observed'
+      ? '这是已由正文证据揭示的事实。'
+      : knowledge === 'rumor'
+        ? '只能写成不确定传闻或可见线索，不得写成真相。'
+        : '只可使用表象与线索；隐藏原因、真实意图和镜头外行动不得出现在回复中。',
+  };
+  return projection;
+}
+
+function narrativeAttemptProjection(entry, adjudication) {
+  const visibility = ['hidden', 'rumor', 'observable'].includes(entry?.visibility) ? entry.visibility : 'hidden';
+  const publicSurface = safePublicText(entry?.publicSurface);
+  const publicClues = safePublicArray([...(entry?.publicClues || []), ...(adjudication?.publicClues || [])], 16);
+  const observableConsequence = safePublicText(adjudication?.observableConsequence);
+  const visibleAction = visibility === 'observable' ? safePublicText(entry?.action) : '';
+  if (!publicSurface && !publicClues.length && !observableConsequence && !visibleAction) return null;
+  const projection = {
+    recordType: visibility === 'observable' ? 'observable_actor_action' : visibility === 'rumor' ? 'unverified_action_rumor' : 'unattributed_observation',
+    visibleAction,
+    publicSurface,
+    publicClues,
+    observableConsequence,
+    instruction: visibility === 'observable'
+      ? '只写已经可观察的行动和后果。'
+      : '只写表象或无因果归属的可见后果；不得猜出行动者、目的、行动内容或成败。',
+  };
+  if (visibility === 'observable') {
+    projection.actorId = entry.actorId;
+    projection.actorName = entry.actorName;
+    projection.adjudicationStatus = cleanText(adjudication?.status);
+  }
+  return projection;
+}
+
 export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
   if (Number(world?.schemaVersion) === WORLD_SCHEMA_VERSION || Array.isArray(world?.threads)) {
     const normalized = normalizeWorldState(world, { chatId: world?.chatId });
@@ -1648,28 +1776,17 @@ export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
       }
       return { ...entry, score };
     }).sort((a, b) => b.score - a.score || String(b.updatedAt || b.sourceRef?.at || '').localeCompare(String(a.updatedAt || a.sourceRef?.at || '')));
-    return records.slice(0, Math.max(1, Math.min(16, Number(limit) || 8)));
+    return records
+      .map((entry) => {
+        const projected = entry.recordType === 'thread'
+          ? narrativeThreadProjection(entry)
+          : narrativeAttemptProjection(entry, entry.adjudication);
+        return projected ? { ...projected, score: entry.score } : null;
+      })
+      .filter(Boolean)
+      .slice(0, Math.max(1, Math.min(16, Number(limit) || 8)));
   }
-  const needle = new Set(tokens(userInput));
-  for (const profile of Object.values(profiles || {})) {
-    if (String(userInput || '').includes(profile?.name || '\0')) {
-      for (const token of normalizedNames(profile)) needle.add(token);
-    }
-  }
-  const records = ['branches', 'npcIntents', 'agreements', 'hostilePlans']
-    .flatMap((kind) => (Array.isArray(world?.[kind]) ? world[kind].map((entry) => ({ ...entry, kind })) : []))
-    .filter((entry) => entry.status !== 'resolved')
-    .map((entry) => {
-      const haystack = tokens([entry.title, entry.actor, entry.location, entry.intent, ...(entry.keywords || [])].join(' '));
-      let score = entry.status === 'active' ? 2 : 1;
-      for (const token of haystack) {
-        if (needle.has(token)) score += 5;
-        else if ([...needle].some((part) => token.includes(part) || part.includes(token))) score += 2;
-      }
-      return { ...entry, score };
-    })
-    .sort((a, b) => b.score - a.score || String(b.updatedAt).localeCompare(String(a.updatedAt)));
-  return records.slice(0, Math.max(1, Math.min(16, Number(limit) || 8)));
+  return selectWorldRecall(normalizeWorldState(world, { chatId: world?.chatId }), userInput, profiles, limit);
 }
 
 export function prepareRecallPackage(worldInput, userInput, profiles = {}, limit = 8, options = {}) {
@@ -1701,22 +1818,40 @@ export function formatGenerationInjection({ tickets, recall, profileDigest = [] 
     '<MVUDoctorRuntime>',
     'characterCreationTicket（按首次出现顺序使用；有权威设定或已有档案者跳过）：',
     JSON.stringify(tickets || []),
-    'worldRecallPackage（仅供本次生成消费一次；人物尝试与世界裁决已分开记录，不得把尝试冒充成功）：',
+    'worldRecallPackage_publicProjection（仅供本次生成消费一次；这是医生私有世界状态生成的公开投影，不含可直接公开的隐藏真相）：',
     JSON.stringify(recall || []),
-    '召回包只提供相关事实、镜头外变化和行动倾向；不得覆盖玩家当前指令、角色卡、世界书、已接受事实或MVU当前状态。',
-    '已有人物档案摘要（不得重复随机）：',
+    '只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction与observableConsequence。不得从recordType、空白字段、标签或线索反推出隐藏动机、真实身份、镜头外行动及其成败；传闻不得写成事实。',
+    '召回包不得覆盖玩家当前指令、角色卡、世界书、已接受事实或MVU当前状态。任何平行事件详情、NPC私密心理与未揭示真相都由医生继续在私有世界状态中推进，主回复不得输出。',
+    '已有人物档案公开身份句柄（只表示不得重复随机，不代表其档案中的隐藏资料可被叙事者知道）：',
     JSON.stringify(profileDigest || []),
     '</MVUDoctorRuntime>',
   ].join('\n');
 }
 
 export function profileDigestFromData(data, limit = 60) {
+  return Object.values(existingProfilesFromData(data)).slice(0, limit).map((profile) => {
+    const knownNames = cleanStringArray(profile?.narrativeKnownNames, 24);
+    return {
+      profileHandle: stableWorldId('profile-public', profile?.profileId, profile?.name),
+      knownNames,
+      doNotRerandomize: true,
+    };
+  });
+}
+
+export function privateProfileDigestFromData(data, limit = 60) {
   return Object.values(existingProfilesFromData(data)).slice(0, limit).map((profile) => ({
     profileId: profile.profileId,
     name: profile.name,
     aliases: profile.aliases || [],
-    occupation: profile.identity?.occupation || '',
-    currentGoal: profile.currentState?.goal || '',
+    identity: profile.identity || {},
+    personality: profile.personality || {},
+    currentState: profile.currentState || {},
+    relationships: profile.relationships || [],
+    knowledge: profile.knowledge || [],
+    capabilities: profile.capabilities || [],
+    resources: profile.resources || [],
+    inferences: profile.inferences || [],
   }));
 }
 
