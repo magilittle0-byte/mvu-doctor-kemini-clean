@@ -1136,8 +1136,14 @@ const PROFILE_SUBJECT_BLOCKLIST = new Set([
 ]);
 const PROFILE_GENERIC_ROLE = new Set(['守卫', '卫兵', '店员', '老板', '掌柜', '医师', '医生', '护士', '队长', '领队', '船长', '祭司', '导师', '侍者', '佣兵', '商人', '学徒', '管理员', '少女', '少年', '男人', '女人', '老人', '男孩', '女孩', '旅人', '冒险者']);
 const PROFILE_ROLE_SUFFIX = /(?:接待员|引导者|守卫|卫兵|店员|老板|掌柜|医师|医生|护士|队长|领队|船长|祭司|导师|侍者|佣兵|商人|旅店老板|学徒|书记员|管理员|少女|少年|男人|女人|老人|男孩|女孩|旅人|冒险者)$/u;
-const PROFILE_ACTION_VERB = '(?:说(?:道)?|问(?:道)?|答(?:道)?|回答|喊(?:道)?|叫(?:道)?|开口|回应|解释|提醒|补充|嘀咕|咕哝|点头|摇头|抬手|伸手|转身|走进|走来|推开|递出|取出|收起|挡住|看向|望向|站起|坐下|微笑(?:着|道)?|轻笑(?:着|道)?|笑(?:道)?|皱眉)';
-const PROFILE_ACTION_ADVERB = '(?:轻声|低声|高声|缓缓|忽然|立刻|随即|平静地|认真地|小声地|冷冷地|微微|轻轻|稍稍|慢慢|再度|再次|继续)';
+const PROFILE_IDENTITY_GRAMMAR_BLOCKLIST = new Set([
+  '还是', '也就是', '就是', '但每个人', '每个人', '那么', '所以', '因此', '因为', '如果', '虽然', '然而',
+  '于是', '随后', '接着', '然后', '这时', '此时', '与此同时', '已经', '正在', '开始', '结束', '继续',
+  '欠身', '点头', '摇头', '抬手', '伸手', '转身', '走来', '走进', '推开', '递出', '取出', '收起',
+  '挡住', '看向', '望向', '站起', '坐下', '微笑', '轻笑', '皱眉', '说道', '说', '问道', '问', '回答',
+  '喊道', '喊', '开口', '回应', '解释', '提醒', '补充', '嘀咕', '咕哝',
+]);
+const PROFILE_MECHANISM_LABEL = /(?:fingerprint|digest|schema|jsonpatch|json|analysis|prompt|ticket|receipt|profile|status|state|version|count|updatevariable)$/iu;
 
 function normalizedSubjectLabel(value) {
   let label = String(value || '')
@@ -1153,8 +1159,18 @@ function normalizedSubjectLabel(value) {
   return label;
 }
 
+function profileIdentitySurface(value) {
+  const label = normalizedSubjectLabel(value);
+  if (!label || label.length > 40 || PROFILE_SUBJECT_BLOCKLIST.has(label) || PROFILE_IDENTITY_GRAMMAR_BLOCKLIST.has(label)) return false;
+  if (/^(?:你|我|他|她|它|我们|你们|他们|她们|它们)(?:的|又|再|正|正在|继续|轻|微|慢|缓|忽然|立刻|随即|回答|说|问|想|觉得|认为|决定|同意|拒绝|感到|看向|望向)/u.test(label)) return false;
+  if (/^(?:有人|某人|一个人|那人|此人|对方|别人|其他人|大家|众人)$/u.test(label)) return false;
+  if (label.endsWith('们') || label.endsWith('的')) return false;
+  if (/^[A-Za-z][A-Za-z0-9_.-]{1,39}$/u.test(label) && PROFILE_MECHANISM_LABEL.test(label)) return false;
+  return /[\p{L}\p{N}]/u.test(label);
+}
+
 function usableObservedSubject(label, source) {
-  if (!label || label.length > 24 || PROFILE_SUBJECT_BLOCKLIST.has(label)) return false;
+  if (!profileIdentitySurface(label) || label.length > 24) return false;
   if (/^(?:你|我|他|她|它|他们|她们|它们|自己|有人|某人|一个人|那人|此人)$/u.test(label)) return false;
   if (/^(?:那|这|其|此|便|可|将|让|把|因|为|由于|如果|随后|继续|已经|正在|开始|结束)/u.test(label) || /的$/u.test(label)) return false;
   if (/^NPC[-_ ]?\d+$/iu.test(label)) return true;
@@ -1209,9 +1225,10 @@ export function discoverProfileSubjects(text, options = {}) {
   const stableIds = /\b(?:NPC[-_ ]?\d+|[A-Za-z][A-Za-z0-9_.-]{1,23})\b(?=\s*(?:[：:]|说|问|答|喊|开口|回应|点头|摇头|抬手|伸手|转身|走进|推开|看向))/giu;
   for (const match of narrative.matchAll(stableIds)) record(match[0], 'stable-id', match.index || 0);
 
-  const actionSubjects = new RegExp(`(?:^|[。！？!?；;，,\\n“”"'‘’])\\s*([\\p{Script=Han}]{2,18}?)\\s*${PROFILE_ACTION_ADVERB}?${PROFILE_ACTION_VERB}`, 'gu');
-  for (const match of narrative.matchAll(actionSubjects)) record(match[1], 'direct-action', (match.index || 0) + match[0].indexOf(match[1]));
-
+  // Free prose is not a deterministic NER surface. The profile model reviews
+  // the complete accepted narrative and every returned identity is validated
+  // against a literal, non-grammatical name/alias below. Script-owned required
+  // anchors intentionally remain limited to explicit speaker labels and IDs.
   return [...found.values()].sort((left, right) => left.firstIndex - right.firstIndex);
 }
 
@@ -1232,11 +1249,7 @@ export function validateProfileSubjectCoverage(profiles, requiredSubjects = []) 
 export function normalizeProfileCandidates(rawProfiles, acceptedText = '', requiredSubjects = null) {
   if (!Array.isArray(rawProfiles)) return [];
   const source = profileNarrativeText(acceptedText);
-  const exactAnchors = new Set((requiredSubjects || []).flatMap((subject) => [
-    subject?.label,
-    ...(Array.isArray(subject?.aliases) ? subject.aliases : []),
-  ]).map((value) => String(value || '').trim().toLocaleLowerCase()).filter(Boolean));
-  const exactOnly = Array.isArray(requiredSubjects);
+  const normalizedSource = source.toLocaleLowerCase();
   return rawProfiles.map((input) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
     let profile = deepClone(input);
@@ -1248,9 +1261,7 @@ export function normalizeProfileCandidates(rawProfiles, acceptedText = '', requi
     if (!Array.isArray(profile.evidence) || profile.evidence.length < 1) {
       const label = [profile.name, ...profile.aliases]
         .map((value) => String(value || '').trim())
-        .find((value) => value && (exactOnly
-          ? exactAnchors.has(value.toLocaleLowerCase())
-          : source.includes(value)));
+        .find((value) => value && profileIdentitySurface(value) && normalizedSource.includes(value.toLocaleLowerCase()));
       if (label) profile.evidence = [`最终已接受正文明确出现“${label}”；该人物的可观察出场与互动是本档案的直接依据。`];
     }
     return profile;
@@ -1309,11 +1320,6 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
     return { ok: false, errors: ['人物档案批次为空'], profiles: [], normalizationRepairs: [] };
   }
   const existing = existingProfilesFromData(currentData);
-  const enforceObservedAliases = Array.isArray(requiredSubjects);
-  const observedAnchors = new Set((requiredSubjects || []).flatMap((subject) => [
-    subject?.label,
-    ...(Array.isArray(subject?.aliases) ? subject.aliases : []),
-  ]).map((value) => String(value || '').trim().toLocaleLowerCase()).filter(Boolean));
   const ticketMap = new Map((tickets || []).map((ticket) => [String(ticket.ticketId), ticket]));
   const claimedTickets = new Set(normalizedProfiles
     .map((profile) => String(profile?.ticketId || ''))
@@ -1329,9 +1335,10 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
   const errors = [];
   const normalizationRepairs = [];
   const narrative = profileNarrativeText(acceptedText).toLocaleLowerCase();
+  const enforceNarrativeIdentity = Boolean(narrative.trim());
   const orderedProfiles = normalizedProfiles.map((profile, originalIndex) => {
     const positions = normalizedNames(profile)
-      .filter((name) => !enforceObservedAliases || observedAnchors.has(name))
+      .filter((name) => profileIdentitySurface(name))
       .map((name) => narrative.indexOf(name)).filter((position) => position >= 0);
     return { profile, originalIndex, position: positions.length ? Math.min(...positions) : Number.MAX_SAFE_INTEGER };
   }).sort((left, right) => left.position - right.position || left.originalIndex - right.originalIndex);
@@ -1345,7 +1352,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
     const rawAliases = asList(profile.aliases).map((value) => String(value).trim()).filter(Boolean);
     const retainedAliases = rawAliases.filter((alias) => {
       const normalized = alias.toLocaleLowerCase();
-      return !enforceObservedAliases || observedAnchors.has(normalized) || nameIndex.has(normalized);
+      return nameIndex.has(normalized) || (profileIdentitySurface(alias) && narrative.includes(normalized));
     });
     const rejectedAliases = rawAliases.filter((alias) => !retainedAliases.includes(alias));
     if (rejectedAliases.length) {
@@ -1366,12 +1373,14 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
     if (isExisting) profile = mergeCandidateValue(existing[profileId], profile);
     const namesSeenInNarrative = [profile?.name, ...(Array.isArray(profile?.aliases) ? profile.aliases : [])]
       .map((item) => cleanText(item))
-      .filter((item) => item && (enforceObservedAliases
-        ? observedAnchors.has(item.toLocaleLowerCase())
-        : narrative.includes(item.toLocaleLowerCase())));
+      .filter((item) => item && profileIdentitySurface(item) && narrative.includes(item.toLocaleLowerCase()));
     profile.narrativeKnownNames = cleanStringArray([...persistedNarrativeKnownNames, ...namesSeenInNarrative], 24);
     let ticket = ticketMap.get(String(profile.ticketId || ''));
     if (!isExisting) {
+      if (enforceNarrativeIdentity && !namesSeenInNarrative.length) {
+        errors.push(`第${index + 1}张新档案没有最终正文逐字出现的稳定name或alias身份锚点`);
+        continue;
+      }
       if (!ticket) {
         ticket = availableTickets.find((candidate) => !usedTickets.has(candidate.ticketId) && !claimedTickets.has(candidate.ticketId));
       }
@@ -1544,7 +1553,7 @@ export function diagnosticAdvice(kind, detail) {
 
 export const WORLD_SCHEMA_VERSION = 5;
 
-const PUBLIC_PROJECTION_LEAK_MARKERS = /(?:内心|真实(?:想法|目的|身份)|暗中|私下|偷偷|无人(?:看见|察觉|知道)|其实|伪装|装作|盘算|谋划|记仇|秘密|小本本|悄无声息地(?:写|记|记录)|背地里|不为人知|(?:袖中|袖口|背后|暗处).{0,16}(?:写|记录|记下)|(?:写下|记下|记录).{0,16}(?:名字|名单|信息|弱点)|评估.{0,12}(?:价值|弱点|威胁))/u;
+const PUBLIC_PROJECTION_LEAK_MARKERS = /(?:内心|真实(?:想法|目的|身份)|暗中|私下|偷偷|无人(?:看见|察觉|知道)|其实|伪装|装作|盘算|谋划|记仇|小本本|悄无声息地(?:写|记|记录)|背地里|不为人知|(?:袖中|袖口|背后|暗处).{0,16}(?:写|记录|记下)|(?:写下|记下|记录).{0,16}(?:名字|名单|信息|弱点)|评估.{0,12}(?:价值|弱点|威胁)|(?:其|他|她|它|角色|人物|NPC)?.{0,8}的?秘密(?:身份|目的|计划|行动|记录|档案|弱点|真相|情报)?\s*(?:是|为|在于|包括|涉及|指向)|秘密(?:地|进行|策划|记录|收集|评估|跟踪|监视))/u;
 
 function cleanText(value, fallback = '') {
   const text = String(value ?? '').trim();

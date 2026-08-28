@@ -6,8 +6,8 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.6.10控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
-  assert.match(source, /const DOCTOR_VERSION = '0\.6\.10'/);
+test('0.6.11控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
+  assert.match(source, /const DOCTOR_VERSION = '0\.6\.11'/);
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -24,7 +24,7 @@ test('0.6.10控制台包含变量、连接、人物、世界、诊断与独立�
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.6.10');
+  assert.equal(manifest.version, '0.6.11');
   assert.match(source, /normalizeVariableOperations/);
   assert.match(source, /assessVariableBaseline/);
   assert.doesNotMatch(source, /<AuditReceipt>/);
@@ -38,6 +38,9 @@ test('0.6.10控制台包含变量、连接、人物、世界、诊断与独立�
   assert.match(source, /本次只处理变量；人物档案与世界引擎未运行/);
   assert.match(source, /store\.fullRuns = store\.fullRuns\.slice\(0, 24\)/);
   assert.match(source, /discoverProfileSubjects/);
+  assert.match(source, /高置信标签和编号作为必须覆盖的下限/);
+  assert.match(source, /没有最终正文逐字出现的稳定name或alias身份锚点/);
+  assert.doesNotMatch(source, /const PROFILE_ACTION_VERB/);
   assert.match(source, /stripNarrativeHtmlWidgets/);
   assert.match(source, /validateProfileSubjectCoverage/);
   assert.match(source, /profile:nochange-rejected/);

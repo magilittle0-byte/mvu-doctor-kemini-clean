@@ -152,7 +152,7 @@ test('脚本从最终正文提取实际说话或行动的稳定人物锚点，�
   assert.doesNotMatch(JSON.stringify(subjects), /黑衣人/);
 });
 
-test('人物发现器丢弃正文内嵌面板字段、全大写属性和语法碎片，只保留实际行动者', () => {
+test('人物发现器丢弃正文内嵌面板字段、全大写属性和语法碎片，不用自由散文正则猜身份', () => {
   const subjects = discoverProfileSubjects(`<content>
 <div style="border:1px solid"><span>HP: 105 / 105</span><br>名称: 暗示之种<br>品质: 白色<br>属性加成: PER + 1</div>
 那温柔的声音继续说道：“先完成登记。”
@@ -160,17 +160,22 @@ test('人物发现器丢弃正文内嵌面板字段、全大写属性和语法�
 这番介绍让房间安静下来。
 便可将其收进系统空间。
 </content>`);
-  assert.deepEqual(subjects.map((subject) => subject.label), ['引导者']);
+  assert.deepEqual(subjects.map((subject) => subject.label), []);
 });
 
 test('人物发现器保留普通叙事容器中的实际人物，不因存在HTML就整段删除', () => {
-  const subjects = discoverProfileSubjects('<div class="narrative">白露说道：“记录先放在这里。”</div>');
+  const subjects = discoverProfileSubjects('<div class="narrative">白露：记录先放在这里。</div>');
   assert.deepEqual(subjects.map((subject) => subject.label), ['白露']);
 });
 
-test('人物发现器保留可稳定识别的英文姓名与NPC编号，不把统计缩写当人物', () => {
+test('人物发现器只把显式标签与稳定ID作为机械锚点，不把统计缩写或散文主语当人物', () => {
   const subjects = discoverProfileSubjects('Alice: Wait here.\nNPC-7点头回应。\n白露微笑着收起纸笔。\nHP: 12\nSTR说道：这不该成为人物。');
-  assert.deepEqual(subjects.map((subject) => subject.label), ['Alice', 'NPC-7', '白露']);
+  assert.deepEqual(subjects.map((subject) => subject.label), ['Alice', 'NPC-7']);
+});
+
+test('人物发现器不把机制字段、连接词和动作片段升级为必须建档人物', () => {
+  const subjects = discoverProfileSubjects('VoiceFingerprint: stable\n但每个人还是欠身回应。\n也就是继续说道：“照旧。”');
+  assert.deepEqual(subjects, []);
 });
 
 test('人物档案批次必须以name或aliases逐一覆盖脚本确认的稳定出场锚点', () => {
@@ -594,6 +599,21 @@ test('人物档案只保留脚本锚点或既有身份支持的别名，不用�
   assert.deepEqual(prepared.profiles[0].narrativeKnownNames, ['药房引导者']);
   assert.match(prepared.profiles[0].evidence[0], /药房引导者/);
   assert.doesNotMatch(prepared.profiles[0].evidence[0], /她微|她轻|我的回答是/);
+  assert.deepEqual(prepared.normalizationRepairs, [{ profileIndex: 0, code: 'unsupported_aliases_removed', count: 3 }]);
+});
+
+test('模型发现的正文人物可用逐字唯一称谓绑定票据，语法片段和机制字段仍被剔除', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const profile = completeProfile(ticket);
+  profile.name = '格雷';
+  profile.aliases = ['荧光绿发青年', '欠身', '也就是', 'VoiceFingerprint'];
+  delete profile.evidence;
+  const narrative = '荧光绿发青年举起双手，随后欠身回应；也就是在这时，VoiceFingerprint字段被状态栏打印。';
+  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} }, narrative, []);
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.deepEqual(prepared.profiles[0].aliases, ['荧光绿发青年']);
+  assert.deepEqual(prepared.profiles[0].narrativeKnownNames, ['荧光绿发青年']);
+  assert.match(prepared.profiles[0].evidence[0], /荧光绿发青年/);
   assert.deepEqual(prepared.normalizationRepairs, [{ profileIndex: 0, code: 'unsupported_aliases_removed', count: 3 }]);
 });
 

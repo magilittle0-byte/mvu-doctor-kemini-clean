@@ -262,6 +262,27 @@ test('公开投影拒绝全知措辞，隐藏事实转为已揭示必须引用�
   assert.equal(validateWorldProposal({ ...reveal, threads: [{ ...reveal.threads[0], revealedSummary: '' }] }, { previous: emptyWorldState('chat-a'), acceptedText }).ok, false);
 });
 
+test('公开投影按知情语义而非裸秘密字样裁决，公开言行可保留但秘密身份断言仍拒绝', () => {
+  const observable = validateWorldProposal({
+    summary: '广场上的公开对峙继续发展。',
+    actorActions: [{
+      actorId: 'actor-public', threadId: 'thread-public', action: '当众解释已公开的见闻',
+      visibility: 'observable', publicSurface: '那名青年举着双手，当众说出关于副本入口的秘密，并请求对方把武器挪开。',
+    }],
+  });
+  assert.equal(observable.ok, true, observable.errors.join('\n'));
+
+  const leakedIdentity = validateWorldProposal({
+    summary: '医生私有层保留了未公开身份。',
+    threads: [{
+      id: 'thread-secret', title: '身份追查', summary: '未公开身份仍在调查',
+      publicSurface: '她的秘密身份是幕后联络人。', knowledge: 'hidden',
+    }],
+  });
+  assert.equal(leakedIdentity.ok, false);
+  assert.match(leakedIdentity.errors.join('；'), /公开投影/);
+});
+
 test('v4统一世界状态升级到v5时保留原threads、重算摘要并撤销旧版读回证明', () => {
   const world = normalizeWorldState({ schemaVersion: 4, chatId: 'chat-a', digest: 'v4-old-digest', persistence: { status: 'verified', digest: 'v4-old-digest' }, threads: [{ id: 'v4-thread', title: '旧统一支线', summary: '旧状态仍需保留' }] });
   assert.equal(world.schemaVersion, WORLD_SCHEMA_VERSION);
