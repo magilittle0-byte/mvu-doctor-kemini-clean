@@ -116,6 +116,27 @@ test('脚本从最终正文提取实际说话或行动的稳定人物锚点，�
   assert.doesNotMatch(JSON.stringify(subjects), /黑衣人/);
 });
 
+test('人物发现器丢弃正文内嵌面板字段、全大写属性和语法碎片，只保留实际行动者', () => {
+  const subjects = discoverProfileSubjects(`<content>
+<div style="border:1px solid"><span>HP: 105 / 105</span><br>名称: 暗示之种<br>品质: 白色<br>属性加成: PER + 1</div>
+那温柔的声音继续说道：“先完成登记。”
+引导者微微点头，随后抬手打开门扉。
+这番介绍让房间安静下来。
+便可将其收进系统空间。
+</content>`);
+  assert.deepEqual(subjects.map((subject) => subject.label), ['引导者']);
+});
+
+test('人物发现器保留普通叙事容器中的实际人物，不因存在HTML就整段删除', () => {
+  const subjects = discoverProfileSubjects('<div class="narrative">白露说道：“记录先放在这里。”</div>');
+  assert.deepEqual(subjects.map((subject) => subject.label), ['白露']);
+});
+
+test('人物发现器保留可稳定识别的英文姓名与NPC编号，不把统计缩写当人物', () => {
+  const subjects = discoverProfileSubjects('Alice: Wait here.\nNPC-7点头回应。\n白露微笑着收起纸笔。\nHP: 12\nSTR说道：这不该成为人物。');
+  assert.deepEqual(subjects.map((subject) => subject.label), ['Alice', 'NPC-7', '白露']);
+});
+
 test('人物档案批次必须以name或aliases逐一覆盖脚本确认的稳定出场锚点', () => {
   const required = [{ label: '独眼守卫', aliases: ['独眼守卫'], evidence: ['独眼守卫：站住。'] }];
   const missing = validateProfileSubjectCoverage([{ name: '格雷', aliases: [] }], required);

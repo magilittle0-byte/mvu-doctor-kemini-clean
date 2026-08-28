@@ -935,14 +935,47 @@ export function profileCompletenessReport(profile, fallbackLabel = '人物档案
   return { ok: errors.length === 0, errors };
 }
 
+function stripNarrativeHtmlWidgets(text) {
+  const source = String(text || '');
+  const unconditionalDropTags = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'style', 'script', 'svg']);
+  const widgetContainer = (tag, raw) => unconditionalDropTags.has(tag) || (
+    ['div', 'section', 'aside', 'details', 'summary'].includes(tag)
+    && /(?:\b(?:class|id)\s*=\s*["'][^"']*(?:status|card|panel|hud|inventory|profile|attribute|equipment|item|mvu)[^"']*["']|\bstyle\s*=\s*["'][^"']*(?:background|border|box-shadow|display\s*:\s*(?:flex|grid)|font-family)[^"']*["'])/i.test(raw)
+  );
+  const token = /<\/?([A-Za-z][\w:-]*)\b[^>]*>/g;
+  const stack = [];
+  let output = '';
+  let cursor = 0;
+  for (const match of source.matchAll(token)) {
+    const raw = match[0];
+    const tag = String(match[1] || '').toLowerCase();
+    const closing = /^<\//.test(raw);
+    const selfClosing = /\/\s*>$/.test(raw) || ['br', 'hr', 'img', 'input', 'meta', 'link'].includes(tag);
+    const dropping = stack.some((entry) => entry.drop);
+    if (!dropping) output += source.slice(cursor, match.index);
+    if (closing) {
+      const index = stack.map((entry) => entry.tag).lastIndexOf(tag);
+      if (index >= 0) stack.splice(index);
+      else if (!dropping) output += raw;
+    } else if (!selfClosing) {
+      const drop = dropping || widgetContainer(tag, raw);
+      stack.push({ tag, drop });
+      if (!drop) output += raw;
+    } else if (!dropping && !widgetContainer(tag, raw)) output += raw;
+    cursor = Number(match.index) + raw.length;
+  }
+  if (!stack.some((entry) => entry.drop)) output += source.slice(cursor);
+  return output;
+}
+
 export function profileNarrativeText(text) {
-  return String(text || '')
+  return stripNarrativeHtmlWidgets(String(text || '')
     .replace(/<gm_chain\b[^>]*>[\s\S]*?<\/gm_chain\s*>/gi, '')
     .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking\s*>/gi, '')
     .replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi, '')
     .replace(/<options?\b[^>]*>[\s\S]*?<\/options?\s*>/gi, '')
     .replace(/<人物档案(?:更新|无变化)\b[^>]*>[\s\S]*?<\/人物档案(?:更新|无变化)\s*>/gi, '')
-    .replace(/<人物档案无变化\s*\/>/gi, '');
+    .replace(/<人物档案无变化\s*\/>/gi, ''));
 }
 
 const PROFILE_SUBJECT_BLOCKLIST = new Set([
@@ -950,11 +983,13 @@ const PROFILE_SUBJECT_BLOCKLIST = new Set([
   '大家', '所有人', '其他人', '对方', '来人', '声音', '脚步声', '当前环境', '核心状态总览',
   '战力与物资库', '人际与过往记录', '副本情报', '敌情警戒', '回廊地图', '职业树', '状态档案',
   '时间', '地点', '状态', '任务', '目标', '说明', '注意', '提示', '分析', '结果', '回合', '场景', '环境',
-  '当前时间', '当前地点',
+  '当前时间', '当前地点', '继续', '这番', '名称', '品质', '属性加成', '效果', '描述', '类型', '数量',
+  'HP', 'MP', 'STR', 'AGI', 'CON', 'PER', 'EXP', 'UP',
 ]);
 const PROFILE_GENERIC_ROLE = new Set(['守卫', '卫兵', '店员', '老板', '掌柜', '医师', '医生', '护士', '队长', '领队', '船长', '祭司', '导师', '侍者', '佣兵', '商人', '学徒', '管理员', '少女', '少年', '男人', '女人', '老人', '男孩', '女孩', '旅人', '冒险者']);
 const PROFILE_ROLE_SUFFIX = /(?:接待员|引导者|守卫|卫兵|店员|老板|掌柜|医师|医生|护士|队长|领队|船长|祭司|导师|侍者|佣兵|商人|旅店老板|学徒|书记员|管理员|少女|少年|男人|女人|老人|男孩|女孩|旅人|冒险者)$/u;
-const PROFILE_ACTION_VERB = '(?:说(?:道)?|问(?:道)?|答(?:道)?|回答|喊(?:道)?|叫(?:道)?|开口|回应|解释|提醒|补充|嘀咕|咕哝|点头|摇头|抬手|伸手|转身|走进|走来|推开|递出|取出|收起|挡住|看向|望向|站起|坐下|笑(?:道)?|皱眉)';
+const PROFILE_ACTION_VERB = '(?:说(?:道)?|问(?:道)?|答(?:道)?|回答|喊(?:道)?|叫(?:道)?|开口|回应|解释|提醒|补充|嘀咕|咕哝|点头|摇头|抬手|伸手|转身|走进|走来|推开|递出|取出|收起|挡住|看向|望向|站起|坐下|微笑(?:着|道)?|轻笑(?:着|道)?|笑(?:道)?|皱眉)';
+const PROFILE_ACTION_ADVERB = '(?:轻声|低声|高声|缓缓|忽然|立刻|随即|平静地|认真地|小声地|冷冷地|微微|轻轻|稍稍|慢慢|再度|再次|继续)';
 
 function normalizedSubjectLabel(value) {
   let label = String(value || '')
@@ -962,6 +997,8 @@ function normalizedSubjectLabel(value) {
     .replace(/^(?:这时|随后|忽然|只见|接着|于是|然后|此时|而后|片刻后|与此同时)+/u, '')
     .replace(/^(?:那名|那位|那个|这名|这位|这个|一名|一位|一名看起来|一位看起来)/u, '')
     .replace(/^.{1,10}(?:里的|中的|旁的|后的)/u, '')
+    .replace(/^(?:你|我|他|她|它)(?:继续|又|再|随即|立刻|忽然|缓缓|轻轻|微微)+/u, '')
+    .replace(/(?:微微|轻轻|稍稍|慢慢|再度|再次|继续|忽然|立刻|随即|缓缓)$/u, '')
     .replace(/(?:轻声|低声|高声|缓缓|忽然|立刻|随即|平静地|认真地|小声地|冷冷地)?(?:说道|说|问道|问|答道|回答|喊道|喊|叫道|叫|开口|回应|解释|提醒|补充|嘀咕|咕哝|笑道)$/u, '')
     .trim();
   if (label.endsWith('们')) label = '';
@@ -971,7 +1008,9 @@ function normalizedSubjectLabel(value) {
 function usableObservedSubject(label, source) {
   if (!label || label.length > 24 || PROFILE_SUBJECT_BLOCKLIST.has(label)) return false;
   if (/^(?:你|我|他|她|它|他们|她们|它们|自己|有人|某人|一个人|那人|此人)$/u.test(label)) return false;
-  if (/^(?:NPC[-_ ]?\d+|[A-Za-z][A-Za-z0-9_.-]{1,23})$/iu.test(label)) return true;
+  if (/^(?:那|这|其|此|便|可|将|让|把|因|为|由于|如果|随后|继续|已经|正在|开始|结束)/u.test(label) || /的$/u.test(label)) return false;
+  if (/^NPC[-_ ]?\d+$/iu.test(label)) return true;
+  if (/^[A-Za-z][A-Za-z0-9_.-]{1,23}$/u.test(label)) return /[a-z]/.test(label);
   if (!/^[\p{Script=Han}A-Za-z0-9_.\-·]{2,24}$/u.test(label)) return false;
   if (PROFILE_GENERIC_ROLE.has(label)) return source === 'speaker-label';
   if (/\p{Script=Han}/u.test(label) && label.length <= 4) return true;
@@ -1012,13 +1051,17 @@ export function discoverProfileSubjects(text, options = {}) {
     found.set(normalized, { label, aliases: [label], evidence: evidence ? [evidence] : [], sources: [source], firstIndex: Number(index) || 0 });
   };
 
-  const speakerLabels = /(?:^|\n)\s*(?:[-*>]\s*)?([^\n：:]{2,24})\s*[：:]/gu;
-  for (const match of narrative.matchAll(speakerLabels)) record(match[1], 'speaker-label', (match.index || 0) + match[0].indexOf(match[1]));
+  const speakerLabels = /(?:^|\n)\s*(?:[-*>]\s*)?([^\n：:]{2,24})\s*[：:]\s*([^\n]{1,240})/gu;
+  for (const match of narrative.matchAll(speakerLabels)) {
+    const tail = String(match[2] || '').trim();
+    if (!tail || /^[+\-]?\d+(?:\.\d+)?(?:\s*[/|]\s*[+\-]?\d+(?:\.\d+)?)?\s*(?:%|kg|m|点|级)?$/iu.test(tail)) continue;
+    record(match[1], 'speaker-label', (match.index || 0) + match[0].indexOf(match[1]));
+  }
 
   const stableIds = /\b(?:NPC[-_ ]?\d+|[A-Za-z][A-Za-z0-9_.-]{1,23})\b(?=\s*(?:[：:]|说|问|答|喊|开口|回应|点头|摇头|抬手|伸手|转身|走进|推开|看向))/giu;
   for (const match of narrative.matchAll(stableIds)) record(match[0], 'stable-id', match.index || 0);
 
-  const actionSubjects = new RegExp(`(?:^|[。！？!?；;，,\\n“”"'‘’])\\s*([\\p{Script=Han}]{2,18}?)\\s*(?:轻声|低声|高声|缓缓|忽然|立刻|随即|平静地|认真地|小声地|冷冷地)?${PROFILE_ACTION_VERB}`, 'gu');
+  const actionSubjects = new RegExp(`(?:^|[。！？!?；;，,\\n“”"'‘’])\\s*([\\p{Script=Han}]{2,18}?)\\s*${PROFILE_ACTION_ADVERB}?${PROFILE_ACTION_VERB}`, 'gu');
   for (const match of narrative.matchAll(actionSubjects)) record(match[1], 'direct-action', (match.index || 0) + match[0].indexOf(match[1]));
 
   return [...found.values()].sort((left, right) => left.firstIndex - right.firstIndex);
