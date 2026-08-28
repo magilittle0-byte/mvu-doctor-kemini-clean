@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.19';
+  const DOCTOR_VERSION = '0.6.20';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -2122,6 +2122,24 @@
       const factions = Array.isArray(proposal.factions) ? proposal.factions : [];
       const environment = proposal.environment && typeof proposal.environment === 'object' ? proposal.environment : {};
       const previousWorld = normalizeWorldState(options.previous || {}, { chatId: options.previous?.chatId });
+      const linkedAction = (entry) => {
+        const attemptId = cleanText(entry?.attemptId);
+        if (attemptId) {
+          const exact = [...actions, ...previousWorld.attempts].find((action) => cleanText(action?.attemptId) === attemptId);
+          if (exact) return exact;
+        }
+        const actor = worldLinkKey(entry?.actorId || entry?.actor || entry?.actorName);
+        const threadId = cleanText(entry?.threadId);
+        const matching = (candidates) => candidates.filter((action) => {
+          if (threadId && cleanText(action?.threadId) !== threadId) return false;
+          if (actor && worldLinkKey(action?.actorId || action?.actor || action?.actorName) !== actor) return false;
+          return Boolean(threadId || actor);
+        });
+        const currentMatches = matching(actions);
+        if (currentMatches.length === 1) return currentMatches[0];
+        const previousMatches = matching(previousWorld.attempts);
+        return previousMatches.length === 1 ? previousMatches[0] : null;
+      };
       const environmentHasContent = [environment.summary, environment.economy, ...(environment.incidents || []), ...(environment.trends || []), ...(environment.winds || [])].some((item) => cleanText(item));
       if (!threads.length && !actions.length && !adjudications.length && !factions.length && !environmentHasContent && !(proposal.resolvedThreadIds || []).length) {
         errors.push('本轮没有任何连续性、人物、阵营、环境或解决历史变化');
@@ -2150,16 +2168,44 @@
         if (!cleanText(entry?.actorId || entry?.actor || entry?.actorName)) errors.push(`actorActions[${index}]缺少人物标识`);
         if (!cleanText(entry?.threadId)) errors.push(`actorActions[${index}]缺少threadId`);
         if (!cleanText(entry?.action || entry?.intent)) errors.push(`actorActions[${index}]缺少具体行动尝试`);
+        if (!cleanText(entry?.expectedDuration)) errors.push(`actorActions[${index}]缺少预计耗时`);
+        if (!cleanText(entry?.risk)) errors.push(`actorActions[${index}]缺少风险`);
         const publicLeak = publicProjectionLeak([entry?.publicSurface, ...(Array.isArray(entry?.publicClues) ? entry.publicClues : [])]);
         if (publicLeak) errors.push(`actorActions[${index}]公开投影含有不可直接公开的隐秘叙述：${publicLeak.slice(0, 80)}`);
       });
       adjudications.forEach((entry, index) => {
+        const status = cleanText(entry?.status);
+        const action = linkedAction(entry);
+        const visibility = ['hidden', 'rumor', 'observable'].includes(action?.visibility) ? action.visibility : 'hidden';
+        const stateChanges = cleanStringArray(entry?.appliedStateChanges);
         if (!cleanText(entry?.threadId) && !cleanText(entry?.attemptId)) errors.push(`adjudications[${index}]缺少threadId或attemptId`);
-        if (!cleanText(entry?.resultSummary || entry?.observableConsequence || entry?.consequence)) errors.push(`adjudications[${index}]缺少裁决结果`);
+        if (!['success', 'partial', 'failure', 'delayed', 'blocked'].includes(status)) errors.push(`adjudications[${index}]缺少有效status`);
+        if (!cleanText(entry?.resultSummary || entry?.consequence)) errors.push(`adjudications[${index}]缺少私有裁决结果摘要`);
+        if (!cleanText(entry?.actualDuration)) errors.push(`adjudications[${index}]缺少实际耗时`);
+        if (['success', 'partial'].includes(status) && !stateChanges.length) {
+          errors.push(`adjudications[${index}]声称${status}但没有任何实际状态变化`);
+        }
+        if (stateChanges.some((item) => cleanText(item).length < 4)) errors.push(`adjudications[${index}]的实际状态变化不是完整可读内容`);
+        if (['success', 'partial'].includes(status) && visibility === 'observable' && !cleanText(entry?.observableConsequence)) {
+          errors.push(`adjudications[${index}]的公开行动缺少可观察后果`);
+        }
+        if (['success', 'partial'].includes(status) && visibility !== 'observable'
+          && !cleanText(entry?.observableConsequence) && !cleanText(entry?.revealPath)) {
+          errors.push(`adjudications[${index}]的隐秘结果既没有安全表象也没有未来发现路径`);
+        }
         const publicLeak = publicProjectionLeak([entry?.observableConsequence, ...(Array.isArray(entry?.publicClues) ? entry.publicClues : [])]);
         if (publicLeak) errors.push(`adjudications[${index}]可观察后果泄露了隐秘原因：${publicLeak.slice(0, 80)}`);
       });
       return { ok: errors.length === 0, errors };
+    }
+
+    function adjudicationSettlementReady(attempt, result) {
+      if (!cleanText(result?.resultSummary) || !cleanText(result?.actualDuration)) return false;
+      if (['success', 'partial'].includes(result?.status) && !cleanStringArray(result?.appliedStateChanges).length) return false;
+      if (['success', 'partial'].includes(result?.status) && attempt?.visibility === 'observable' && !cleanText(result?.observableConsequence)) return false;
+      if (['success', 'partial'].includes(result?.status) && attempt?.visibility !== 'observable'
+        && !cleanText(result?.observableConsequence) && !cleanText(result?.revealPath)) return false;
+      return true;
     }
 
     function profileIdentityMap(profiles = []) {
@@ -2218,7 +2264,7 @@
         });
         if (rawResult) {
           const result = normalizeAdjudication({ ...rawResult, attemptId: attempt.attemptId, actorId }, index, sourceRef);
-          if (result.resultSummary || result.observableConsequence) {
+          if (adjudicationSettlementReady(attempt, result)) {
             newResults.push(result);
             attempt.status = 'settled';
           }
@@ -4056,18 +4102,18 @@ ${runtime.core.profileCompletionContract()}`;
 
 职责：
 1. 推进与玩家当前所在场景有关的线索，也推进镜头外仍有目标、资源和机会的NPC、阵营与环境；不要让整个世界只围着玩家转。
-2. actorActions写人物实际准备或尝试的行动；adjudications单独写世界裁决。尝试不等于成功，不能跳过成本、时间、风险和可观察后果。
+2. actorActions写人物实际准备或尝试的行动；adjudications单独写世界裁决。尝试不等于成功。每个行动必须写预计耗时和风险；每个裁决必须写实际耗时。status为success或partial时，appliedStateChanges至少写一条已经真实落地的完整状态变化，不能只写一段结果摘要就假装成功。
 3. 不替玩家决定行动、感受、同意、关系或结果。需要玩家选择的事项标playerDecisionRequired=true，并停在可交互位置。
 4. 只有人物档案摘要中存在profileId的人物可以最终提交自主行动；没有行动就不编造。并行准备列表中的新人物尚未取得提交权，你可以为其准备候选行动，但actorId必须留空、actorName必须逐字使用列表中的稳定称谓；脚本只会在同回合人物档案已原子提交并读回、且该称谓能解析到真实profileId后才提交，否则候选行动自动保持blocked_unready。
 5. 只输出新增或本轮改变的项目；旧项目遗漏不代表删除。需要结束旧支线时把原ID放进resolvedThreadIds。
 6. 当前MVU仅是只读事实来源，不要输出变量补丁，不接管数据库。
 7. knowledge默认hidden。summary、offscreenBeat、nextBeat、stakes、行动的goal/intent/action、裁决的resultSummary与revealPath属于医生私有层，可以记录真实动机、伪装真相、秘密计划、镜头外行动及其世界裁决，但绝不能复制到公开字段。
-8. publicSurface只写当前视角可直接看到的表象；publicClues与observableConsequence只写能被感官或既有仪器发现的结果，不写原因、行动者、真实意图或“其实/暗中/无人察觉”等全知解释。比如只能写“那位少女始终低着头，看起来柔弱而谨慎”，不能写她在袖中记名字、内心记仇或正在伪装。
+8. publicSurface只写当前视角可直接看到的表象；publicClues与observableConsequence只写能被感官、调查或既有仪器发现的外部痕迹，不写原因、行动者、真实意图或“其实/暗中/无人察觉”等全知解释。比如只能写“那位少女始终低着头，看起来柔弱而谨慎”，不能写她在袖中记名字、内心记仇或正在伪装。公开行动若成功或部分成功，observableConsequence必填；隐秘行动可以暂时没有公开表象，但这时必须写非空revealPath，且真实私密变化仍必须进入appliedStateChanges。
 9. rumors只能写明确存在于世界中的不确定传闻。只有最终接受正文已经通过亲历、对话、调查、检定或权威公开信息揭示真相时，knowledge才可写observed；此时revealEvidence必须逐字复制正文中4至180字的证据，revealedSummary只总结该证据实际揭示的部分。没有证据就继续hidden或rumor。
-10. 每名行动就绪且仍有独立目标的NPC都应被考虑是否需要镜头外推进；没有合理时机可以不行动，不能为了凑数制造灾难。隐秘行动可以真实发生并裁决，但下一回合正文只能收到其表象、无因果归属的可观察后果或已合法揭示的事实。
+10. 每名行动就绪且仍有独立目标的NPC都应被考虑是否需要镜头外推进；没有合理时机可以不行动，不能为了凑数制造灾难。隐秘行动可以真实发生并裁决，但下一回合正文只能收到其表象、无因果归属的可观察后果或已合法揭示的事实。若一次尝试没有形成实际状态变化，就只能写failure、delayed或blocked，绝不能写success或partial，也不能据此解决支线。
 
 只输出一个JSON对象，不要代码围栏：
-{"summary":"医生私有的本轮世界总体变化","threads":[{"id":"更新旧项时必须沿用旧ID；新项可留空","kind":"parallel|personal|promise|enemy|mystery|social|resource|environment","title":"医生私有标题","stage":"seeded|advancing|manifested|dormant|resolved|failed","actorIds":[],"factionIds":[],"locations":[],"keywords":[],"summary":"医生私有的完整真相摘要","offscreenBeat":"镜头外实际发生或正在形成的私有变化","publicTitle":"不泄露真相的公开标题，可空","publicSurface":"当前视角可直接观察的表象，可空","publicClues":["只写可观察线索，不写原因"],"trigger":"进入正文的条件","nextBeat":"医生私有下一步","stakes":"医生私有代价与风险","urgency":0,"knowledge":"hidden|rumor|observed","causedBy":[],"effects":[],"rumors":["仅限世界中真实流传的不确定传闻"],"revealedSummary":"仅knowledge=observed时填写已揭示部分","revealEvidence":"knowledge=observed时逐字复制最终正文证据","knownByActorIds":[]}],"actorActions":[{"actorId":"已建档者必须填写profileId；并行待建档者必须留空","actorName":"并行待建档者必须逐字填写稳定称谓","threadId":"","goal":"医生私有目标","intent":"医生私有意图","action":"具体尝试，医生私有","knowledgeBasis":[],"capabilityBasis":[],"resourceCosts":[],"expectedDuration":"","risk":"","visibility":"hidden|rumor|observable","publicSurface":"不泄露行动的可见表象，可空","publicClues":["无因果归属的可见线索"],"playerDecisionRequired":false,"planSteps":[],"nextActionTurn":0}],"adjudications":[{"actorId":"与actorActions一致；并行待建档者留空","actorName":"与actorActions的稳定称谓逐字一致","threadId":"与actorActions一致","status":"success|partial|failure|delayed|blocked","resultSummary":"医生私有世界裁决","actualCosts":[],"actualDuration":"","observableConsequence":"只写外部可观察结果，不写隐秘原因，可空","publicClues":[],"appliedStateChanges":[],"revealPath":"医生私有的发现路径"}],"factions":[{"id":"旧阵营沿用ID","name":"","goal":"","status":"","relation":"","condition":"","summary":"","sourceThreadIds":[]}],"environment":{"summary":"","economy":"","incidents":[],"trends":[],"winds":[]},"resolvedThreadIds":[]}。`;
+{"summary":"医生私有的本轮世界总体变化","threads":[{"id":"更新旧项时必须沿用旧ID；新项可留空","kind":"parallel|personal|promise|enemy|mystery|social|resource|environment","title":"医生私有标题","stage":"seeded|advancing|manifested|dormant|resolved|failed","actorIds":[],"factionIds":[],"locations":[],"keywords":[],"summary":"医生私有的完整真相摘要","offscreenBeat":"镜头外实际发生或正在形成的私有变化","publicTitle":"不泄露真相的公开标题，可空","publicSurface":"当前视角可直接观察的表象，可空","publicClues":["只写可观察线索，不写原因"],"trigger":"进入正文的条件","nextBeat":"医生私有下一步","stakes":"医生私有代价与风险","urgency":0,"knowledge":"hidden|rumor|observed","causedBy":[],"effects":[],"rumors":["仅限世界中真实流传的不确定传闻"],"revealedSummary":"仅knowledge=observed时填写已揭示部分","revealEvidence":"knowledge=observed时逐字复制最终正文证据","knownByActorIds":[]}],"actorActions":[{"actorId":"已建档者必须填写profileId；并行待建档者必须留空","actorName":"并行待建档者必须逐字填写稳定称谓","threadId":"","goal":"医生私有目标","intent":"医生私有意图","action":"具体尝试，医生私有","knowledgeBasis":[],"capabilityBasis":[],"resourceCosts":[],"expectedDuration":"必填预计耗时","risk":"必填风险","visibility":"hidden|rumor|observable","publicSurface":"不泄露行动的可见表象，可空","publicClues":["无因果归属的可见线索"],"playerDecisionRequired":false,"planSteps":[],"nextActionTurn":0}],"adjudications":[{"actorId":"与actorActions一致；并行待建档者留空","actorName":"与actorActions的稳定称谓逐字一致","threadId":"与actorActions一致","status":"success|partial|failure|delayed|blocked","resultSummary":"医生私有世界裁决，必填","actualCosts":[],"actualDuration":"必填实际耗时","observableConsequence":"公开行动必填安全外部后果；隐秘行动可空但须有revealPath","publicClues":[],"appliedStateChanges":["success或partial至少一条已经落地的完整私密或公开状态变化"],"revealPath":"隐秘结果没有公开表象时必填未来发现路径"}],"factions":[{"id":"旧阵营沿用ID","name":"","goal":"","status":"","relation":"","condition":"","summary":"","sourceThreadIds":[]}],"environment":{"summary":"","economy":"","incidents":[],"trends":[],"winds":[]},"resolvedThreadIds":[]}。`;
     const basePrompt = `【权威世界连续性状态 v5（医生私有；不得把隐藏字段直接送入正文）】\n${cropForModel(baseline, 52000)}\n\n【已原子提交并行动就绪的人物完整摘要（医生私有）】\n${cropForModel(profiles, 30000)}\n\n【本回合并行准备、尚待档案读回的人物称谓】\n${cropForModel(pendingProfileSubjects, 12000)}\n这些称谓只允许生成待验证候选；不得假装档案已经提交。\n\n【当前MVU只读事实】\n${cropForModel(runtime.core.statDataOf(data), 36000)}\n\n【最终接受正文】\n${cropForModel(runtime.core.stripProfileReceipt(acceptedText), 52000)}`;
     let failure = '';
     let previousRaw = '';

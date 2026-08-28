@@ -2098,6 +2098,24 @@ export function validateWorldProposal(proposal = {}, options = {}) {
   const factions = Array.isArray(proposal.factions) ? proposal.factions : [];
   const environment = proposal.environment && typeof proposal.environment === 'object' ? proposal.environment : {};
   const previousWorld = normalizeWorldState(options.previous || {}, { chatId: options.previous?.chatId });
+  const linkedAction = (entry) => {
+    const attemptId = cleanText(entry?.attemptId);
+    if (attemptId) {
+      const exact = [...actions, ...previousWorld.attempts].find((action) => cleanText(action?.attemptId) === attemptId);
+      if (exact) return exact;
+    }
+    const actor = worldLinkKey(entry?.actorId || entry?.actor || entry?.actorName);
+    const threadId = cleanText(entry?.threadId);
+    const matching = (candidates) => candidates.filter((action) => {
+      if (threadId && cleanText(action?.threadId) !== threadId) return false;
+      if (actor && worldLinkKey(action?.actorId || action?.actor || action?.actorName) !== actor) return false;
+      return Boolean(threadId || actor);
+    });
+    const currentMatches = matching(actions);
+    if (currentMatches.length === 1) return currentMatches[0];
+    const previousMatches = matching(previousWorld.attempts);
+    return previousMatches.length === 1 ? previousMatches[0] : null;
+  };
   const environmentHasContent = [environment.summary, environment.economy, ...(environment.incidents || []), ...(environment.trends || []), ...(environment.winds || [])].some((item) => cleanText(item));
   if (!threads.length && !actions.length && !adjudications.length && !factions.length && !environmentHasContent && !(proposal.resolvedThreadIds || []).length) {
     errors.push('本轮没有任何连续性、人物、阵营、环境或解决历史变化');
@@ -2126,16 +2144,44 @@ export function validateWorldProposal(proposal = {}, options = {}) {
     if (!cleanText(entry?.actorId || entry?.actor || entry?.actorName)) errors.push(`actorActions[${index}]缺少人物标识`);
     if (!cleanText(entry?.threadId)) errors.push(`actorActions[${index}]缺少threadId`);
     if (!cleanText(entry?.action || entry?.intent)) errors.push(`actorActions[${index}]缺少具体行动尝试`);
+    if (!cleanText(entry?.expectedDuration)) errors.push(`actorActions[${index}]缺少预计耗时`);
+    if (!cleanText(entry?.risk)) errors.push(`actorActions[${index}]缺少风险`);
     const publicLeak = publicProjectionLeak([entry?.publicSurface, ...(Array.isArray(entry?.publicClues) ? entry.publicClues : [])]);
     if (publicLeak) errors.push(`actorActions[${index}]公开投影含有不可直接公开的隐秘叙述：${publicLeak.slice(0, 80)}`);
   });
   adjudications.forEach((entry, index) => {
+    const status = cleanText(entry?.status);
+    const action = linkedAction(entry);
+    const visibility = ['hidden', 'rumor', 'observable'].includes(action?.visibility) ? action.visibility : 'hidden';
+    const stateChanges = cleanStringArray(entry?.appliedStateChanges);
     if (!cleanText(entry?.threadId) && !cleanText(entry?.attemptId)) errors.push(`adjudications[${index}]缺少threadId或attemptId`);
-    if (!cleanText(entry?.resultSummary || entry?.observableConsequence || entry?.consequence)) errors.push(`adjudications[${index}]缺少裁决结果`);
+    if (!['success', 'partial', 'failure', 'delayed', 'blocked'].includes(status)) errors.push(`adjudications[${index}]缺少有效status`);
+    if (!cleanText(entry?.resultSummary || entry?.consequence)) errors.push(`adjudications[${index}]缺少私有裁决结果摘要`);
+    if (!cleanText(entry?.actualDuration)) errors.push(`adjudications[${index}]缺少实际耗时`);
+    if (['success', 'partial'].includes(status) && !stateChanges.length) {
+      errors.push(`adjudications[${index}]声称${status}但没有任何实际状态变化`);
+    }
+    if (stateChanges.some((item) => cleanText(item).length < 4)) errors.push(`adjudications[${index}]的实际状态变化不是完整可读内容`);
+    if (['success', 'partial'].includes(status) && visibility === 'observable' && !cleanText(entry?.observableConsequence)) {
+      errors.push(`adjudications[${index}]的公开行动缺少可观察后果`);
+    }
+    if (['success', 'partial'].includes(status) && visibility !== 'observable'
+      && !cleanText(entry?.observableConsequence) && !cleanText(entry?.revealPath)) {
+      errors.push(`adjudications[${index}]的隐秘结果既没有安全表象也没有未来发现路径`);
+    }
     const publicLeak = publicProjectionLeak([entry?.observableConsequence, ...(Array.isArray(entry?.publicClues) ? entry.publicClues : [])]);
     if (publicLeak) errors.push(`adjudications[${index}]可观察后果泄露了隐秘原因：${publicLeak.slice(0, 80)}`);
   });
   return { ok: errors.length === 0, errors };
+}
+
+function adjudicationSettlementReady(attempt, result) {
+  if (!cleanText(result?.resultSummary) || !cleanText(result?.actualDuration)) return false;
+  if (['success', 'partial'].includes(result?.status) && !cleanStringArray(result?.appliedStateChanges).length) return false;
+  if (['success', 'partial'].includes(result?.status) && attempt?.visibility === 'observable' && !cleanText(result?.observableConsequence)) return false;
+  if (['success', 'partial'].includes(result?.status) && attempt?.visibility !== 'observable'
+    && !cleanText(result?.observableConsequence) && !cleanText(result?.revealPath)) return false;
+  return true;
 }
 
 function profileIdentityMap(profiles = []) {
@@ -2194,7 +2240,7 @@ export function applyWorldProposal(previousInput, proposalInput, options = {}) {
     });
     if (rawResult) {
       const result = normalizeAdjudication({ ...rawResult, attemptId: attempt.attemptId, actorId }, index, sourceRef);
-      if (result.resultSummary || result.observableConsequence) {
+      if (adjudicationSettlementReady(attempt, result)) {
         newResults.push(result);
         attempt.status = 'settled';
       }

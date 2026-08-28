@@ -48,12 +48,84 @@ test('空壳或只有标题的世界返回不会被当作成功推进', () => {
   assert.match(sparse.errors.join('；'), /没有可用的进展/);
 });
 
+test('真实回归：success或partial没有实际状态变化时不得形成可提交世界候选', () => {
+  const proposal = {
+    summary: '人物在镜头外完成了一次私密行动裁决。',
+    threads: [{ id: 'private-note', title: '私密记录', summary: '记录计划已经推进。' }],
+    actorActions: [{
+      actorId: 'actor-lin', threadId: 'private-note', action: '在无人处整理观察记录',
+      expectedDuration: '一刻钟', risk: '记录可能被旁人发现', visibility: 'hidden',
+    }],
+    adjudications: [{
+      actorId: 'actor-lin', threadId: 'private-note', status: 'success',
+      resultSummary: '记录工作已经完成。', actualDuration: '一刻钟', actualCosts: [],
+      appliedStateChanges: [], revealPath: '检查私人物品时可以发现记录。',
+    }],
+  };
+  const validation = validateWorldProposal(proposal);
+  assert.equal(validation.ok, false);
+  assert.match(validation.errors.join('；'), /声称success但没有任何实际状态变化/);
+
+  const bypassed = applyWorldProposal(emptyWorldState('chat-a'), proposal, {
+    chatId: 'chat-a', turn: 2, sourceRef: { sourceKey: 'm2' }, profiles: [profile],
+  });
+  assert.equal(bypassed.attempts.length, 1);
+  assert.equal(bypassed.attempts[0].status, 'pending_world');
+  assert.equal(bypassed.adjudications.length, 0);
+});
+
+test('隐秘成功可以没有当前公开表象，但必须有真实私密变化和未来发现路径', () => {
+  const proposal = {
+    summary: '人物在镜头外完成了一次不会自动泄露给正文的记录。',
+    threads: [{ id: 'private-note', title: '私密记录', summary: '记录新增了一项材料。' }],
+    actorActions: [{
+      actorId: 'actor-lin', threadId: 'private-note', action: '在无人处补写观察记录',
+      expectedDuration: '一刻钟', risk: '记录本可能遗失', visibility: 'hidden',
+    }],
+    adjudications: [{
+      actorId: 'actor-lin', threadId: 'private-note', status: 'success',
+      resultSummary: '记录本新增了一条完整材料。', actualDuration: '一刻钟', actualCosts: [],
+      observableConsequence: '', appliedStateChanges: ['私有记录本新增了一条完整观察材料。'],
+      revealPath: '只有取得并检查该记录本时才可能发现新增材料。',
+    }],
+  };
+  assert.equal(validateWorldProposal(proposal).ok, true);
+  const world = applyWorldProposal(emptyWorldState('chat-a'), proposal, {
+    chatId: 'chat-a', turn: 2, sourceRef: { sourceKey: 'm2' }, profiles: [profile],
+  });
+  assert.equal(world.attempts[0].status, 'settled');
+  assert.equal(world.adjudications.length, 1);
+  const packet = prepareRecallPackage(world, '询问林澄刚才做了什么', { 'actor-lin': profile }, 8, { chatId: 'chat-a', sourceKey: 'g3' });
+  assert.deepEqual(packet.items, []);
+});
+
+test('行动与裁决缺少时间风险，或公开成功缺少外部后果时必须定向补齐', () => {
+  const incomplete = validateWorldProposal({
+    summary: '公开行动被模型写成了没有证据链的成功。',
+    actorActions: [{ actorId: 'actor-lin', threadId: 'public-action', action: '当众更换门锁', visibility: 'observable' }],
+    adjudications: [{
+      actorId: 'actor-lin', threadId: 'public-action', status: 'success', resultSummary: '门锁已更换',
+      appliedStateChanges: ['门锁已更换，旧钥匙失去开启能力。'],
+    }],
+  }, {
+    previous: {
+      chatId: 'chat-a', schemaVersion: WORLD_SCHEMA_VERSION,
+      attempts: [{ attemptId: 'older-hidden', actorId: 'actor-lin', threadId: 'public-action', action: '旧行动', visibility: 'hidden' }],
+    },
+  });
+  assert.equal(incomplete.ok, false);
+  assert.match(incomplete.errors.join('；'), /预计耗时/);
+  assert.match(incomplete.errors.join('；'), /缺少风险/);
+  assert.match(incomplete.errors.join('；'), /实际耗时/);
+  assert.match(incomplete.errors.join('；'), /公开行动缺少可观察后果/);
+});
+
 test('唯一可确定的缺失支线关联由本地补齐，不要求整段世界模型重试', () => {
   const repaired = repairWorldProposalLinks(emptyWorldState('chat-a'), {
     summary: '林澄追查药材来源并得到了部分结果。',
     threads: [{ id: 't1', title: '药材短缺', actorIds: ['actor-lin'], summary: '货源线索出现变化' }],
-    actorActions: [{ actorId: 'actor-lin', action: '询问三家药商' }],
-    adjudications: [{ actorId: 'actor-lin', status: 'partial', resultSummary: '找到一条可疑转运线' }],
+    actorActions: [{ actorId: 'actor-lin', action: '询问三家药商', expectedDuration: '半天', risk: '可能惊动中间人' }],
+    adjudications: [{ actorId: 'actor-lin', status: 'partial', resultSummary: '找到一条可疑转运线', actualDuration: '半天', appliedStateChanges: ['私有货源调查新增了一条可核验的转运线索。'], revealPath: '后续核对药商账册时可以发现这条线索。' }],
   });
   assert.equal(repaired.proposal.actorActions[0].threadId, 't1');
   assert.equal(repaired.proposal.adjudications[0].threadId, 't1');
@@ -89,7 +161,7 @@ test('完整人物行动没有任何候选支线时派生稳定个人支线，�
       { id: 't1', title: '北港修船', actorIds: ['actor-bo'], summary: '木料仍未送达' },
       { id: 't2', title: '城门盘查', actorIds: ['actor-qiu'], summary: '检查仍在继续' },
     ],
-    actorActions: [{ actorId: 'actor-lin', goal: '查清药材来源', action: '询问三家药商', risk: '可能惊动中间人' }],
+    actorActions: [{ actorId: 'actor-lin', goal: '查清药材来源', action: '询问三家药商', expectedDuration: '半天', risk: '可能惊动中间人' }],
   };
   const first = repairWorldProposalLinks(baseline, input);
   const second = repairWorldProposalLinks(baseline, input);
@@ -123,10 +195,10 @@ test('人物尝试与世界裁决分离，未建档人物不能越权行动', ()
   const world = applyWorldProposal(emptyWorldState('chat-a'), {
     threads: [{ id: 't1', title: '药材短缺', kind: 'resource' }],
     actorActions: [
-      { actorId: 'actor-lin', actorName: '林澄', threadId: 't1', intent: '追查货源', action: '询问三家药商', resourceCosts: ['半天时间'] },
+      { actorId: 'actor-lin', actorName: '林澄', threadId: 't1', intent: '追查货源', action: '询问三家药商', resourceCosts: ['半天时间'], expectedDuration: '半天', risk: '可能惊动中间人' },
       { actorId: 'actor-ghost', actorName: '未建档者', threadId: 't1', action: '夺走全部药材' },
     ],
-    adjudications: [{ actorId: 'actor-lin', threadId: 't1', status: 'partial', resultSummary: '找到一条可疑转运线', actualCosts: ['支付两枚银币'], observableConsequence: '药商开始议论陌生买家' }],
+    adjudications: [{ actorId: 'actor-lin', threadId: 't1', status: 'partial', resultSummary: '找到一条可疑转运线', actualCosts: ['支付两枚银币'], actualDuration: '半天', observableConsequence: '药商开始议论陌生买家', appliedStateChanges: ['私有货源调查新增了一条可疑转运线。'] }],
   }, { chatId: 'chat-a', turn: 4, sourceRef: { sourceKey: 'm4' }, profiles: [profile] });
   assert.equal(world.attempts.length, 1);
   assert.equal(world.attempts[0].status, 'settled');
@@ -242,8 +314,8 @@ test('required_once未采用时optional命中不能冒充整包消费', () => {
 test('并行世界候选只能在档案读回后按稳定称谓解析真实人物ID与裁决', () => {
   const world = applyWorldProposal(emptyWorldState('chat-a'), {
     threads: [{ id: 't-pending', title: '待建档人物行动', summary: '人物准备追查线索' }],
-    actorActions: [{ actorId: '', actorName: '林澄', threadId: 't-pending', action: '询问三家药商' }],
-    adjudications: [{ actorId: '', actorName: '林澄', threadId: 't-pending', status: 'partial', resultSummary: '找到一条可疑转运线' }],
+    actorActions: [{ actorId: '', actorName: '林澄', threadId: 't-pending', action: '询问三家药商', expectedDuration: '半天', risk: '可能惊动中间人' }],
+    adjudications: [{ actorId: '', actorName: '林澄', threadId: 't-pending', status: 'partial', resultSummary: '找到一条可疑转运线', actualDuration: '半天', appliedStateChanges: ['私有货源调查新增了一条可核验的转运线索。'], revealPath: '后续核对药商账册时可以发现这条线索。' }],
   }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' }, profiles: [profile] });
   assert.equal(world.attempts.length, 1);
   assert.equal(world.attempts[0].actorId, profile.profileId);
@@ -328,8 +400,8 @@ test('完全没有公开表象或可观察后果的隐藏行动不会进入正�
   const world = applyWorldProposal(emptyWorldState('chat-a'), {
     summary: '镜头外人物推进了一次完全隐蔽的尝试。',
     threads: [{ id: 't-secret', title: '密信', summary: '某人烧毁密信', offscreenBeat: '灰烬也被带走', knowledge: 'hidden' }],
-    actorActions: [{ actorId: 'actor-lin', actorName: '林澄', threadId: 't-secret', action: '在无人处烧毁密信', visibility: 'hidden' }],
-    adjudications: [{ actorId: 'actor-lin', threadId: 't-secret', status: 'success', resultSummary: '密信已销毁' }],
+    actorActions: [{ actorId: 'actor-lin', actorName: '林澄', threadId: 't-secret', action: '在无人处烧毁密信', expectedDuration: '一刻钟', risk: '火光可能引来巡夜者', visibility: 'hidden' }],
+    adjudications: [{ actorId: 'actor-lin', threadId: 't-secret', status: 'success', resultSummary: '密信已销毁', actualDuration: '一刻钟', appliedStateChanges: ['私有世界中原密信已经不可恢复地销毁。'], revealPath: '只有追查缺失的密信原件时才可能发现这项变化。' }],
   }, { chatId: 'chat-a', turn: 2, sourceRef: { sourceKey: 'm2' }, profiles: [profile] });
   const packet = prepareRecallPackage(world, '询问林澄', { 'actor-lin': profile }, 8, { chatId: 'chat-a', sourceKey: 'g3' });
   assert.deepEqual(packet.items, []);
@@ -339,8 +411,8 @@ test('隐藏行动的可观察后果不携带行动者、目的、私有裁决�
   const world = applyWorldProposal(emptyWorldState('chat-a'), {
     summary: '药房后门出现了无法立即解释的变化。',
     threads: [{ id: 't-door', title: '后门处理', summary: '林澄换了锁', publicSurface: '药房后门换上了一把崭新的铜锁。', knowledge: 'hidden' }],
-    actorActions: [{ actorId: 'actor-lin', actorName: '林澄', threadId: 't-door', goal: '阻止追查', action: '趁夜更换后门锁', visibility: 'hidden' }],
-    adjudications: [{ actorId: 'actor-lin', threadId: 't-door', status: 'success', resultSummary: '旧钥匙已经失效', observableConsequence: '药房后门换上了一把崭新的铜锁。' }],
+    actorActions: [{ actorId: 'actor-lin', actorName: '林澄', threadId: 't-door', goal: '阻止追查', action: '趁夜更换后门锁', expectedDuration: '半个时辰', risk: '更换时可能留下工具痕迹', visibility: 'hidden' }],
+    adjudications: [{ actorId: 'actor-lin', threadId: 't-door', status: 'success', resultSummary: '旧钥匙已经失效', actualDuration: '半个时辰', observableConsequence: '药房后门换上了一把崭新的铜锁。', appliedStateChanges: ['药房后门锁具已更换，旧钥匙失去开启能力。'] }],
   }, { chatId: 'chat-a', turn: 3, sourceRef: { sourceKey: 'm3' }, profiles: [profile] });
   const packet = prepareRecallPackage(world, '去药房后门', { 'actor-lin': profile }, 8, { chatId: 'chat-a', sourceKey: 'g4' });
   const text = JSON.stringify(packet.items);
@@ -414,10 +486,12 @@ test('公开投影局部泄漏由本地确定性清除，医生私有世界与�
     }],
     actorActions: [{
       actorId: 'actor-lin', threadId: 'thread-private', action: '私下整理观察记录',
+      expectedDuration: '一刻钟', risk: '记录可能被旁人看见',
       publicSurface: '她正在伪装无害。', publicClues: ['纸页边缘有一道新折痕。'],
     }],
     adjudications: [{
       actorId: 'actor-lin', threadId: 'thread-private', status: 'partial', resultSummary: '记录已整理但仍缺一项证据。',
+      actualDuration: '一刻钟', appliedStateChanges: ['私有观察记录已补入一条新材料。'], revealPath: '检查折痕纸页时可以发现新增记录。',
       observableConsequence: '无人察觉她已经完成记录。', publicClues: ['桌边留下了一小滴墨迹。'],
     }],
   }, { acceptedText: '她把纸页压回桌面，桌边留下了一小滴墨迹。' });
@@ -462,6 +536,7 @@ test('公开投影按知情语义而非裸秘密字样裁决，公开言行可�
     summary: '广场上的公开对峙继续发展。',
     actorActions: [{
       actorId: 'actor-public', threadId: 'thread-public', action: '当众解释已公开的见闻',
+      expectedDuration: '几分钟', risk: '可能引发围观者争论',
       visibility: 'observable', publicSurface: '那名青年举着双手，当众说出关于副本入口的秘密，并请求对方把武器挪开。',
     }],
   });
