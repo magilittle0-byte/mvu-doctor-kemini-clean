@@ -2301,12 +2301,55 @@ function narrativeAttemptProjection(entry, adjudication) {
   return projection;
 }
 
+/**
+ * Stitches and some presets wrap the actual current action together with history,
+ * time and recall notes. Relevance must be decided from the action itself; using
+ * the whole stitched payload makes old world records match their own wrapper.
+ */
+export function recallSelectionInput(value) {
+  const source = String(value || '').trim();
+  const wrappers = [
+    /<本轮用户输入\b[^>]*>([\s\S]*?)<\/本轮用户输入>/giu,
+    /<user_input\b[^>]*>([\s\S]*?)<\/user_input>/giu,
+    /<current_user_input\b[^>]*>([\s\S]*?)<\/current_user_input>/giu,
+    /<input\b[^>]*>([\s\S]*?)<\/input>/giu,
+  ];
+  const matches = [];
+  for (const wrapper of wrappers) {
+    for (const match of source.matchAll(wrapper)) {
+      const text = String(match[1] || '').trim();
+      if (text) matches.push({ index: match.index ?? -1, text });
+    }
+  }
+  if (matches.length) return matches.sort((left, right) => left.index - right.index).at(-1).text;
+  return source;
+}
+
+function lowInformationContinuation(value) {
+  const compact = recallSelectionInput(value).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  return new Set(['继续', '接着', '然后', '然后呢', '下一步', '继续推进', '等待', '观察', '看看', '先看看', '看看情况']).has(compact);
+}
+
+function recallProjectionSearchText(projection) {
+  return [
+    projection?.title,
+    projection?.actorName,
+    projection?.publicSurface,
+    ...(Array.isArray(projection?.publicClues) ? projection.publicClues : []),
+    ...(Array.isArray(projection?.rumors) ? projection.rumors : []),
+    projection?.revealedSummary,
+    projection?.visibleAction,
+    projection?.observableConsequence,
+  ].map((value) => String(value || '').trim()).filter(Boolean).join('\n');
+}
+
 export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
   if (Number(world?.schemaVersion) === WORLD_SCHEMA_VERSION || Array.isArray(world?.threads)) {
     const normalized = normalizeWorldState(world, { chatId: world?.chatId });
-    const needle = new Set(tokens(userInput));
+    const selectionInput = recallSelectionInput(userInput);
+    const needle = new Set(tokens(selectionInput));
     for (const profile of Object.values(profiles || {})) {
-      if (String(userInput || '').includes(profile?.name || '\0')) for (const token of normalizedNames(profile)) needle.add(token);
+      if (selectionInput.includes(profile?.name || '\0')) for (const token of normalizedNames(profile)) needle.add(token);
     }
     const resultsByAttempt = new Map(normalized.adjudications.map((entry) => [entry.attemptId, entry]));
     const records = [
@@ -2317,7 +2360,7 @@ export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
         ? narrativeThreadProjection(entry)
         : narrativeAttemptProjection(entry, entry.adjudication);
       if (!projection) return null;
-      const haystack = tokens(JSON.stringify(projection));
+      const haystack = tokens(recallProjectionSearchText(projection));
       let score = Number(entry.urgency) || (entry.recordType === 'attempt' ? 3 : 2);
       let relevance = 0;
       for (const token of haystack) {
@@ -2326,17 +2369,26 @@ export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
       return { projection, score: score + relevance, relevance, updatedAt: entry.updatedAt || entry.sourceRef?.at || '' };
     }).filter(Boolean).sort((a, b) => b.score - a.score || String(b.updatedAt).localeCompare(String(a.updatedAt)));
     const relevant = records.filter((entry) => entry.relevance > 0);
-    const selected = relevant.length ? relevant : records.slice(0, Math.min(2, records.length));
+    const selected = relevant.length
+      ? relevant
+      : lowInformationContinuation(selectionInput)
+        ? records.slice(0, Math.min(1, records.length))
+        : [];
     return selected.slice(0, Math.max(1, Math.min(16, Number(limit) || 8)))
-      .map((entry) => ({ ...entry.projection, score: entry.score }));
+      .map((entry, index) => ({
+        ...entry.projection,
+        usage: index === 0 ? 'required_once' : 'optional',
+        score: entry.score,
+      }));
   }
   return selectWorldRecall(normalizeWorldState(world, { chatId: world?.chatId }), userInput, profiles, limit);
 }
 
 export function prepareRecallPackage(worldInput, userInput, profiles = {}, limit = 8, options = {}) {
   const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
-  const items = selectWorldRecall(world, userInput, profiles, limit).map(({ score, ...entry }) => entry);
-  const packageId = stableWorldId('recall', world.chatId, world.revision, options.sourceKey, userInput, options.at || new Date().toISOString());
+  const selectionInput = recallSelectionInput(userInput);
+  const items = selectWorldRecall(world, selectionInput, profiles, limit).map(({ score, ...entry }) => entry);
+  const packageId = stableWorldId('recall', world.chatId, world.revision, options.sourceKey, selectionInput, options.at || new Date().toISOString());
   return { packageId, worldRevision: world.revision, worldCommitId: world.commitId, items, preparedAt: options.at || new Date().toISOString(), sourceKey: cleanText(options.sourceKey) };
 }
 
@@ -2387,19 +2439,27 @@ export function assessRecallConsumption(narrative, recallPackage) {
   const itemResults = items.map((item, index) => {
     const fragments = recallPublicFragments(item);
     const matchedFragments = fragments.filter((fragment) => recallFragmentAppears(narrative, fragment));
-    return { index, consumed: matchedFragments.length > 0, matchedFragments };
+    return { index, usage: item?.usage === 'required_once' ? 'required_once' : 'optional', consumed: matchedFragments.length > 0, matchedFragments };
   });
   const consumedItemCount = itemResults.filter((item) => item.consumed).length;
+  const requiredItems = itemResults.filter((item) => item.usage === 'required_once');
+  const consumedRequiredItemCount = requiredItems.filter((item) => item.consumed).length;
+  const requiredSatisfied = requiredItems.length < 1 || consumedRequiredItemCount === requiredItems.length;
+  const consumed = requiredItems.length ? requiredSatisfied : consumedItemCount > 0;
   return {
-    consumed: consumedItemCount > 0,
+    consumed,
     consumedItemCount,
     totalItemCount: items.length,
+    requiredItemCount: requiredItems.length,
+    consumedRequiredItemCount,
     itemResults,
     reason: items.length < 1
       ? '本轮没有可注入的公开世界召回项'
-      : consumedItemCount > 0
-        ? `最终正文可核对地采用了${consumedItemCount}/${items.length}条公开召回投影`
-        : '最终正文没有出现任何可核对的公开召回投影，不能记为已消费',
+      : requiredItems.length && !requiredSatisfied
+        ? `最终正文没有采用${requiredItems.length - consumedRequiredItemCount}条required_once公开召回投影，不能记为已消费`
+        : consumedItemCount > 0
+          ? `最终正文可核对地采用了${consumedItemCount}/${items.length}条公开召回投影`
+          : '最终正文没有出现任何可核对的公开召回投影，不能记为已消费',
   };
 }
 
@@ -2423,14 +2483,22 @@ export function settleRecallPackage(worldInput, packageId, status, options = {})
   return { changed: true, world };
 }
 
-export function formatGenerationInjection({ tickets, recall, profileDigest = [] }) {
+export function formatGenerationInjection({ tickets, recall, profileDigest = [], currentAction = '' }) {
+  const recallItems = Array.isArray(recall) ? recall : [];
+  const requiredCount = recallItems.filter((item) => item?.usage === 'required_once').length;
   return [
     '<MVUDoctorRuntime>',
+    '本轮玩家明确动作（这是玩家侧唯一授权边界；只执行其字面动作，不补写输入外动机、对白、同意、感受或下一步）：',
+    JSON.stringify(recallSelectionInput(currentAction)),
     'characterCreationTicket（按首次出现顺序使用；有权威设定或已有档案者跳过）：',
     JSON.stringify(tickets || []),
     'worldRecallPackage_publicProjection（仅供本次生成消费一次；这是医生私有世界状态生成的公开投影，不含可直接公开的隐藏真相）：',
-    JSON.stringify(recall || []),
+    JSON.stringify(recallItems),
+    requiredCount
+      ? `召回执行要求：先服从本轮玩家动作，再把每条usage=required_once投影的一个公开片段自然写入当前因果波且只出现一次；共${requiredCount}条。若立刻转场，先写转场前可见反应，或在转场后写其已经造成的可观察后果。usage=optional只有自然相关时才使用，可以完全不写。`
+      : '召回执行要求：本轮没有required_once投影；usage=optional只有自然相关时才使用，可以完全不写。',
     '只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction与observableConsequence。不得从recordType、空白字段、标签或线索反推出隐藏动机、真实身份、镜头外行动及其成败；传闻不得写成事实。',
+    '正文不得展示usage、recordType、调度说明或任何Doctor标签；它们只决定如何自然续接公开因果。',
     '召回包不得覆盖玩家当前指令、角色卡、世界书、已接受事实或MVU当前状态。任何平行事件详情、NPC私密心理与未揭示真相都由医生继续在私有世界状态中推进，主回复不得输出。',
     '已有人物档案公开身份句柄（只表示不得重复随机，不代表其档案中的隐藏资料可被叙事者知道）：',
     JSON.stringify(profileDigest || []),

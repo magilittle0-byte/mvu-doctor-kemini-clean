@@ -58,6 +58,10 @@ test('控制台包含变量、连接、人物、世界、诊断与独立手动�
   assert.match(source, /unsupported_aliases_removed/);
   assert.match(source, /assessRecallConsumption/);
   assert.match(source, /正文未采用/);
+  assert.match(source, /recallSelectionInput/);
+  assert.match(source, /required_once/);
+  assert.match(source, /本轮玩家明确动作/);
+  assert.match(source, /不补写输入外动机/);
 });
 
 test('仍有阶段待处理时运行态优先于完成措辞且恢复与手动入口共用同一忙碌门', () => {

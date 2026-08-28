@@ -12,6 +12,7 @@ import {
   privateProfileDigestFromData,
   prepareRecallPackage,
   prepareWorldTransaction,
+  recallSelectionInput,
   recoverLatestLegacyWorld,
   recoverPreparedWorldState,
   repairWorldProposalLinks,
@@ -150,6 +151,7 @@ test('召回包有单回合预约和消费回执，不会重复消费', () => {
   const world = applyWorldProposal(emptyWorldState('chat-a'), { threads: [{ id: 't1', title: '药材短缺', actorIds: ['林澄'], locations: ['南街'], publicTitle: '南街药房动静', publicSurface: '南街药房门口贴出了限购告示。' }] }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
   const packet = prepareRecallPackage(world, '去南街找林澄', { 'actor-lin': profile }, 8, { chatId: 'chat-a', sourceKey: 'g2', at: '2026-08-23T00:00:00.000Z' });
   assert.equal(packet.items[0].recordType, 'sensory_surface');
+  assert.equal(packet.items[0].usage, 'required_once');
   assert.equal(packet.items[0].publicSurface, '南街药房门口贴出了限购告示。');
   assert.equal('id' in packet.items[0], false);
   const reserved = reserveRecallPackage(world, packet);
@@ -159,6 +161,13 @@ test('召回包有单回合预约和消费回执，不会重复消费', () => {
   assert.equal(settled.world.recall.pending, null);
   assert.equal(settled.world.recall.receipts[0].status, 'consumed');
   assert.equal(settleRecallPackage(settled.world, packet.packageId, 'consumed').changed, false);
+});
+
+test('缝合输入只用最后一个当前行动包做召回相关性，不让历史包装反向命中', () => {
+  const stitched = '<history>北港旧事和南街药房都在历史里。</history>\n<本轮用户输入>转身前往东门排队。</本轮用户输入>\n<user_input>去北港检查木料。</user_input>';
+  assert.equal(recallSelectionInput(stitched), '去北港检查木料。');
+  assert.equal(recallSelectionInput('<user_input>观察柜台。</user_input>'), '观察柜台。');
+  assert.equal(recallSelectionInput('直接输入的行动'), '直接输入的行动');
 });
 
 test('召回只有被最终正文可核对地采用才算消费，忽略的注入明确释放', () => {
@@ -177,6 +186,22 @@ test('召回只有被最终正文可核对地采用才算消费，忽略的注�
   const settled = settleRecallPackage(reserved, packet.packageId, ignored.consumed ? 'consumed' : 'released', ignored);
   assert.equal(settled.world.recall.receipts[0].status, 'released');
   assert.equal(settled.world.recall.receipts[0].totalItemCount, 1);
+});
+
+test('required_once未采用时optional命中不能冒充整包消费', () => {
+  const packet = {
+    packageId: 'recall-required-proof',
+    items: [
+      { usage: 'required_once', recordType: 'observable_actor_action', visibleAction: '柜台后的店员把账册合上。' },
+      { usage: 'optional', recordType: 'sensory_surface', publicSurface: '门外传来一阵短促的铃声。' },
+    ],
+  };
+  const optionalOnly = assessRecallConsumption('门外响起一阵短促铃声，你仍看向货架。', packet);
+  assert.equal(optionalOnly.consumedItemCount, 1);
+  assert.equal(optionalOnly.requiredItemCount, 1);
+  assert.equal(optionalOnly.consumedRequiredItemCount, 0);
+  assert.equal(optionalOnly.consumed, false);
+  assert.match(optionalOnly.reason, /required_once/);
 });
 
 test('accepted-final前释放保留真实召回条目数且不伪造消息号', () => {
@@ -235,9 +260,14 @@ test('隐藏支线只把表象和线索投影给正文，私有真相与下一�
     }],
   }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
   const packet = prepareRecallPackage(world, '观察岚音', {}, 8, { chatId: 'chat-a', sourceKey: 'g2' });
-  const injection = formatGenerationInjection({ tickets: [], recall: packet.items, profileDigest: [] });
+  const injection = formatGenerationInjection({ tickets: [], recall: packet.items, profileDigest: [], currentAction: '<user_input>观察岚音。</user_input>' });
   assert.match(injection, /岚音始终低着头/);
   assert.match(injection, /袖口边缘沾着一点/);
+  assert.match(injection, /本轮玩家明确动作/);
+  assert.match(injection, /观察岚音/);
+  assert.match(injection, /required_once/);
+  assert.match(injection, /自然写入当前因果波且只出现一次/);
+  assert.match(injection, /不补写输入外动机/);
   assert.doesNotMatch(injection, /小本本|暗中评估|秘密记录|继续暗中记录/);
   assert.equal(packet.items[0].recordType, 'sensory_surface');
   assert.equal('id' in packet.items[0], false);
@@ -284,8 +314,26 @@ test('召回相关性只看公开投影，不用私密摘要命中，也不拿�
   assert.doesNotMatch(JSON.stringify(north.items), /南街药房|东门外/);
 
   const hiddenNeedle = prepareRecallPackage(world, '秘密关键词', {}, 8, { chatId: 'chat-a', sourceKey: 'g3' });
-  assert.equal(hiddenNeedle.items.length, 2);
+  assert.equal(hiddenNeedle.items.length, 0);
   assert.doesNotMatch(JSON.stringify(hiddenNeedle.items), /秘密关键词|隐藏的南街计划/);
+});
+
+test('低信息继续只选当前最高优先公开事项一次，普通无关输入不硬塞召回', () => {
+  const world = applyWorldProposal(emptyWorldState('chat-a'), {
+    summary: '两条公开连续性都在发展。',
+    threads: [
+      { id: 'urgent', title: '钟楼警报', publicSurface: '钟楼的警报灯仍在闪烁。', urgency: 8 },
+      { id: 'minor', title: '市场收摊', publicSurface: '市场摊贩开始收起棚布。', urgency: 2 },
+    ],
+  }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
+  const continuation = prepareRecallPackage(world, '继续', {}, 8, { chatId: 'chat-a', sourceKey: 'g2' });
+  assert.equal(continuation.items.length, 1);
+  assert.equal(continuation.items[0].usage, 'required_once');
+  assert.match(JSON.stringify(continuation.items), /警报灯/);
+  const unrelated = prepareRecallPackage(world, '整理自己的背包', {}, 8, { chatId: 'chat-a', sourceKey: 'g3' });
+  assert.deepEqual(unrelated.items, []);
+  const describedAction = prepareRecallPackage(world, '观察柜台上的物品', {}, 8, { chatId: 'chat-a', sourceKey: 'g4' });
+  assert.deepEqual(describedAction.items, []);
 });
 
 test('公开投影拒绝全知措辞，隐藏事实转为已揭示必须引用本轮最终正文原文', () => {
