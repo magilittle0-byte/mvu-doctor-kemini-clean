@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.4';
+  const DOCTOR_VERSION = '0.6.5';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -393,8 +393,19 @@
       return true;
     }
 
-    function jsonEqual(left, right) {
-      return JSON.stringify(left) === JSON.stringify(right);
+    function semanticJsonEqual(left, right) {
+      if (Object.is(left, right)) return true;
+      if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') return false;
+      if (Array.isArray(left) || Array.isArray(right)) {
+        return Array.isArray(left) && Array.isArray(right)
+          && left.length === right.length
+          && left.every((item, index) => semanticJsonEqual(item, right[index]));
+      }
+      const leftKeys = Object.keys(left).sort();
+      const rightKeys = Object.keys(right).sort();
+      return leftKeys.length === rightKeys.length
+        && leftKeys.every((key, index) => key === rightKeys[index]
+          && semanticJsonEqual(left[key], right[key]));
     }
 
     function pathOverlaps(left, right) {
@@ -403,7 +414,7 @@
     }
 
     function leafChanges(before, after, base = '', output = [], limit = 240) {
-      if (output.length >= limit || jsonEqual(before, after)) return output;
+      if (output.length >= limit || semanticJsonEqual(before, after)) return output;
       const beforeObject = before && typeof before === 'object';
       const afterObject = after && typeof after === 'object';
       if (!beforeObject || !afterObject || Array.isArray(before) || Array.isArray(after)) {
@@ -798,7 +809,7 @@
       return validation.touched.every((path) => {
         const expected = pointerValue(validation.expected, path);
         const actual = pointerValue(stat, path);
-        return expected.found === actual.found && (!expected.found || JSON.stringify(expected.value) === JSON.stringify(actual.value));
+        return expected.found === actual.found && (!expected.found || semanticJsonEqual(expected.value, actual.value));
       });
     }
 
@@ -809,7 +820,7 @@
       for (const path of validation.touched || []) {
         const expected = pointerValue(validation.expected, path);
         const actual = pointerValue(stat, path);
-        if (expected.found !== actual.found || (expected.found && !jsonEqual(expected.value, actual.value))) targetErrors.push({ path, message: `目标路径未按预期落地：${path}` });
+        if (expected.found !== actual.found || (expected.found && !semanticJsonEqual(expected.value, actual.value))) targetErrors.push({ path, message: `目标路径未按预期落地：${path}` });
       }
       const permitted = [...(validation.touched || []), ...(allowPaths || [])];
       const unexpected = leafChanges(validation.before, stat).filter((change) => {
@@ -854,7 +865,7 @@
       return (paths || []).every((path) => {
         const expected = pointerValue(before, path);
         const actual = pointerValue(stat, path);
-        return expected.found === actual.found && (!expected.found || jsonEqual(expected.value, actual.value));
+        return expected.found === actual.found && (!expected.found || semanticJsonEqual(expected.value, actual.value));
       });
     }
 
@@ -880,7 +891,7 @@
       const stat = statDataOf(data);
       return (snapshot || []).every((item) => {
         const actual = pointerValue(stat, item.path);
-        return actual.found === Boolean(item.found) && (!actual.found || jsonEqual(actual.value, item.value));
+        return actual.found === Boolean(item.found) && (!actual.found || semanticJsonEqual(actual.value, item.value));
       });
     }
 
@@ -1268,7 +1279,7 @@
     function verifyCommittedProfiles(data, profiles) {
       const committed = existingProfilesFromData(data);
       for (const profile of profiles) {
-        if (JSON.stringify(committed[profile.profileId]) !== JSON.stringify(profile)) return false;
+        if (!semanticJsonEqual(committed[profile.profileId], profile)) return false;
       }
       return true;
     }
@@ -2352,7 +2363,7 @@
       return visit(value);
     }
 
-    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
+    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, semanticJsonEqual, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
@@ -2591,7 +2602,7 @@
     store.replyCheckpoint = checkpoint;
     await saveMetadata(context);
     const readback = metadata(getContext());
-    const profilesMatch = JSON.stringify(readback.profiles || {}) === JSON.stringify(checkpoint.state.profiles || {});
+    const profilesMatch = runtime.core.semanticJsonEqual(readback.profiles || {}, checkpoint.state.profiles || {});
     const worldMatch = readback.world?.digest === store.world?.digest
       && Number(readback.world?.revision) === Number(store.world?.revision);
     if (!profilesMatch || !worldMatch) throw new Error(`${reason}生成前存档点写入后读回不一致`);
@@ -2961,7 +2972,7 @@
     try {
       await Mvu.replaceMvuData(candidate, { type: 'message', message_id: messageId });
       const readback = await mvuDataAt(Mvu, messageId);
-      if (JSON.stringify(runtime.core.profilesFromData(readback)) !== JSON.stringify(baselineProfiles)) {
+      if (!runtime.core.semanticJsonEqual(runtime.core.profilesFromData(readback), baselineProfiles)) {
         throw new Error('人物档案基线写入后读回不一致');
       }
       traceRun(session, 'reroll:profile-authority-restored', { messageId, profileCount: Object.keys(baselineProfiles).length });
@@ -3277,7 +3288,7 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
       assertVariableTarget(session, messageId, target);
       const freshData = await mvuDataAt(Mvu, messageId);
       if (!freshData) return { ok: false, error: '提交前无法重新读取目标MVU状态；零写入' };
-      if (JSON.stringify(runtime.core.statDataOf(freshData)) !== JSON.stringify(runtime.core.statDataOf(currentData))) {
+      if (!runtime.core.semanticJsonEqual(runtime.core.statDataOf(freshData), runtime.core.statDataOf(currentData))) {
         currentData = freshData;
         localValidation = runtime.core.validatePatchOperations(currentData, parsed.operations);
         if (!localValidation.ok) return { ok: false, error: `提交前状态已变化，补丁重新校验失败：${localValidation.error}；零写入` };
@@ -3301,7 +3312,7 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
         await Mvu.replaceMvuData(candidate, { type: 'message', message_id: messageId });
         const readback = await mvuDataAt(Mvu, messageId);
         const readbackCheck = runtime.core.verifyPatchApplication(readback, localValidation, authority.hostManagedPaths);
-        if (!readbackCheck.ok || JSON.stringify(runtime.core.statDataOf(readback)) !== JSON.stringify(runtime.core.statDataOf(candidate))) {
+        if (!readbackCheck.ok || !runtime.core.semanticJsonEqual(runtime.core.statDataOf(readback), runtime.core.statDataOf(candidate))) {
           const rolledBack = await rollbackMvuTouched(Mvu, currentData, localValidation, messageId);
           patchVariableRepair(repairId, { status: rolledBack.ok ? 'rolled_back' : 'rollback_failed', error: `写入读回不一致：${readbackCheck.errors.join('；')}`, rollback: rolledBack }, context);
           await saveMetadata(context);
@@ -3402,11 +3413,11 @@ ${runtime.core.profileCompletionContract()}`;
     }
     assertSessionCurrent(session);
     if (auditedNochange) {
-      if (hasMvu && Object.keys(metadata().profiles || {}).length && JSON.stringify(runtime.core.statDataOf(liveData)?.人物档案 || {}) !== JSON.stringify(runtime.core.statDataOf(oldData)?.人物档案 || {})) {
+      if (hasMvu && Object.keys(metadata().profiles || {}).length && !runtime.core.semanticJsonEqual(runtime.core.statDataOf(liveData)?.人物档案 || {}, runtime.core.statDataOf(oldData)?.人物档案 || {})) {
         try {
           await Mvu.replaceMvuData(oldData, { type: 'message', message_id: messageId });
           const restored = await mvuDataAt(Mvu, messageId);
-          if (JSON.stringify(runtime.core.statDataOf(restored)?.人物档案 || {}) === JSON.stringify(runtime.core.statDataOf(oldData)?.人物档案 || {})) return { ok: true, changed: 0, data: restored };
+          if (runtime.core.semanticJsonEqual(runtime.core.statDataOf(restored)?.人物档案 || {}, runtime.core.statDataOf(oldData)?.人物档案 || {})) return { ok: true, changed: 0, data: restored };
         } catch { /* metadata remains the durable doctor-owned recovery copy */ }
       }
       return { ok: true, changed: 0, data: oldData };
@@ -3690,7 +3701,7 @@ ${runtime.core.profileCompletionContract()}`;
     if (!message || Number(message.swipe_id) !== Number(record.target?.swipeId)) throw new Error('修复目标楼层或swipe已经变化，不能撤销旧修复');
     const parsed = runtime.core.parseUpdateVariableBlock(message.mes);
     const expectedOperations = [...(record.originalOperations || []), ...(record.correctionOperations || [])];
-    if (!parsed.ok || JSON.stringify(parsed.operations) !== JSON.stringify(expectedOperations)) throw new Error('当前正文变量块已被后续修改，不能覆盖撤销');
+    if (!parsed.ok || !runtime.core.semanticJsonEqual(parsed.operations, expectedOperations)) throw new Error('当前正文变量块已被后续修改，不能覆盖撤销');
     const Mvu = await getMvu();
     if (!Mvu?.getMvuData || !Mvu?.replaceMvuData) throw new Error('MVU接口不可用，不能撤销变量修复');
     runtime.retrying = true;
@@ -3740,7 +3751,7 @@ ${runtime.core.profileCompletionContract()}`;
     }
     const expectedOperations = [...(record.originalOperations || []), ...(record.correctionOperations || [])];
     const parsed = runtime.core.parseUpdateVariableBlock(message.mes);
-    const messageCommitted = parsed.ok && JSON.stringify(parsed.operations) === JSON.stringify(expectedOperations);
+    const messageCommitted = parsed.ok && runtime.core.semanticJsonEqual(parsed.operations, expectedOperations);
     if (runtime.core.verifyPathSnapshot(currentData, record.expectedSnapshot) && messageCommitted) {
       patchVariableRepair(record.repairId, { status: 'applied', recoveredAt: new Date().toISOString() }, context);
       addDiagnostic('variable_recovered', '启动时确认待提交变量事务已经完整写入正文与MVU', context);

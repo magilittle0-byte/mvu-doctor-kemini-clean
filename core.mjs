@@ -369,8 +369,19 @@ function setPointerValue(root, path, found, value) {
   return true;
 }
 
-function jsonEqual(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+export function semanticJsonEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length
+      && left.every((item, index) => semanticJsonEqual(item, right[index]));
+  }
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]
+      && semanticJsonEqual(left[key], right[key]));
 }
 
 function pathOverlaps(left, right) {
@@ -379,7 +390,7 @@ function pathOverlaps(left, right) {
 }
 
 function leafChanges(before, after, base = '', output = [], limit = 240) {
-  if (output.length >= limit || jsonEqual(before, after)) return output;
+  if (output.length >= limit || semanticJsonEqual(before, after)) return output;
   const beforeObject = before && typeof before === 'object';
   const afterObject = after && typeof after === 'object';
   if (!beforeObject || !afterObject || Array.isArray(before) || Array.isArray(after)) {
@@ -774,7 +785,7 @@ export function verifyPatchOperations(data, validation) {
   return validation.touched.every((path) => {
     const expected = pointerValue(validation.expected, path);
     const actual = pointerValue(stat, path);
-    return expected.found === actual.found && (!expected.found || JSON.stringify(expected.value) === JSON.stringify(actual.value));
+    return expected.found === actual.found && (!expected.found || semanticJsonEqual(expected.value, actual.value));
   });
 }
 
@@ -785,7 +796,7 @@ export function verifyPatchApplication(data, validation, allowPaths = []) {
   for (const path of validation.touched || []) {
     const expected = pointerValue(validation.expected, path);
     const actual = pointerValue(stat, path);
-    if (expected.found !== actual.found || (expected.found && !jsonEqual(expected.value, actual.value))) targetErrors.push({ path, message: `目标路径未按预期落地：${path}` });
+    if (expected.found !== actual.found || (expected.found && !semanticJsonEqual(expected.value, actual.value))) targetErrors.push({ path, message: `目标路径未按预期落地：${path}` });
   }
   const permitted = [...(validation.touched || []), ...(allowPaths || [])];
   const unexpected = leafChanges(validation.before, stat).filter((change) => {
@@ -830,7 +841,7 @@ export function verifyRestoredPaths(data, beforeData, paths = []) {
   return (paths || []).every((path) => {
     const expected = pointerValue(before, path);
     const actual = pointerValue(stat, path);
-    return expected.found === actual.found && (!expected.found || jsonEqual(expected.value, actual.value));
+    return expected.found === actual.found && (!expected.found || semanticJsonEqual(expected.value, actual.value));
   });
 }
 
@@ -856,7 +867,7 @@ export function verifyPathSnapshot(data, snapshot = []) {
   const stat = statDataOf(data);
   return (snapshot || []).every((item) => {
     const actual = pointerValue(stat, item.path);
-    return actual.found === Boolean(item.found) && (!actual.found || jsonEqual(actual.value, item.value));
+    return actual.found === Boolean(item.found) && (!actual.found || semanticJsonEqual(actual.value, item.value));
   });
 }
 
@@ -1244,7 +1255,7 @@ export function mergeProfileRootDirect(currentData, profiles) {
 export function verifyCommittedProfiles(data, profiles) {
   const committed = existingProfilesFromData(data);
   for (const profile of profiles) {
-    if (JSON.stringify(committed[profile.profileId]) !== JSON.stringify(profile)) return false;
+    if (!semanticJsonEqual(committed[profile.profileId], profile)) return false;
   }
   return true;
 }

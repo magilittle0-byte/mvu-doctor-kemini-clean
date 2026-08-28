@@ -32,6 +32,7 @@ import {
   restoreTouchedData,
   removeApiFromExport,
   selectWorldRecall,
+  semanticJsonEqual,
   statDataOf,
   validatePatchOperations,
   validateProfileSubjectCoverage,
@@ -276,6 +277,30 @@ test('变量补丁必须拒绝目标外旁路变化，回滚只恢复本事务�
   const snapshot = capturePathSnapshot(state, validation.rollbackPaths);
   const restoredAgain = restorePathSnapshot(liveAfterOtherWork, snapshot);
   assert.equal(verifyPathSnapshot(restoredAgain.data, snapshot), true);
+});
+
+test('MVU只调整对象键顺序时仍视为同一结构，数组顺序仍必须一致', () => {
+  const state = { stat_data: { 契约者: { 背包: {} } } };
+  const operation = {
+    op: 'insert',
+    path: '/契约者/背包/测试物品',
+    value: { 名称: '测试物品', 类型: '武器', 数量: 1, 效果: { 被动: '无', 主动: '无' } },
+  };
+  const validation = validatePatchOperations(state, [operation]);
+  assert.equal(validation.ok, true);
+  const hostNormalized = {
+    stat_data: {
+      契约者: {
+        背包: {
+          测试物品: { 效果: { 主动: '无', 被动: '无' }, 数量: 1, 类型: '武器', 名称: '测试物品' },
+        },
+      },
+    },
+  };
+  assert.equal(semanticJsonEqual(operation.value, hostNormalized.stat_data.契约者.背包.测试物品), true);
+  assert.equal(verifyPatchOperations(hostNormalized, validation), true);
+  assert.equal(verifyPatchApplication(hostNormalized, validation).ok, true);
+  assert.equal(semanticJsonEqual([1, 2], [2, 1]), false);
 });
 
 test('当前角色卡存在Schema时拒绝Schema外insert，不把数据对象存在误判为可写', () => {
