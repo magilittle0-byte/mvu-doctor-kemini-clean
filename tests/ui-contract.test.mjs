@@ -48,6 +48,10 @@ test('控制台包含变量、连接、人物、世界、诊断与独立手动�
   assert.match(source, /hasMainGenerationEvidence/);
   assert.doesNotMatch(source, /visibleMainStop/);
   assert.match(source, /releaseSessionRecall/);
+  const release = source.slice(source.indexOf('function releaseSessionRecall'), source.indexOf('async function acceptFinal'));
+  assert.match(release, /totalItemCount = Array\.isArray\(session\.recallPackage\.items\)/);
+  assert.match(release, /consumedItemCount: 0/);
+  assert.match(release, /totalItemCount,/);
   assert.match(source, /insert_missing_content_open_before_first_narrative_anchor/);
   assert.match(source, /正文结构无法安全修复\|正文结构修复未能持久化/);
   assert.match(source, /未知（外观像青年）/);

@@ -179,6 +179,50 @@ test('召回只有被最终正文可核对地采用才算消费，忽略的注�
   assert.equal(settled.world.recall.receipts[0].totalItemCount, 1);
 });
 
+test('accepted-final前释放保留真实召回条目数且不伪造消息号', () => {
+  const packet = {
+    packageId: 'recall-preaccepted-release',
+    items: [
+      { recordType: 'sensory_surface', publicSurface: '门外传来一阵短促的铃声。' },
+      { recordType: 'observable_actor_action', visibleAction: '柜台后的店员把账册合上。' },
+    ],
+  };
+  const reserved = reserveRecallPackage(emptyWorldState('chat-a'), packet);
+  const settled = settleRecallPackage(reserved, packet.packageId, 'released', {
+    sourceKey: 'chat-a:released-before-accepted-processing',
+    messageId: null,
+    consumedItemCount: 0,
+    totalItemCount: packet.items.length,
+    reason: '正文结构缺少开始标签',
+  });
+  const receipt = settled.world.recall.receipts[0];
+  assert.equal(receipt.status, 'released');
+  assert.equal(receipt.messageId, null);
+  assert.equal(receipt.consumedItemCount, 0);
+  assert.equal(receipt.totalItemCount, 2);
+  assert.equal(receipt.reason, '正文结构缺少开始标签');
+});
+
+test('空字符串消息号也保持为空，合法的零号消息不被误删', () => {
+  const emptyPacket = { packageId: 'recall-empty-message', items: [] };
+  const emptySettled = settleRecallPackage(
+    reserveRecallPackage(emptyWorldState('chat-a'), emptyPacket),
+    emptyPacket.packageId,
+    'released',
+    { messageId: '' },
+  );
+  assert.equal(emptySettled.world.recall.receipts[0].messageId, null);
+
+  const zeroPacket = { packageId: 'recall-zero-message', items: [] };
+  const zeroSettled = settleRecallPackage(
+    reserveRecallPackage(emptyWorldState('chat-a'), zeroPacket),
+    zeroPacket.packageId,
+    'consumed',
+    { messageId: 0 },
+  );
+  assert.equal(zeroSettled.world.recall.receipts[0].messageId, 0);
+});
+
 test('隐藏支线只把表象和线索投影给正文，私有真相与下一步不进入注入', () => {
   const secret = '岚音在袖口遮挡下把旅人甲的名字写进小本本，并决定暗中评估他的弱点。';
   const world = applyWorldProposal(emptyWorldState('chat-a'), {

@@ -1574,6 +1574,13 @@ function stableWorldId(prefix, ...parts) {
   return `${prefix}-${(hash >>> 0).toString(36)}`;
 }
 
+function optionalInteger(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && !value.trim()) return null;
+  const numeric = Number(value);
+  return Number.isInteger(numeric) ? numeric : null;
+}
+
 function worldDigestPayload(world) {
   const copy = deepClone(world || {});
   delete copy.digest;
@@ -1592,7 +1599,7 @@ function normalizeSourceRef(value = {}, fallback = {}) {
   const source = value && typeof value === 'object' ? value : {};
   return {
     chatId: cleanText(source.chatId, cleanText(fallback.chatId)),
-    messageId: Number.isInteger(Number(source.messageId)) ? Number(source.messageId) : (Number.isInteger(Number(fallback.messageId)) ? Number(fallback.messageId) : null),
+    messageId: optionalInteger(source.messageId) ?? optionalInteger(fallback.messageId),
     turn: Math.max(0, Number(source.turn ?? fallback.turn) || 0),
     sourceKey: cleanText(source.sourceKey, cleanText(fallback.sourceKey)),
     excerpt: cleanText(source.excerpt, cleanText(fallback.excerpt)).slice(0, 500),
@@ -2404,7 +2411,7 @@ export function settleRecallPackage(worldInput, packageId, status, options = {})
     packageId,
     status: ['consumed', 'released'].includes(status) ? status : 'released',
     sourceKey: cleanText(options.sourceKey),
-    messageId: Number.isInteger(Number(options.messageId)) ? Number(options.messageId) : null,
+    messageId: optionalInteger(options.messageId),
     consumedItemCount: Math.max(0, Number(options.consumedItemCount) || 0),
     totalItemCount: Math.max(0, Number(options.totalItemCount) || 0),
     reason: cleanText(options.reason),

@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.13';
+  const DOCTOR_VERSION = '0.6.14';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -1598,6 +1598,13 @@
       return `${prefix}-${(hash >>> 0).toString(36)}`;
     }
 
+    function optionalInteger(value) {
+      if (value === null || value === undefined) return null;
+      if (typeof value === 'string' && !value.trim()) return null;
+      const numeric = Number(value);
+      return Number.isInteger(numeric) ? numeric : null;
+    }
+
     function worldDigestPayload(world) {
       const copy = deepClone(world || {});
       delete copy.digest;
@@ -1616,7 +1623,7 @@
       const source = value && typeof value === 'object' ? value : {};
       return {
         chatId: cleanText(source.chatId, cleanText(fallback.chatId)),
-        messageId: Number.isInteger(Number(source.messageId)) ? Number(source.messageId) : (Number.isInteger(Number(fallback.messageId)) ? Number(fallback.messageId) : null),
+        messageId: optionalInteger(source.messageId) ?? optionalInteger(fallback.messageId),
         turn: Math.max(0, Number(source.turn ?? fallback.turn) || 0),
         sourceKey: cleanText(source.sourceKey, cleanText(fallback.sourceKey)),
         excerpt: cleanText(source.excerpt, cleanText(fallback.excerpt)).slice(0, 500),
@@ -2428,7 +2435,7 @@
         packageId,
         status: ['consumed', 'released'].includes(status) ? status : 'released',
         sourceKey: cleanText(options.sourceKey),
-        messageId: Number.isInteger(Number(options.messageId)) ? Number(options.messageId) : null,
+        messageId: optionalInteger(options.messageId),
         consumedItemCount: Math.max(0, Number(options.consumedItemCount) || 0),
         totalItemCount: Math.max(0, Number(options.totalItemCount) || 0),
         reason: cleanText(options.reason),
@@ -3066,7 +3073,13 @@
         branches: activeWorldCount(recallWorld),
       });
     } catch (error) {
-      metadata(context).world = runtime.core.settleRecallPackage(metadata(context).world, recallPackage.packageId, 'released', { sourceKey }).world;
+      metadata(context).world = runtime.core.settleRecallPackage(metadata(context).world, recallPackage.packageId, 'released', {
+        sourceKey,
+        messageId: null,
+        consumedItemCount: 0,
+        totalItemCount: recallPackage.items.length,
+        reason: `生成前注入失败：${error.message || String(error)}`,
+      }).world;
       await saveMetadata(context);
       session.cancelled = true;
       runtime.active = null;
@@ -3814,9 +3827,12 @@ ${runtime.core.profileCompletionContract()}`;
   function releaseSessionRecall(context, session, reason) {
     const packageId = session?.recallPackage?.packageId;
     if (!packageId) return false;
+    const totalItemCount = Array.isArray(session.recallPackage.items) ? session.recallPackage.items.length : 0;
     const settled = runtime.core.settleRecallPackage(metadata(context).world, packageId, 'released', {
       sourceKey: `${session.chatId}:released-before-accepted-processing`,
       messageId: session.finalMessageId ?? null,
+      consumedItemCount: 0,
+      totalItemCount,
       reason: String(reason || 'accepted-final没有进入可处理终态'),
     });
     metadata(context).world = settled.world;
@@ -4180,7 +4196,13 @@ ${runtime.core.profileCompletionContract()}`;
     clearInjection();
     if (active?.recallPackage?.packageId) {
       const context = getContext();
-      const settled = runtime.core.settleRecallPackage(metadata(context).world, active.recallPackage.packageId, 'released', { sourceKey: `${active.chatId}:cancelled` });
+      const settled = runtime.core.settleRecallPackage(metadata(context).world, active.recallPackage.packageId, 'released', {
+        sourceKey: `${active.chatId}:cancelled`,
+        messageId: active.finalMessageId ?? null,
+        consumedItemCount: 0,
+        totalItemCount: Array.isArray(active.recallPackage.items) ? active.recallPackage.items.length : 0,
+        reason: String(reason || '已取消'),
+      });
       metadata(context).world = settled.world;
       if (settled.changed) void saveMetadata(context);
     }
