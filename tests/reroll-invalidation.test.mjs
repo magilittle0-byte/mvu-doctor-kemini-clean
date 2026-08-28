@@ -67,7 +67,7 @@ function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '
     setTimeout, clearTimeout, structuredClone,
   };
   vm.runInNewContext(source, sandbox, { filename: 'index.js' });
-  return { context, handlers, prompts, mvuByMessage };
+  return { context, handlers, prompts, mvuByMessage, uiRoot };
 }
 
 test('regenerate restores the logical floor checkpoint before building the new injection', async () => {
@@ -158,6 +158,7 @@ test('accepted正文结构失败会释放本次召回预约且不进入变量人
   assert.equal(store.fullRuns.length, 1);
   assert.equal(store.fullRuns[0].outcome.stage, 'accepted-structure');
   assert.equal(store.profiles && Object.keys(store.profiles).length, 0);
+  assert.equal(harness.uiRoot.dataset.state, 'error');
 });
 
 test('manual latest-message swipe restores the same pre-generation authority state', async () => {

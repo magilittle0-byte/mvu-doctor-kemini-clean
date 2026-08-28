@@ -305,9 +305,10 @@ export function buildUpdateVariableBlock(operations, analysis = '变量更新。
 }
 
 /**
- * Repairs only the one unambiguous envelope defect observed in accepted output:
- * one opening <content>, no closing tag, followed by a known out-of-content block.
- * Everything else is either already valid or fails closed instead of guessing.
+ * Repairs only accepted-envelope defects with a deterministic structural boundary:
+ * a missing close before options/variables, or a missing open immediately before the
+ * first explicit narrative/check container that is already closed before those blocks.
+ * Everything else fails closed instead of guessing where free prose begins or ends.
  */
 export function repairAcceptedNarrativeEnvelope(message) {
   const source = String(message || '');
@@ -349,6 +350,33 @@ export function repairAcceptedNarrativeEnvelope(message) {
       changed: true,
       message: `${before}\n</content>\n${after}`,
       repairs: ['insert_missing_content_close_before_structured_boundary'],
+    };
+  }
+  if (opens.length === 0 && closes.length === 1) {
+    const closeIndex = Number(closes[0].index);
+    const firstBoundary = [...source.matchAll(/<(?:options?|UpdateVariable)\b[^>]*>/gi)]
+      .map((match) => Number(match.index))
+      .filter((index) => index > closeIndex)
+      .sort((left, right) => left - right)[0];
+    const anchors = [...source.matchAll(/<(?:check|story_body)\b[^>]*>/gi)]
+      .map((match) => Number(match.index))
+      .filter((index) => index < closeIndex)
+      .sort((left, right) => left - right);
+    if (firstBoundary === undefined || anchors.length < 1) {
+      return { ok: false, changed: false, message: source, error: '正文缺少content开始标签，且没有可证明的检定/正文容器与选项或变量边界' };
+    }
+    const anchor = anchors[0];
+    const narrative = source.slice(anchor, closeIndex).trim();
+    if (!narrative) {
+      return { ok: false, changed: false, message: source, error: '正文content闭合前没有可用内容，不能自动补开始标签' };
+    }
+    const before = source.slice(0, anchor).replace(/[ \t]+$/u, '').replace(/\n*$/u, '');
+    const after = source.slice(anchor).replace(/^\s*/u, '');
+    return {
+      ok: true,
+      changed: true,
+      message: `${before}${before ? '\n' : ''}<content>\n${after}`,
+      repairs: ['insert_missing_content_open_before_first_narrative_anchor'],
     };
   }
   return {

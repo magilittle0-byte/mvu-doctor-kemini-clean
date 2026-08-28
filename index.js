@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.7';
+  const DOCTOR_VERSION = '0.6.8';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -329,9 +329,10 @@
     }
 
     /**
-     * Repairs only the one unambiguous envelope defect observed in accepted output:
-     * one opening <content>, no closing tag, followed by a known out-of-content block.
-     * Everything else is either already valid or fails closed instead of guessing.
+     * Repairs only accepted-envelope defects with a deterministic structural boundary:
+     * a missing close before options/variables, or a missing open immediately before the
+     * first explicit narrative/check container that is already closed before those blocks.
+     * Everything else fails closed instead of guessing where free prose begins or ends.
      */
     function repairAcceptedNarrativeEnvelope(message) {
       const source = String(message || '');
@@ -373,6 +374,33 @@
           changed: true,
           message: `${before}\n</content>\n${after}`,
           repairs: ['insert_missing_content_close_before_structured_boundary'],
+        };
+      }
+      if (opens.length === 0 && closes.length === 1) {
+        const closeIndex = Number(closes[0].index);
+        const firstBoundary = [...source.matchAll(/<(?:options?|UpdateVariable)\b[^>]*>/gi)]
+          .map((match) => Number(match.index))
+          .filter((index) => index > closeIndex)
+          .sort((left, right) => left - right)[0];
+        const anchors = [...source.matchAll(/<(?:check|story_body)\b[^>]*>/gi)]
+          .map((match) => Number(match.index))
+          .filter((index) => index < closeIndex)
+          .sort((left, right) => left - right);
+        if (firstBoundary === undefined || anchors.length < 1) {
+          return { ok: false, changed: false, message: source, error: '正文缺少content开始标签，且没有可证明的检定/正文容器与选项或变量边界' };
+        }
+        const anchor = anchors[0];
+        const narrative = source.slice(anchor, closeIndex).trim();
+        if (!narrative) {
+          return { ok: false, changed: false, message: source, error: '正文content闭合前没有可用内容，不能自动补开始标签' };
+        }
+        const before = source.slice(0, anchor).replace(/[ \t]+$/u, '').replace(/\n*$/u, '');
+        const after = source.slice(anchor).replace(/^\s*/u, '');
+        return {
+          ok: true,
+          changed: true,
+          message: `${before}${before ? '\n' : ''}<content>\n${after}`,
+          repairs: ['insert_missing_content_open_before_first_narrative_anchor'],
         };
       }
       return {
@@ -2714,6 +2742,7 @@
     if (/正在修复人物/.test(text)) return { variable: 'done', profiles: 'running', world: 'pending', recall: recallTerminal };
     if (/人物档案已完成/.test(text)) return { variable: 'done', profiles: 'done', world: 'running', recall: recallTerminal };
     if (/本轮医生完成|失败步骤已恢复/.test(text)) return { variable: 'done', profiles: 'done', world: 'done', recall: recallTerminal };
+    if (/正文结构无法安全修复|正文结构修复未能持久化/.test(text)) return { recall: recallTerminal, variable: 'blocked', profiles: 'blocked', world: 'blocked' };
     if (/MVU变量.*失败|变量修复.*失败|变量重试失败|变量复检失败/.test(text)) return { ...next, variable: 'error', profiles: 'blocked', world: 'blocked' };
     if (/人物档案.*失败/.test(text)) return { ...next, variable: 'done', profiles: 'error', world: 'blocked' };
     if (/世界.*失败/.test(text)) return { ...next, variable: 'done', profiles: 'done', world: 'error' };
@@ -2725,7 +2754,7 @@
 
   function statusPresentation(phase = runtime.status.phase, detail = runtime.status.detail) {
     const text = `${phase} ${detail}`;
-    if (/失败|无法|缺少|错误|不一致|未确认|回滚失败/.test(text)) return runtime.core?.diagnosticAdvice?.(phase, detail) || { severity: 'error', summary: phase, action: detail };
+    if (/失败|无法|缺少|错误|不一致|未确认|回滚失败/.test(text)) return { severity: 'error', summary: phase, action: detail || '本轮没有继续写入，请按诊断提示处理。' };
     if (/已取消|已作废|生成已停止|目标已变化|旧楼层状态已隔离/.test(text)) return { severity: 'warning', summary: phase, action: detail || '旧结果没有写入新目标。' };
     if (/完成|就绪|已确认|已恢复|已撤销|处理完成/.test(phase)) return { severity: 'success', summary: phase, action: detail || '无需处理。' };
     return { severity: 'info', summary: phase, action: detail || '医生正在等待下一步。' };
