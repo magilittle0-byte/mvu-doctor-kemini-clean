@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assessVariableBaseline,
+  assessVariableWriteAuthority,
+  buildUpdateVariableBlock,
   buildProfilePatch,
   buildVariableAuditChecklist,
   capturePathSnapshot,
@@ -18,6 +20,7 @@ import {
   normalizeProfileCandidates,
   parseProfileReceipt,
   parseUpdateVariableBlock,
+  partitionVariableOperationsByApplication,
   applyWorldProposal,
   parseWorldProposal,
   prepareProfileBatch,
@@ -152,6 +155,42 @@ test('变量区块只接受单一写入源，并保留模型分析但不要求�
   const two = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable><UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>');
   assert.equal(two.ok, false);
   assert.equal(two.code, 'multiple-blocks');
+});
+
+test('变量区块按无限回廊真实MVU的分行结构输出', () => {
+  const block = buildUpdateVariableBlock([{ op: 'delta', path: '/契约者/经济/UP', value: 1 }], '只写合法直写字段。');
+  assert.match(block, /^<UpdateVariable>\n<Analysis>\n只写合法直写字段。\n<\/Analysis>\n<JSONPatch>\n/u);
+  assert.equal(parseUpdateVariableBlock(block).ok, true);
+});
+
+test('变量医生从角色卡权威规则拒绝脚本托管字段但保留可直写字段', () => {
+  const state = { stat_data: { 契约者: { 衍生属性: { HP_当前: 105, HP_最大: 105, 防御: 3, 负重_当前: 0, 负重_上限: 30 }, 经济: { UP: 0 } }, 当前敌人: { 守卫: { 衍生属性: { 防御: 6 } } } } };
+  const rules = `契约者.衍生属性:\n- 【完全禁止修改】HP_最大、防御、负重_上限等所有计算结果均由前端自动完成。\n契约者.经济:\n- UP在获得或支付时允许直接修改。`;
+  const authority = assessVariableWriteAuthority(state, rules, [
+    { op: 'replace', path: '/契约者/衍生属性/HP_最大', value: 120 },
+    { op: 'replace', path: '/契约者/衍生属性/HP_当前', value: 90 },
+    { op: 'delta', path: '/契约者/经济/UP', value: 5 },
+    { op: 'replace', path: '/当前敌人/守卫/衍生属性/防御', value: 7 },
+  ]);
+  assert.equal(authority.ok, false);
+  assert.deepEqual(authority.allowedOperations.map((item) => item.path), ['/契约者/衍生属性/HP_当前', '/契约者/经济/UP', '/当前敌人/守卫/衍生属性/防御']);
+  assert.deepEqual(authority.rejectedOperations.map((item) => item.operation.path), ['/契约者/衍生属性/HP_最大']);
+  assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/HP_最大'));
+  assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/防御'));
+  assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/负重_上限'));
+  assert.ok(!authority.hostManagedPaths.includes('/契约者/衍生属性/HP_当前'));
+});
+
+test('真实MVU静默拒绝一个目标时可分离拒绝项而保留已落地修复', () => {
+  const operations = [
+    { op: 'replace', path: '/当前时间/地点', value: '回廊大厅' },
+    { op: 'replace', path: '/契约者/衍生属性/负重_当前', value: 3 },
+  ];
+  const partition = partitionVariableOperationsByApplication(operations, {
+    targetErrors: [{ path: '/契约者/衍生属性/负重_当前', message: '目标路径未按预期落地' }],
+  });
+  assert.deepEqual(partition.accepted.map((item) => item.path), ['/当前时间/地点']);
+  assert.deepEqual(partition.rejected.map((item) => item.operation.path), ['/契约者/衍生属性/负重_当前']);
 });
 
 test('变量操作在脚本侧确定性修复常见MVU写法而不猜不存在路径', () => {

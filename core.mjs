@@ -292,7 +292,16 @@ export function parseUpdateVariableBlock(message) {
 }
 
 export function buildUpdateVariableBlock(operations, analysis = '变量更新。') {
-  return `<UpdateVariable>\n<Analysis>${String(analysis || '变量更新。').replace(/[<>]/g, '')}</Analysis>\n<JSONPatch>\n${JSON.stringify(Array.isArray(operations) ? operations : [], null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
+  return [
+    '<UpdateVariable>',
+    '<Analysis>',
+    String(analysis || '变量更新。').replace(/[<>]/g, ''),
+    '</Analysis>',
+    '<JSONPatch>',
+    JSON.stringify(Array.isArray(operations) ? operations : [], null, 2),
+    '</JSONPatch>',
+    '</UpdateVariable>',
+  ].join('\n');
 }
 
 function pointerParts(path) {
@@ -436,7 +445,7 @@ export function buildVariableAuditChecklist({ narrative = '', previousData = nul
     },
     inventory_and_transfer: {
       risk: /获得|拿到|捡起|拾取|购买|装备|卸下|丢弃|扔下|放下|交给|递给|归还|失去|消耗|背包|物品|武器|护甲/u.test(text),
-      reason: '核对物品所有权、装备槽、数量、负重和交易双方，动作描述不能代替实际转移',
+      reason: '核对物品所有权、装备槽、数量和交易双方；负重只按角色卡规则结算，系统空间或未装备物品不得擅自计入',
       paths: matchingStatePaths(currentData, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
       changedPaths: pathsMatching(changedPaths, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
     },
@@ -466,6 +475,74 @@ export function buildVariableAuditChecklist({ narrative = '', previousData = nul
     },
   };
   return VARIABLE_AUDIT_CATEGORIES.map((id) => ({ id, ...rules[id] }));
+}
+
+function normalizedAuthorityText(value) {
+  return String(value || '').normalize('NFKC').replace(/[\s_`*#【】\[\]（）()：:，,。；;、“”"'\/\\-]/g, '').toLowerCase();
+}
+
+function authorityScope(line) {
+  const match = String(line || '').trim().match(/^([^\s:#-]+(?:\.[^\s:#]+)+)\s*:?$/u);
+  return match ? match[1].split('.').filter(Boolean) : null;
+}
+
+function authorityRecords(rulesText) {
+  const records = [];
+  let scope = null;
+  for (const rawLine of String(rulesText || '').split(/\r?\n/)) {
+    const nextScope = authorityScope(rawLine);
+    if (nextScope) {
+      scope = nextScope;
+      continue;
+    }
+    if (!scope || !/禁止修改|完全禁止修改|脚本托管保护|前端(?:系统)?自动(?:完成|计算|合成)|只读/u.test(rawLine)) continue;
+    records.push({ scope: [...scope], normalized: normalizedAuthorityText(rawLine), source: rawLine.trim() });
+  }
+  return records;
+}
+
+function pathMatchesAuthorityRecord(path, record) {
+  const parts = pointerParts(path);
+  if (!parts?.length || !record?.scope?.length) return false;
+  if (record.scope.some((part, index) => normalizedAuthorityText(parts[index]) !== normalizedAuthorityText(part))) return false;
+  const leaf = normalizedAuthorityText(parts.at(-1));
+  return leaf.length >= 2 && record.normalized.includes(leaf);
+}
+
+function allStatePaths(data, limit = 2400) {
+  const output = [];
+  const walk = (value, base = '') => {
+    if (output.length >= limit || !value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (output.length >= limit) break;
+      const path = `${base}/${String(key).replace(/~/g, '~0').replace(/\//g, '~1')}`;
+      output.push(path);
+      if (child && typeof child === 'object') walk(child, path);
+    }
+  };
+  walk(statDataOf(data));
+  return output;
+}
+
+export function assessVariableWriteAuthority(currentData, rulesText, operations = []) {
+  const records = authorityRecords(rulesText);
+  const allowedOperations = [];
+  const rejectedOperations = [];
+  for (const [index, operation] of (operations || []).entries()) {
+    const paths = operation?.op === 'move' ? [operation?.from, operation?.to] : [operation?.path];
+    const hits = paths.filter(Boolean).flatMap((path) => records
+      .filter((record) => pathMatchesAuthorityRecord(path, record))
+      .map((record) => ({ path, rule: record.source })));
+    if (hits.length) rejectedOperations.push({ index, operation: deepClone(operation), hits });
+    else allowedOperations.push(deepClone(operation));
+  }
+  const hostManagedPaths = allStatePaths(currentData).filter((path) => records.some((record) => pathMatchesAuthorityRecord(path, record)));
+  return {
+    ok: rejectedOperations.length === 0,
+    allowedOperations,
+    rejectedOperations,
+    hostManagedPaths: [...new Set(hostManagedPaths)],
+  };
 }
 
 function isValueWithDescription(value) {
@@ -708,15 +785,29 @@ export function verifyPatchApplication(data, validation, allowPaths = []) {
   for (const path of validation.touched || []) {
     const expected = pointerValue(validation.expected, path);
     const actual = pointerValue(stat, path);
-    if (expected.found !== actual.found || (expected.found && !jsonEqual(expected.value, actual.value))) targetErrors.push(`目标路径未按预期落地：${path}`);
+    if (expected.found !== actual.found || (expected.found && !jsonEqual(expected.value, actual.value))) targetErrors.push({ path, message: `目标路径未按预期落地：${path}` });
   }
   const permitted = [...(validation.touched || []), ...(allowPaths || [])];
   const unexpected = leafChanges(validation.before, stat).filter((change) => {
     if (change.path.split('/').some((part) => part.startsWith('_'))) return false;
     return !permitted.some((path) => pathOverlaps(change.path, path));
   });
-  const errors = [...targetErrors, ...unexpected.slice(0, 12).map((change) => `补丁外路径发生变化：${change.path}`)];
-  return { ok: errors.length === 0, errors, unexpected };
+  const errors = [...targetErrors.map((item) => item.message), ...unexpected.slice(0, 12).map((change) => `补丁外路径发生变化：${change.path}`)];
+  return { ok: errors.length === 0, errors, targetErrors, unexpected };
+}
+
+export function partitionVariableOperationsByApplication(operations = [], application = null) {
+  const failedPaths = [...new Set((application?.targetErrors || []).map((item) => item?.path).filter(Boolean))];
+  if (!failedPaths.length) return { accepted: deepClone(operations), rejected: [], failedPaths };
+  const accepted = [];
+  const rejected = [];
+  for (const operation of operations || []) {
+    const paths = operation?.op === 'move' ? [operation?.from, operation?.to] : [operation?.path];
+    const hits = failedPaths.filter((failed) => paths.filter(Boolean).some((path) => pathOverlaps(path, failed)));
+    if (hits.length) rejected.push({ operation: deepClone(operation), failedPaths: hits });
+    else accepted.push(deepClone(operation));
+  }
+  return { accepted, rejected, failedPaths };
 }
 
 export function restoreTouchedData(currentData, beforeData, rollbackPaths = []) {

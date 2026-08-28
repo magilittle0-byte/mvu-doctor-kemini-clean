@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.2';
+  const DOCTOR_VERSION = '0.6.3';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -316,7 +316,16 @@
     }
 
     function buildUpdateVariableBlock(operations, analysis = '变量更新。') {
-      return `<UpdateVariable>\n<Analysis>${String(analysis || '变量更新。').replace(/[<>]/g, '')}</Analysis>\n<JSONPatch>\n${JSON.stringify(Array.isArray(operations) ? operations : [], null, 2)}\n</JSONPatch>\n</UpdateVariable>`;
+      return [
+        '<UpdateVariable>',
+        '<Analysis>',
+        String(analysis || '变量更新。').replace(/[<>]/g, ''),
+        '</Analysis>',
+        '<JSONPatch>',
+        JSON.stringify(Array.isArray(operations) ? operations : [], null, 2),
+        '</JSONPatch>',
+        '</UpdateVariable>',
+      ].join('\n');
     }
 
     function pointerParts(path) {
@@ -460,7 +469,7 @@
         },
         inventory_and_transfer: {
           risk: /获得|拿到|捡起|拾取|购买|装备|卸下|丢弃|扔下|放下|交给|递给|归还|失去|消耗|背包|物品|武器|护甲/u.test(text),
-          reason: '核对物品所有权、装备槽、数量、负重和交易双方，动作描述不能代替实际转移',
+          reason: '核对物品所有权、装备槽、数量和交易双方；负重只按角色卡规则结算，系统空间或未装备物品不得擅自计入',
           paths: matchingStatePaths(currentData, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
           changedPaths: pathsMatching(changedPaths, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
         },
@@ -490,6 +499,74 @@
         },
       };
       return VARIABLE_AUDIT_CATEGORIES.map((id) => ({ id, ...rules[id] }));
+    }
+
+    function normalizedAuthorityText(value) {
+      return String(value || '').normalize('NFKC').replace(/[\s_`*#【】\[\]（）()：:，,。；;、“”"'\/\\-]/g, '').toLowerCase();
+    }
+
+    function authorityScope(line) {
+      const match = String(line || '').trim().match(/^([^\s:#-]+(?:\.[^\s:#]+)+)\s*:?$/u);
+      return match ? match[1].split('.').filter(Boolean) : null;
+    }
+
+    function authorityRecords(rulesText) {
+      const records = [];
+      let scope = null;
+      for (const rawLine of String(rulesText || '').split(/\r?\n/)) {
+        const nextScope = authorityScope(rawLine);
+        if (nextScope) {
+          scope = nextScope;
+          continue;
+        }
+        if (!scope || !/禁止修改|完全禁止修改|脚本托管保护|前端(?:系统)?自动(?:完成|计算|合成)|只读/u.test(rawLine)) continue;
+        records.push({ scope: [...scope], normalized: normalizedAuthorityText(rawLine), source: rawLine.trim() });
+      }
+      return records;
+    }
+
+    function pathMatchesAuthorityRecord(path, record) {
+      const parts = pointerParts(path);
+      if (!parts?.length || !record?.scope?.length) return false;
+      if (record.scope.some((part, index) => normalizedAuthorityText(parts[index]) !== normalizedAuthorityText(part))) return false;
+      const leaf = normalizedAuthorityText(parts.at(-1));
+      return leaf.length >= 2 && record.normalized.includes(leaf);
+    }
+
+    function allStatePaths(data, limit = 2400) {
+      const output = [];
+      const walk = (value, base = '') => {
+        if (output.length >= limit || !value || typeof value !== 'object') return;
+        for (const [key, child] of Object.entries(value)) {
+          if (output.length >= limit) break;
+          const path = `${base}/${String(key).replace(/~/g, '~0').replace(/\//g, '~1')}`;
+          output.push(path);
+          if (child && typeof child === 'object') walk(child, path);
+        }
+      };
+      walk(statDataOf(data));
+      return output;
+    }
+
+    function assessVariableWriteAuthority(currentData, rulesText, operations = []) {
+      const records = authorityRecords(rulesText);
+      const allowedOperations = [];
+      const rejectedOperations = [];
+      for (const [index, operation] of (operations || []).entries()) {
+        const paths = operation?.op === 'move' ? [operation?.from, operation?.to] : [operation?.path];
+        const hits = paths.filter(Boolean).flatMap((path) => records
+          .filter((record) => pathMatchesAuthorityRecord(path, record))
+          .map((record) => ({ path, rule: record.source })));
+        if (hits.length) rejectedOperations.push({ index, operation: deepClone(operation), hits });
+        else allowedOperations.push(deepClone(operation));
+      }
+      const hostManagedPaths = allStatePaths(currentData).filter((path) => records.some((record) => pathMatchesAuthorityRecord(path, record)));
+      return {
+        ok: rejectedOperations.length === 0,
+        allowedOperations,
+        rejectedOperations,
+        hostManagedPaths: [...new Set(hostManagedPaths)],
+      };
     }
 
     function isValueWithDescription(value) {
@@ -732,15 +809,29 @@
       for (const path of validation.touched || []) {
         const expected = pointerValue(validation.expected, path);
         const actual = pointerValue(stat, path);
-        if (expected.found !== actual.found || (expected.found && !jsonEqual(expected.value, actual.value))) targetErrors.push(`目标路径未按预期落地：${path}`);
+        if (expected.found !== actual.found || (expected.found && !jsonEqual(expected.value, actual.value))) targetErrors.push({ path, message: `目标路径未按预期落地：${path}` });
       }
       const permitted = [...(validation.touched || []), ...(allowPaths || [])];
       const unexpected = leafChanges(validation.before, stat).filter((change) => {
         if (change.path.split('/').some((part) => part.startsWith('_'))) return false;
         return !permitted.some((path) => pathOverlaps(change.path, path));
       });
-      const errors = [...targetErrors, ...unexpected.slice(0, 12).map((change) => `补丁外路径发生变化：${change.path}`)];
-      return { ok: errors.length === 0, errors, unexpected };
+      const errors = [...targetErrors.map((item) => item.message), ...unexpected.slice(0, 12).map((change) => `补丁外路径发生变化：${change.path}`)];
+      return { ok: errors.length === 0, errors, targetErrors, unexpected };
+    }
+
+    function partitionVariableOperationsByApplication(operations = [], application = null) {
+      const failedPaths = [...new Set((application?.targetErrors || []).map((item) => item?.path).filter(Boolean))];
+      if (!failedPaths.length) return { accepted: deepClone(operations), rejected: [], failedPaths };
+      const accepted = [];
+      const rejected = [];
+      for (const operation of operations || []) {
+        const paths = operation?.op === 'move' ? [operation?.from, operation?.to] : [operation?.path];
+        const hits = failedPaths.filter((failed) => paths.filter(Boolean).some((path) => pathOverlaps(path, failed)));
+        if (hits.length) rejected.push({ operation: deepClone(operation), failedPaths: hits });
+        else accepted.push(deepClone(operation));
+      }
+      return { accepted, rejected, failedPaths };
     }
 
     function restoreTouchedData(currentData, beforeData, rollbackPaths = []) {
@@ -2218,7 +2309,7 @@
       return visit(value);
     }
 
-    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, diffStatData, buildVariableAuditChecklist, normalizeVariableOperations, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
+    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
@@ -3012,9 +3103,12 @@
       narrative: runtime.core.stripProfileReceipt(acceptedText), previousData, currentData, original,
     });
     const reference = collectMvuReference(context, { opening: !previousData });
+    const rejectedHypotheses = [];
     const systemPrompt = `你是正文接受后的MVU变量核验与修复器。你不是正文作者、人物档案器、数据库或世界引擎。当前stat_data已经包含正文原变量块的实际结果；只能提交叠加在当前状态上的漏更或错更修复，绝不能重放原delta。
 
-逐项核对给定检查表，尤其注意：首次状态必须闭合初始化与派生值；物品拿取、丢弃、装备、移交要同时核对所有权、装备槽、数量和负重；恐惧、敬畏、胁迫、操纵、盲信不能偷换成自愿好感；NPC尝试不等于世界已裁决成功。只记录最终接受正文中已经发生的事实，不替玩家决定行动、同意、感受或结果。
+角色卡的变量更新规则是字段所有权的最高权威。标为“脚本托管”“前端自动计算”“禁止修改”或“完全禁止修改”的字段，即使你认为数值不对也绝对不能写；只修正它们的合法来源字段，让前端自行联动。背包若被角色卡定义为系统空间，就没有物理负重，禁止把未装备的背包物品擅自计入负重_当前。
+
+逐项核对给定检查表，尤其注意：首次状态必须闭合允许AI直写的初始化字段；物品拿取、丢弃、装备、移交要同时核对所有权、装备槽和数量，负重只服从角色卡的明确计算与托管规则；恐惧、敬畏、胁迫、操纵、盲信不能偷换成自愿好感；NPC尝试不等于世界已裁决成功。只记录最终接受正文中已经发生的事实，不替玩家决定行动、同意、感受或结果。
 
 严格服从本角色卡Schema、初始化条目与变量规则，不猜其他卡路径，不修改/人物档案，不写下划线开头路径。先在Analysis里用自然语言写清楚“正文事实、当前值、应有值”三者的对照；然后只提交必要修复。输出且只输出一个完整区块：
 <UpdateVariable>
@@ -3052,12 +3146,21 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
         return { ok: false, error: `${reason}；零写入` };
       }
       parsed.operations = normalized.operations;
-      parsed.block = runtime.core.buildUpdateVariableBlock(parsed.operations, parsed.analysis || '变量医生只提交当前状态之后的必要修复。');
+      const localRepairs = [...normalized.repairs];
       if (parsed.operations.some((operation) => [operation.path, operation.from, operation.to].filter(Boolean).some((path) => path === '/人物档案' || path.startsWith('/人物档案/')))) {
         reason = '变量医生越权触碰/人物档案';
         if (attempt < attempts) continue;
         return { ok: false, error: `${reason}；零写入` };
       }
+      const authority = runtime.core.assessVariableWriteAuthority(currentData, reference.rules, parsed.operations);
+      if (authority.rejectedOperations.length) {
+        const rejectedPaths = authority.rejectedOperations.flatMap((item) => item.hits.map((hit) => hit.path));
+        rejectedHypotheses.push(...rejectedPaths.map((path) => ({ kind: 'role-card-authority', path })));
+        localRepairs.push(...rejectedPaths.map((path) => ({ kind: 'role-card-authority', detail: `已拒绝模型写入脚本托管字段：${path}` })));
+        traceRun(session, 'variable:authority-rejected', { attempt, rejected: authority.rejectedOperations });
+        parsed.operations = authority.allowedOperations;
+      }
+      parsed.block = runtime.core.buildUpdateVariableBlock(parsed.operations, parsed.analysis || '变量医生只提交当前状态之后的必要修复。');
       if (!parsed.operations.length) {
         if (baseline.requiresCorrection) {
           reason = `本地基线显示“${baseline.code}”，正文存在高风险变化但模型返回空补丁`;
@@ -3067,13 +3170,13 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
         }
         const record = appendVariableRepair({
           repairId: `vr-${Date.now().toString(36)}-${Math.floor(randomUnit() * 0xffffff).toString(36)}`,
-          status: 'model_verified_nochange', at: new Date().toISOString(), target,
+          status: rejectedHypotheses.length ? 'authority_rejected_nochange' : 'model_verified_nochange', at: new Date().toISOString(), target,
           messageId, manual: Boolean(session.manualVariableAudit), originalOperations: original.ok ? original.operations : [],
-          analysis: parsed.analysis, baseline, checklist,
+          analysis: parsed.analysis, baseline, checklist, rejectedHypotheses, normalizationRepairs: localRepairs,
         }, context);
         await saveMetadata(context);
-        traceRun(session, 'variable:nochange-model-reviewed', { attempt, originalPatch: original, analysis: parsed.analysis, baseline, repairId: record.repairId });
-        return { ok: true, changed: false, modelReviewedNochange: true, data: currentData, message: acceptedText, analysis: parsed.analysis, baseline, note: '模型核对未发现需追加的修复；脚本已保存本地基线、路径与真实状态差异。' };
+        traceRun(session, rejectedHypotheses.length ? 'variable:nochange-authority-rejected' : 'variable:nochange-model-reviewed', { attempt, originalPatch: original, analysis: parsed.analysis, baseline, rejectedHypotheses, repairId: record.repairId });
+        return { ok: true, changed: false, modelReviewedNochange: true, data: currentData, message: acceptedText, analysis: parsed.analysis, baseline, note: rejectedHypotheses.length ? '正文原更新已真实落地；角色卡权威规则拒绝了模型越权建议，变量保持原终态。' : '模型核对未发现需追加的修复；脚本已保存本地基线、路径与真实状态差异。' };
       }
       let localValidation = runtime.core.validatePatchOperations(currentData, parsed.operations);
       if (!localValidation.ok) {
@@ -3089,12 +3192,44 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
         if (attempt < attempts) continue;
         return { ok: false, error: `${reason}；零写入` };
       }
-      let application = runtime.core.verifyPatchApplication(candidate, localValidation);
+      let application = runtime.core.verifyPatchApplication(candidate, localValidation, authority.hostManagedPaths);
       if (!application.ok) {
-        reason = `真实MVU干运行未形成封闭补丁：${application.errors.join('；')}`;
-        traceRun(session, 'variable:dry-run-failed', { attempt, reason, parsed, application });
-        if (attempt < attempts) continue;
-        return { ok: false, error: `${reason}；零写入` };
+        const partition = runtime.core.partitionVariableOperationsByApplication(parsed.operations, application);
+        if (partition.rejected.length && partition.accepted.length) {
+          const refusedPaths = partition.rejected.flatMap((item) => item.failedPaths);
+          rejectedHypotheses.push(...refusedPaths.map((path) => ({ kind: 'real-mvu-refused', path })));
+          localRepairs.push(...refusedPaths.map((path) => ({ kind: 'real-mvu-refused', detail: `真实MVU拒绝该模型假设，已从同批补丁分离：${path}` })));
+          parsed.operations = partition.accepted;
+          parsed.block = runtime.core.buildUpdateVariableBlock(parsed.operations, parsed.analysis || '变量医生只提交当前状态之后的必要修复。');
+          localValidation = runtime.core.validatePatchOperations(currentData, parsed.operations);
+          if (localValidation.ok) {
+            try { candidate = await Mvu.parseMessage(parsed.block, runtime.core.deepClone(currentData)); }
+            catch (error) { candidate = null; reason = `MVU/Schema拒绝分离后的纠错补丁：${error.message || error}`; }
+            application = candidate ? runtime.core.verifyPatchApplication(candidate, localValidation, authority.hostManagedPaths) : { ok: false, errors: [reason], targetErrors: [], unexpected: [] };
+          }
+          traceRun(session, 'variable:dry-run-rejected-operations-separated', { attempt, refusedPaths, remainingOperations: parsed.operations, application });
+        }
+        if (!application.ok) {
+          const partitionAfterRetry = runtime.core.partitionVariableOperationsByApplication(parsed.operations, application);
+          const onlyRealMvuRefusals = partitionAfterRetry.rejected.length === parsed.operations.length && !(application.unexpected || []).length;
+          reason = `真实MVU干运行未形成封闭补丁：${application.errors.join('；')}`;
+          traceRun(session, 'variable:dry-run-failed', { attempt, reason, parsed, application });
+          if (attempt < attempts) continue;
+          if (!baseline.requiresCorrection && onlyRealMvuRefusals) {
+            const refusedPaths = partitionAfterRetry.rejected.flatMap((item) => item.failedPaths);
+            rejectedHypotheses.push(...refusedPaths.map((path) => ({ kind: 'real-mvu-refused', path })));
+            const record = appendVariableRepair({
+              repairId: `vr-${Date.now().toString(36)}-${Math.floor(randomUnit() * 0xffffff).toString(36)}`,
+              status: 'authority_rejected_nochange', at: new Date().toISOString(), target,
+              messageId, manual: Boolean(session.manualVariableAudit), originalOperations: original.ok ? original.operations : [],
+              analysis: parsed.analysis, baseline, checklist, rejectedHypotheses, normalizationRepairs: localRepairs,
+            }, context);
+            await saveMetadata(context);
+            traceRun(session, 'variable:nochange-real-mvu-rejected', { attempt, originalPatch: original, baseline, rejectedHypotheses, repairId: record.repairId });
+            return { ok: true, changed: false, modelReviewedNochange: true, data: currentData, message: acceptedText, analysis: parsed.analysis, baseline, note: '正文原更新已真实落地；模型追加建议没有通过真实MVU字段所有权验证，已零写入拒绝。' };
+          }
+          return { ok: false, error: `${reason}；零写入` };
+        }
       }
       assertVariableTarget(session, messageId, target);
       const freshData = await mvuDataAt(Mvu, messageId);
@@ -3105,7 +3240,7 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
         if (!localValidation.ok) return { ok: false, error: `提交前状态已变化，补丁重新校验失败：${localValidation.error}；零写入` };
         try { candidate = await Mvu.parseMessage(parsed.block, runtime.core.deepClone(currentData)); }
         catch (error) { return { ok: false, error: `提交前状态已变化，MVU重新解析失败：${error.message || error}；零写入` }; }
-        application = runtime.core.verifyPatchApplication(candidate, localValidation);
+        application = runtime.core.verifyPatchApplication(candidate, localValidation, authority.hostManagedPaths);
         if (!application.ok) return { ok: false, error: `提交前状态已变化，补丁无法重新闭合：${application.errors.join('；')}；零写入` };
       }
       const repairId = `vr-${Date.now().toString(36)}-${Math.floor(randomUnit() * 0xffffff).toString(36)}`;
@@ -3115,14 +3250,14 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
         repairId, status: 'prepared', at: new Date().toISOString(), target,
         messageId, manual: Boolean(session.manualVariableAudit), originalOperations: original.ok ? original.operations : [],
         correctionOperations: parsed.operations, rollbackPaths: localValidation.rollbackPaths,
-        beforeSnapshot, expectedSnapshot, analysis: parsed.analysis, baseline, checklist, normalizationRepairs: normalized.repairs,
+        beforeSnapshot, expectedSnapshot, analysis: parsed.analysis, baseline, checklist, rejectedHypotheses, normalizationRepairs: localRepairs,
       }, context);
       await saveMetadata(context);
       assertVariableTarget(session, messageId, target);
       try {
         await Mvu.replaceMvuData(candidate, { type: 'message', message_id: messageId });
         const readback = await mvuDataAt(Mvu, messageId);
-        const readbackCheck = runtime.core.verifyPatchApplication(readback, localValidation);
+        const readbackCheck = runtime.core.verifyPatchApplication(readback, localValidation, authority.hostManagedPaths);
         if (!readbackCheck.ok || JSON.stringify(runtime.core.statDataOf(readback)) !== JSON.stringify(runtime.core.statDataOf(candidate))) {
           const rolledBack = await rollbackMvuTouched(Mvu, currentData, localValidation, messageId);
           patchVariableRepair(repairId, { status: rolledBack.ok ? 'rolled_back' : 'rollback_failed', error: `写入读回不一致：${readbackCheck.errors.join('；')}`, rollback: rolledBack }, context);
@@ -3132,8 +3267,8 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
         const mergedMessage = await saveMergedVariableBlock(context, messageId, acceptedText, parsed.block);
         patchVariableRepair(repairId, { status: 'applied', appliedAt: new Date().toISOString(), afterTarget: variableTarget(context, messageId) }, context);
         await saveMetadata(context);
-        traceRun(session, 'variable:committed', { attempt, originalPatch: original, correction: parsed, normalizationRepairs: normalized.repairs, baseline, readback, repairId });
-        return { ok: true, changed: true, data: readback, message: mergedMessage, repairId, analysis: parsed.analysis, baseline, normalizationRepairs: normalized.repairs };
+        traceRun(session, 'variable:committed', { attempt, originalPatch: original, correction: parsed, rejectedHypotheses, normalizationRepairs: localRepairs, baseline, readback, repairId });
+        return { ok: true, changed: true, data: readback, message: mergedMessage, repairId, analysis: parsed.analysis, baseline, rejectedHypotheses, normalizationRepairs: localRepairs };
       } catch (error) {
         const rolledBack = await rollbackMvuTouched(Mvu, currentData, localValidation, messageId);
         patchVariableRepair(repairId, { status: rolledBack.ok ? 'rolled_back' : 'rollback_failed', error: error.message || String(error), rollback: rolledBack }, context);
@@ -3918,7 +4053,7 @@ ${runtime.core.profileCompletionContract()}`;
     if (latestRepair) {
       const labels = {
         prepared: ['warning', '变量修复已准备但尚未确认终态'], applied: ['success', '变量修复已写入并读回'],
-        model_verified_nochange: ['success', '变量模型未发现需追加修复'], verified_nochange: ['success', '变量模型未发现需追加修复（旧记录）'], rolled_back: ['warning', '变量写入失败，已按触碰路径回滚'],
+        model_verified_nochange: ['success', '变量模型未发现需追加修复'], authority_rejected_nochange: ['success', '原更新已落地；越权或不可写建议已被拒绝'], verified_nochange: ['success', '变量模型未发现需追加修复（旧记录）'], rolled_back: ['warning', '变量写入失败，已按触碰路径回滚'],
         rollback_failed: ['error', '变量写入与回滚均失败'], undone: ['success', '上次变量修复已撤销'], recovery_required: ['error', '变量事务需要人工恢复'],
       };
       const [severity, title] = labels[latestRepair.status] || ['warning', `变量事务状态：${latestRepair.status}`];
