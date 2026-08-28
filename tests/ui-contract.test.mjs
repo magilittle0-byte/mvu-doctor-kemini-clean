@@ -108,6 +108,26 @@ test('正文只接收世界公开投影，人物私有摘要只供Doctor内部�
   assert.match(source, /医生私有推进/);
 });
 
+test('世界公开字段先局部净化再校验，取消会话不再进入重试、失败诊断或迟到终结', () => {
+  const worldAdvance = source.slice(source.indexOf('async function advanceWorld'), source.indexOf('function releaseSessionRecall'));
+  assert.ok(worldAdvance.indexOf('sanitizeWorldProposalPublicProjection') < worldAdvance.indexOf('validateWorldProposal'));
+  assert.match(worldAdvance, /world:public-projection-repaired/);
+  assert.match(worldAdvance, /if \(isSessionCancellation\(error, session\)\)/);
+  assert.ok(worldAdvance.indexOf('if (isSessionCancellation(error, session))') < worldAdvance.indexOf("traceRun(session, 'world:retryable-failure'"));
+  assert.match(worldAdvance, /restoreCancelledWorldAttempt/);
+  assert.match(worldAdvance, /cancelled: true/);
+
+  const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
+  assert.match(accepted, /runtime\.processingSession = session/);
+  assert.match(accepted, /if \(!sessionIsCurrent\(session\) \|\| worldResult\.cancelled\) return/);
+  assert.ok(accepted.indexOf('if (!sessionIsCurrent(session) || worldResult.cancelled) return') < accepted.indexOf("addDiagnostic('world_failed'"));
+
+  const cancel = source.slice(source.indexOf('function cancelCurrent'), source.indexOf('function renderRetryControl'));
+  assert.match(cancel, /if \(processing\) processing\.cancelled = true/);
+  assert.match(cancel, /runtime\.processingSession = null/);
+  assert.match(cancel, /不会伪造档案或世界推进进度/);
+});
+
 test('世界提交使用准备、提交、读回三段证明且MVU读取不能阻塞面板刷新', () => {
   assert.match(source, /prepareWorldTransaction/);
   assert.match(source, /world_candidate_prepared/);

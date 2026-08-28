@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.17';
+  const DOCTOR_VERSION = '0.6.18';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -2037,6 +2037,82 @@
       return { proposal, repairs };
     }
 
+    /**
+     * Keep the model's private world work while failing closed on the much smaller
+     * narrative projection. A projection defect is not evidence that the private
+     * thread, actor attempt or adjudication is unusable, so it must not trigger a
+     * full-model regeneration by itself.
+     */
+    function sanitizeWorldProposalPublicProjection(previousInput = {}, proposalInput = {}, options = {}) {
+      const proposal = deepClone(proposalInput && typeof proposalInput === 'object' ? proposalInput : {});
+      const previous = normalizeWorldState(previousInput, { chatId: previousInput?.chatId });
+      const previousThreads = new Map(previous.threads.map((entry) => [cleanText(entry.id), entry]));
+      const acceptedText = String(options.acceptedText || '');
+      const repairs = [];
+      const clearUnsafeText = (entry, field, path) => {
+        if (!publicProjectionLeak(entry?.[field])) return;
+        entry[field] = '';
+        repairs.push({ path, action: 'cleared_unsafe_public_text' });
+      };
+      const filterUnsafeArray = (entry, field, path, limit = 16) => {
+        const before = cleanStringArray(entry?.[field], limit);
+        const after = before.filter((item) => !publicProjectionLeak(item));
+        entry[field] = after;
+        if (after.length !== before.length) repairs.push({ path, action: 'removed_unsafe_public_items', removed: before.length - after.length });
+      };
+
+      proposal.threads = (Array.isArray(proposal.threads) ? proposal.threads : []).map((source, index) => {
+        const entry = { ...(source || {}) };
+        clearUnsafeText(entry, 'publicTitle', `threads[${index}].publicTitle`);
+        clearUnsafeText(entry, 'publicSurface', `threads[${index}].publicSurface`);
+        filterUnsafeArray(entry, 'publicClues', `threads[${index}].publicClues`, 16);
+        filterUnsafeArray(entry, 'rumors', `threads[${index}].rumors`, 24);
+        if (entry.knowledge === 'rumor' && !entry.rumors.length) {
+          entry.knowledge = 'hidden';
+          repairs.push({ path: `threads[${index}].knowledge`, action: 'downgraded_empty_rumor_to_hidden' });
+        }
+        if (entry.knowledge === 'observed') {
+          const prior = previousThreads.get(cleanText(entry.id));
+          const alreadyObserved = prior?.knowledge === 'observed'
+            && cleanText(prior?.revealedSummary) === cleanText(entry.revealedSummary);
+          const hasExactEvidence = exactNarrativeEvidence(acceptedText, entry.revealEvidence);
+          if (!alreadyObserved && !hasExactEvidence) {
+            if (prior?.knowledge === 'observed') {
+              entry.knowledge = 'observed';
+              entry.revealedSummary = cleanText(prior.revealedSummary);
+              entry.revealEvidence = cleanText(prior.revealEvidence);
+              repairs.push({ path: `threads[${index}]`, action: 'restored_previous_observed_boundary' });
+            } else {
+              entry.knowledge = 'hidden';
+              entry.revealedSummary = '';
+              entry.revealEvidence = '';
+              repairs.push({ path: `threads[${index}]`, action: 'downgraded_unproven_observed_to_hidden' });
+            }
+          }
+        } else {
+          entry.revealedSummary = '';
+          entry.revealEvidence = '';
+        }
+        return entry;
+      });
+
+      proposal.actorActions = (Array.isArray(proposal.actorActions) ? proposal.actorActions : []).map((source, index) => {
+        const entry = { ...(source || {}) };
+        clearUnsafeText(entry, 'publicSurface', `actorActions[${index}].publicSurface`);
+        filterUnsafeArray(entry, 'publicClues', `actorActions[${index}].publicClues`, 12);
+        return entry;
+      });
+
+      proposal.adjudications = (Array.isArray(proposal.adjudications) ? proposal.adjudications : []).map((source, index) => {
+        const entry = { ...(source || {}) };
+        clearUnsafeText(entry, 'observableConsequence', `adjudications[${index}].observableConsequence`);
+        filterUnsafeArray(entry, 'publicClues', `adjudications[${index}].publicClues`, 12);
+        return entry;
+      });
+
+      return { proposal, repairs };
+    }
+
     function validateWorldProposal(proposal = {}, options = {}) {
       const errors = [];
       if (cleanText(proposal.summary).length < 6) errors.push('summary需要用完整句说明本轮世界总体变化');
@@ -2216,6 +2292,26 @@
       const readback = normalizeWorldState(readbackInput, { chatId: candidateInput?.chatId });
       const candidate = normalizeWorldState(candidateInput, { chatId: candidateInput?.chatId });
       return readback.revision === candidate.revision && readback.commitId === candidate.commitId && readback.digest === candidate.digest && readback.checkpoint?.state === 'world_committed';
+    }
+
+    function restoreWorldBaselineForCancelledCandidate(currentInput, baselineInput, candidateInput) {
+      const baseline = normalizeWorldState(baselineInput, { chatId: baselineInput?.chatId });
+      const current = normalizeWorldState(currentInput, { chatId: baseline.chatId });
+      const candidate = candidateInput ? normalizeWorldState(candidateInput, { chatId: baseline.chatId }) : null;
+      const preparedMatch = Boolean(candidate?.digest)
+        && current.revision === baseline.revision
+        && current.checkpoint?.state === 'world_candidate_prepared'
+        && current.checkpoint?.candidateDigest === candidate.digest;
+      const committedMatch = Boolean(candidate?.digest)
+        && current.revision === candidate.revision
+        && current.commitId === candidate.commitId
+        && current.digest === candidate.digest;
+      if (!preparedMatch && !committedMatch) return { restored: false, world: current, reason: 'no_owned_candidate' };
+      return {
+        restored: true,
+        world: deepClone(baseline),
+        reason: preparedMatch ? 'discarded_prepared_candidate' : 'rolled_back_cancelled_commit',
+      };
     }
 
     function activeWorldCount(worldInput) {
@@ -2649,12 +2745,13 @@
       return visit(value);
     }
 
-    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, validateVariableAuditAnalysis, buildUpdateVariableBlock, repairAcceptedNarrativeEnvelope, semanticJsonEqual, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessOriginalMvuReplay, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, recallSelectionInput, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
+    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, validateVariableAuditAnalysis, buildUpdateVariableBlock, repairAcceptedNarrativeEnvelope, semanticJsonEqual, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessOriginalMvuReplay, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, sanitizeWorldProposalPublicProjection, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, restoreWorldBaselineForCancelledCandidate, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, recallSelectionInput, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
     core: null,
     active: null,
+    processingSession: null,
     timer: null,
     internalGeneration: false,
     requestController: null,
@@ -2742,6 +2839,7 @@
   async function finalizeRun(session, outcome, context = getContext()) {
     if (!session || session.reportSaved) return;
     session.reportSaved = true;
+    if (runtime.processingSession === session) runtime.processingSession = null;
     const store = metadata(context);
     const finishedAt = Date.now();
     const report = runtime.core.removeApiFromExport({
@@ -2983,7 +3081,7 @@
 
   async function waitForMvuIdle(Mvu, session) {
     while (typeof Mvu?.isDuringExtraAnalysis === 'function' && Mvu.isDuringExtraAnalysis()) {
-      if (session.cancelled || runtime.epoch !== session.epoch) throw new Error('任务已被新回合或聊天切换取消');
+      assertSessionCurrent(session);
       await sleep(250);
     }
   }
@@ -3296,10 +3394,25 @@
     }
   }
 
+  function sessionIsCurrent(session) {
+    return Boolean(session)
+      && !session.cancelled
+      && runtime.epoch === session.epoch
+      && String(getContext()?.chatId || '') === session.chatId;
+  }
+
   function assertSessionCurrent(session) {
-    if (session.cancelled || runtime.epoch !== session.epoch || String(getContext()?.chatId || '') !== session.chatId) {
-      throw new Error('任务已被新回合、取消或聊天切换作废');
-    }
+    if (sessionIsCurrent(session)) return;
+    const error = new Error('任务已被新回合、取消或聊天切换作废');
+    error.name = 'SessionCancelledError';
+    error.code = 'session_cancelled_or_stale';
+    throw error;
+  }
+
+  function isSessionCancellation(error, session) {
+    return !sessionIsCurrent(session)
+      || error?.name === 'SessionCancelledError'
+      || error?.code === 'session_cancelled_or_stale';
   }
 
   function currentCharacter(context = getContext()) {
@@ -3872,7 +3985,26 @@ ${runtime.core.profileCompletionContract()}`;
     return store.world;
   }
 
+  async function restoreCancelledWorldAttempt(session, baseline, candidate) {
+    const context = getContext();
+    if (String(context?.chatId || '') !== session.chatId) return { restored: false, reason: 'chat_changed' };
+    const store = metadata(context);
+    const restoration = runtime.core.restoreWorldBaselineForCancelledCandidate(store.world, baseline, candidate);
+    if (!restoration.restored) return restoration;
+    store.world = restoration.world;
+    await saveMetadata(context);
+    const readback = metadata(getContext()).world;
+    const restored = Number(readback?.revision) === Number(baseline?.revision)
+      && readback?.commitId === baseline?.commitId
+      && readback?.digest === baseline?.digest;
+    runtime.status = { ...runtime.status, branches: activeWorldCount(readback) };
+    renderWorld();
+    renderStatusSurface();
+    return { restored, reason: restored ? restoration.reason : 'readback_mismatch' };
+  }
+
   async function advanceWorld(session, acceptedText, data) {
+    assertSessionCurrent(session);
     const context = getContext();
     if (!settings(context).worldEngine) return { ok: true, skipped: true };
     const baseline = runtime.core.deepClone(metadata(context).world);
@@ -3900,7 +4032,9 @@ ${runtime.core.profileCompletionContract()}`;
     let previousRaw = '';
     const attempts = Math.max(1, Math.min(4, Number(settings(context).repairAttempts) + 1 || 1));
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      let candidate = null;
       try {
+        assertSessionCurrent(session);
         const prompt = failure
           ? `${basePrompt}\n\n上一次输出无法形成完整候选：${failure}\n上一次原始输出：\n${cropForModel(previousRaw, 18000)}\n只修复JSON结构或缺失的必要行动/裁决字段，不要推倒已有正确内容。`
           : basePrompt;
@@ -3909,13 +4043,19 @@ ${runtime.core.profileCompletionContract()}`;
         assertSessionCurrent(session);
         const parsedProposal = runtime.core.parseWorldProposal(raw);
         const linkRepair = runtime.core.repairWorldProposalLinks(baseline, parsedProposal);
-        const proposal = linkRepair.proposal;
+        const publicRepair = runtime.core.sanitizeWorldProposalPublicProjection(baseline, linkRepair.proposal, {
+          acceptedText: runtime.core.stripProfileReceipt(acceptedText),
+        });
+        const proposal = publicRepair.proposal;
         if (linkRepair.repairs.length) {
           traceRun(session, 'world:links-repaired', { attempt, repairs: linkRepair.repairs });
         }
+        if (publicRepair.repairs.length) {
+          traceRun(session, 'world:public-projection-repaired', { attempt, repairs: publicRepair.repairs });
+        }
         const proposalValidation = runtime.core.validateWorldProposal(proposal, { previous: baseline, acceptedText: runtime.core.stripProfileReceipt(acceptedText) });
         if (!proposalValidation.ok) throw new Error(`世界候选内容不足：${proposalValidation.errors.join('；')}`);
-        const candidate = runtime.core.applyWorldProposal(baseline, proposal, {
+        candidate = runtime.core.applyWorldProposal(baseline, proposal, {
           chatId: session.chatId,
           turn: messageId,
           at: new Date().toISOString(),
@@ -3923,12 +4063,23 @@ ${runtime.core.profileCompletionContract()}`;
           profiles,
         });
         const committed = await commitWorldCandidate(session, baseline.revision, candidate, { attempt, raw, proposal, sourceKey });
+        assertSessionCurrent(session);
         traceRun(session, 'world:committed', { attempt, raw, proposal, world: committed, persistence: committed.persistence });
         runtime.status = { ...runtime.status, branches: activeWorldCount(committed) };
         renderWorld();
         renderStatusSurface();
         return { ok: true, world: committed };
       } catch (error) {
+        if (isSessionCancellation(error, session)) {
+          let restoration;
+          try {
+            restoration = await restoreCancelledWorldAttempt(session, baseline, candidate);
+          } catch (restoreError) {
+            restoration = { restored: false, reason: `restore_failed:${restoreError?.message || restoreError}` };
+          }
+          traceRun(session, 'world:cancelled', { attempt, restoration });
+          return { ok: false, cancelled: true, error: '世界任务已取消；旧权威世界保持不变' };
+        }
         failure = error.message || String(error);
         traceRun(session, 'world:retryable-failure', { attempt, failure, previousRaw });
         if (/版本|读回|提交证明|权威/.test(failure)) break;
@@ -3955,7 +4106,8 @@ ${runtime.core.profileCompletionContract()}`;
 
   async function acceptFinal(session) {
     const context = getContext();
-    if (session.cancelled || runtime.epoch !== session.epoch || String(context?.chatId || '') !== session.chatId) return;
+    if (!sessionIsCurrent(session)) return;
+    runtime.processingSession = session;
     const latestAi = latestMessage(context, false);
     if (session.targetIndex !== null && Number.isInteger(Number(session.targetIndex)) && Number(latestAi?.index) !== Number(session.targetIndex)) {
       releaseSessionRecall(context, session, '新回复楼层与生成前目标不一致');
@@ -4014,6 +4166,7 @@ ${runtime.core.profileCompletionContract()}`;
     runtime.progress = { ...runtime.progress, recall: recallStage };
     traceRun(session, 'accepted-final', { messageId: latestAi.index, message: latestAi.message, recallAssessment });
     const rerollRestore = await restoreRerollProfileAuthority(session, latestAi.index);
+    if (!sessionIsCurrent(session)) return;
     if (!rerollRestore.ok) {
       addDiagnostic('reroll_restore_failed', rerollRestore.error, context);
       await saveMetadata(context);
@@ -4023,6 +4176,7 @@ ${runtime.core.profileCompletionContract()}`;
     }
     setStatus('医生处理中', `先检查并修复MVU变量；人物与世界尚未开始。${recallAssessment.reason}`, { progress: { recall: recallStage } });
     const variableResult = await auditVariables(session, latestAi.index, acceptedText);
+    if (!sessionIsCurrent(session)) return;
     if (!variableResult.ok) {
       addDiagnostic('variable_failed', variableResult.error, context);
       await saveMetadata(context);
@@ -4033,6 +4187,7 @@ ${runtime.core.profileCompletionContract()}`;
     }
     setStatus('MVU变量处理完成', variableResult.changed ? '纠错补丁已写入、读回并合并保存；正在校验人物档案' : variableResult.note || '模型未发现需追加修复；正在校验人物档案');
     const profileResult = await commitProfiles(session, latestAi.index, variableResult.message, variableResult.data);
+    if (!sessionIsCurrent(session)) return;
     if (!profileResult.ok) {
       addDiagnostic('profile_failed', profileResult.error, context);
       await saveMetadata(context);
@@ -4044,6 +4199,7 @@ ${runtime.core.profileCompletionContract()}`;
     setStatus('人物档案已完成', profileResult.changed ? `原子提交 ${profileResult.changed} 张完整档案` : '本轮明确无档案变化');
     const finalAcceptedText = getContext().chat?.[latestAi.index]?.mes || variableResult.message;
     const worldResult = await advanceWorld(session, finalAcceptedText, profileResult.data);
+    if (!sessionIsCurrent(session) || worldResult.cancelled) return;
     const world = metadata(context).world;
     const profileCount = Object.keys(combinedProfiles(profileResult.data, context)).length;
     if (!worldResult.ok) {
@@ -4085,6 +4241,7 @@ ${runtime.core.profileCompletionContract()}`;
     try {
       setStatus('正在手动复检MVU变量', '只检查当前最终正文和变量，不会运行人物档案或世界引擎');
       const result = await auditVariables(session, latestAi.index, latestAi.message.mes, { force: true });
+      if (!sessionIsCurrent(session)) return { ok: false, cancelled: true };
       if (!result.ok) {
         addDiagnostic('variable_failed', `手动复检失败：${result.error}`, context);
         await saveMetadata(context);
@@ -4217,6 +4374,7 @@ ${runtime.core.profileCompletionContract()}`;
       let workingData = item.data || null;
       if (item.kind === 'variable' || item.kind === 'variable-manual') {
         const variableResult = await auditVariables(session, item.messageId, item.message, { force: item.kind === 'variable-manual' });
+        if (!sessionIsCurrent(session)) return;
         if (!variableResult.ok) {
           addDiagnostic('variable_failed', variableResult.error, context);
           await saveMetadata(context);
@@ -4239,6 +4397,7 @@ ${runtime.core.profileCompletionContract()}`;
       }
       if (item.kind === 'variable' || item.kind === 'profile') {
         const profileResult = await commitProfiles(session, item.messageId, workingMessage, workingData, item.profileRecovery || null);
+        if (!sessionIsCurrent(session)) return;
         if (!profileResult.ok) {
           addDiagnostic('profile_failed', profileResult.error, context);
           await saveMetadata(context);
@@ -4248,6 +4407,7 @@ ${runtime.core.profileCompletionContract()}`;
           return;
         }
         const worldResult = await advanceWorld(session, workingMessage, profileResult.data);
+        if (!sessionIsCurrent(session) || worldResult.cancelled) return;
         const profileCount = Object.keys(combinedProfiles(profileResult.data, context)).length;
         if (!worldResult.ok) {
           addDiagnostic('world_failed', worldResult.error, context);
@@ -4259,6 +4419,7 @@ ${runtime.core.profileCompletionContract()}`;
         }
       } else {
         const worldResult = await advanceWorld(session, item.message, item.data);
+        if (!sessionIsCurrent(session) || worldResult.cancelled) return;
         if (!worldResult.ok) {
           addDiagnostic('world_failed', worldResult.error, context);
           await saveMetadata(context);
@@ -4299,11 +4460,14 @@ ${runtime.core.profileCompletionContract()}`;
 
   function cancelCurrent(reason = '已取消') {
     const active = runtime.active;
+    const processing = runtime.processingSession;
     runtime.epoch += 1;
     runtime.requestController?.abort();
     runtime.requestController = null;
     if (runtime.active) runtime.active.cancelled = true;
+    if (processing) processing.cancelled = true;
     runtime.active = null;
+    runtime.processingSession = null;
     if (runtime.timer) clearTimeout(runtime.timer);
     runtime.timer = null;
     clearInjection();

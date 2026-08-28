@@ -2013,6 +2013,82 @@ export function repairWorldProposalLinks(previousInput = {}, proposalInput = {})
   return { proposal, repairs };
 }
 
+/**
+ * Keep the model's private world work while failing closed on the much smaller
+ * narrative projection. A projection defect is not evidence that the private
+ * thread, actor attempt or adjudication is unusable, so it must not trigger a
+ * full-model regeneration by itself.
+ */
+export function sanitizeWorldProposalPublicProjection(previousInput = {}, proposalInput = {}, options = {}) {
+  const proposal = deepClone(proposalInput && typeof proposalInput === 'object' ? proposalInput : {});
+  const previous = normalizeWorldState(previousInput, { chatId: previousInput?.chatId });
+  const previousThreads = new Map(previous.threads.map((entry) => [cleanText(entry.id), entry]));
+  const acceptedText = String(options.acceptedText || '');
+  const repairs = [];
+  const clearUnsafeText = (entry, field, path) => {
+    if (!publicProjectionLeak(entry?.[field])) return;
+    entry[field] = '';
+    repairs.push({ path, action: 'cleared_unsafe_public_text' });
+  };
+  const filterUnsafeArray = (entry, field, path, limit = 16) => {
+    const before = cleanStringArray(entry?.[field], limit);
+    const after = before.filter((item) => !publicProjectionLeak(item));
+    entry[field] = after;
+    if (after.length !== before.length) repairs.push({ path, action: 'removed_unsafe_public_items', removed: before.length - after.length });
+  };
+
+  proposal.threads = (Array.isArray(proposal.threads) ? proposal.threads : []).map((source, index) => {
+    const entry = { ...(source || {}) };
+    clearUnsafeText(entry, 'publicTitle', `threads[${index}].publicTitle`);
+    clearUnsafeText(entry, 'publicSurface', `threads[${index}].publicSurface`);
+    filterUnsafeArray(entry, 'publicClues', `threads[${index}].publicClues`, 16);
+    filterUnsafeArray(entry, 'rumors', `threads[${index}].rumors`, 24);
+    if (entry.knowledge === 'rumor' && !entry.rumors.length) {
+      entry.knowledge = 'hidden';
+      repairs.push({ path: `threads[${index}].knowledge`, action: 'downgraded_empty_rumor_to_hidden' });
+    }
+    if (entry.knowledge === 'observed') {
+      const prior = previousThreads.get(cleanText(entry.id));
+      const alreadyObserved = prior?.knowledge === 'observed'
+        && cleanText(prior?.revealedSummary) === cleanText(entry.revealedSummary);
+      const hasExactEvidence = exactNarrativeEvidence(acceptedText, entry.revealEvidence);
+      if (!alreadyObserved && !hasExactEvidence) {
+        if (prior?.knowledge === 'observed') {
+          entry.knowledge = 'observed';
+          entry.revealedSummary = cleanText(prior.revealedSummary);
+          entry.revealEvidence = cleanText(prior.revealEvidence);
+          repairs.push({ path: `threads[${index}]`, action: 'restored_previous_observed_boundary' });
+        } else {
+          entry.knowledge = 'hidden';
+          entry.revealedSummary = '';
+          entry.revealEvidence = '';
+          repairs.push({ path: `threads[${index}]`, action: 'downgraded_unproven_observed_to_hidden' });
+        }
+      }
+    } else {
+      entry.revealedSummary = '';
+      entry.revealEvidence = '';
+    }
+    return entry;
+  });
+
+  proposal.actorActions = (Array.isArray(proposal.actorActions) ? proposal.actorActions : []).map((source, index) => {
+    const entry = { ...(source || {}) };
+    clearUnsafeText(entry, 'publicSurface', `actorActions[${index}].publicSurface`);
+    filterUnsafeArray(entry, 'publicClues', `actorActions[${index}].publicClues`, 12);
+    return entry;
+  });
+
+  proposal.adjudications = (Array.isArray(proposal.adjudications) ? proposal.adjudications : []).map((source, index) => {
+    const entry = { ...(source || {}) };
+    clearUnsafeText(entry, 'observableConsequence', `adjudications[${index}].observableConsequence`);
+    filterUnsafeArray(entry, 'publicClues', `adjudications[${index}].publicClues`, 12);
+    return entry;
+  });
+
+  return { proposal, repairs };
+}
+
 export function validateWorldProposal(proposal = {}, options = {}) {
   const errors = [];
   if (cleanText(proposal.summary).length < 6) errors.push('summary需要用完整句说明本轮世界总体变化');
@@ -2192,6 +2268,26 @@ export function verifyWorldReadback(readbackInput, candidateInput) {
   const readback = normalizeWorldState(readbackInput, { chatId: candidateInput?.chatId });
   const candidate = normalizeWorldState(candidateInput, { chatId: candidateInput?.chatId });
   return readback.revision === candidate.revision && readback.commitId === candidate.commitId && readback.digest === candidate.digest && readback.checkpoint?.state === 'world_committed';
+}
+
+export function restoreWorldBaselineForCancelledCandidate(currentInput, baselineInput, candidateInput) {
+  const baseline = normalizeWorldState(baselineInput, { chatId: baselineInput?.chatId });
+  const current = normalizeWorldState(currentInput, { chatId: baseline.chatId });
+  const candidate = candidateInput ? normalizeWorldState(candidateInput, { chatId: baseline.chatId }) : null;
+  const preparedMatch = Boolean(candidate?.digest)
+    && current.revision === baseline.revision
+    && current.checkpoint?.state === 'world_candidate_prepared'
+    && current.checkpoint?.candidateDigest === candidate.digest;
+  const committedMatch = Boolean(candidate?.digest)
+    && current.revision === candidate.revision
+    && current.commitId === candidate.commitId
+    && current.digest === candidate.digest;
+  if (!preparedMatch && !committedMatch) return { restored: false, world: current, reason: 'no_owned_candidate' };
+  return {
+    restored: true,
+    world: deepClone(baseline),
+    reason: preparedMatch ? 'discarded_prepared_candidate' : 'rolled_back_cancelled_commit',
+  };
 }
 
 export function activeWorldCount(worldInput) {

@@ -16,6 +16,8 @@ import {
   recoverLatestLegacyWorld,
   recoverPreparedWorldState,
   repairWorldProposalLinks,
+  restoreWorldBaselineForCancelledCandidate,
+  sanitizeWorldProposalPublicProjection,
   profileDigestFromData,
   reserveRecallPackage,
   settleRecallPackage,
@@ -145,6 +147,34 @@ test('两阶段世界事务只有提交号、版本与摘要读回一致才通�
   const verified = markWorldReadback(recovered.world, '2026-08-23T00:00:02.000Z');
   assert.equal(verified.persistence.status, 'verified');
   assert.equal(verifyWorldReadback({ ...verified, commitId: 'wrong' }, candidate), false);
+});
+
+test('取消只撤销当前世界候选的prepared或同一提交，不覆盖无关的新世界状态', () => {
+  const baseline = emptyWorldState('chat-a');
+  const candidate = applyWorldProposal(baseline, {
+    summary: '当前候选推进了一条世界事项。',
+    threads: [{ id: 'candidate-thread', title: '候选事项', summary: '候选私有进展。' }],
+  }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
+  const prepared = prepareWorldTransaction(baseline, candidate);
+  const fromPrepared = restoreWorldBaselineForCancelledCandidate(prepared, baseline, candidate);
+  assert.equal(fromPrepared.restored, true);
+  assert.equal(fromPrepared.reason, 'discarded_prepared_candidate');
+  assert.equal(fromPrepared.world.revision, baseline.revision);
+  assert.equal(fromPrepared.world.checkpoint.state, 'world_committed');
+
+  const fromCommitted = restoreWorldBaselineForCancelledCandidate(candidate, baseline, candidate);
+  assert.equal(fromCommitted.restored, true);
+  assert.equal(fromCommitted.reason, 'rolled_back_cancelled_commit');
+  assert.equal(fromCommitted.world.digest, baseline.digest);
+
+  const unrelated = applyWorldProposal(baseline, {
+    summary: '另一任务已经提交自己的权威状态。',
+    threads: [{ id: 'other-thread', title: '其他事项', summary: '其他任务的进展。' }],
+  }, { chatId: 'chat-a', turn: 2, sourceRef: { sourceKey: 'm2' } });
+  const refused = restoreWorldBaselineForCancelledCandidate(unrelated, baseline, candidate);
+  assert.equal(refused.restored, false);
+  assert.equal(refused.reason, 'no_owned_candidate');
+  assert.equal(refused.world.digest, unrelated.digest);
 });
 
 test('召回包有单回合预约和消费回执，不会重复消费', () => {
@@ -352,6 +382,59 @@ test('公开投影拒绝全知措辞，隐藏事实转为已揭示必须引用�
   assert.equal(validateWorldProposal(reveal, { previous: emptyWorldState('chat-a'), acceptedText }).ok, true);
   assert.equal(validateWorldProposal({ ...reveal, threads: [{ ...reveal.threads[0], revealEvidence: '正文中不存在的证据' }] }, { previous: emptyWorldState('chat-a'), acceptedText }).ok, false);
   assert.equal(validateWorldProposal({ ...reveal, threads: [{ ...reveal.threads[0], revealedSummary: '' }] }, { previous: emptyWorldState('chat-a'), acceptedText }).ok, false);
+});
+
+test('公开投影局部泄漏由本地确定性清除，医生私有世界与行动裁决完整保留', () => {
+  const repaired = sanitizeWorldProposalPublicProjection(emptyWorldState('chat-a'), {
+    summary: '医生私有世界继续推进人物的独立计划。',
+    threads: [{
+      id: 'thread-private', title: '私有观察线', summary: '人物在私下评估目标的行动价值。',
+      offscreenBeat: '人物完成了一次不公开的资料整理。', nextBeat: '继续验证下一条线索。',
+      publicSurface: '她其实正在评估你的价值。', publicClues: ['她暗中记录了名单。', '桌边留下了一小滴墨迹。'], knowledge: 'hidden',
+    }],
+    actorActions: [{
+      actorId: 'actor-lin', threadId: 'thread-private', action: '私下整理观察记录',
+      publicSurface: '她正在伪装无害。', publicClues: ['纸页边缘有一道新折痕。'],
+    }],
+    adjudications: [{
+      actorId: 'actor-lin', threadId: 'thread-private', status: 'partial', resultSummary: '记录已整理但仍缺一项证据。',
+      observableConsequence: '无人察觉她已经完成记录。', publicClues: ['桌边留下了一小滴墨迹。'],
+    }],
+  }, { acceptedText: '她把纸页压回桌面，桌边留下了一小滴墨迹。' });
+
+  assert.equal(repaired.proposal.threads[0].summary, '人物在私下评估目标的行动价值。');
+  assert.equal(repaired.proposal.threads[0].offscreenBeat, '人物完成了一次不公开的资料整理。');
+  assert.equal(repaired.proposal.threads[0].publicSurface, '');
+  assert.deepEqual(repaired.proposal.threads[0].publicClues, ['桌边留下了一小滴墨迹。']);
+  assert.equal(repaired.proposal.actorActions[0].action, '私下整理观察记录');
+  assert.equal(repaired.proposal.actorActions[0].publicSurface, '');
+  assert.equal(repaired.proposal.adjudications[0].resultSummary, '记录已整理但仍缺一项证据。');
+  assert.equal(repaired.proposal.adjudications[0].observableConsequence, '');
+  assert.ok(repaired.repairs.length >= 4);
+  assert.equal(validateWorldProposal(repaired.proposal, { previous: emptyWorldState('chat-a') }).ok, true);
+});
+
+test('没有正文精确证据的新揭示降为隐藏，已有揭示则恢复旧证据边界', () => {
+  const fresh = sanitizeWorldProposalPublicProjection(emptyWorldState('chat-a'), {
+    summary: '模型误把尚未公开的事实标成已揭示。',
+    threads: [{ id: 'new', title: '隐藏事项', summary: '私有事实继续存在。', knowledge: 'observed', revealedSummary: '玩家已经知道真相。', revealEvidence: '正文没有这句话' }],
+  }, { acceptedText: '玩家只看见门边有一道浅痕。' });
+  assert.equal(fresh.proposal.threads[0].knowledge, 'hidden');
+  assert.equal(fresh.proposal.threads[0].revealedSummary, '');
+  assert.equal(fresh.proposal.threads[0].revealEvidence, '');
+  assert.equal(validateWorldProposal(fresh.proposal, { previous: emptyWorldState('chat-a'), acceptedText: '玩家只看见门边有一道浅痕。' }).ok, true);
+
+  const previous = applyWorldProposal(emptyWorldState('chat-a'), {
+    summary: '旧事实已经由正文合法揭示。',
+    threads: [{ id: 'old', title: '旧事项', summary: '真相已公开。', knowledge: 'observed', revealedSummary: '旧事实已经公开。', revealEvidence: '玩家亲眼看见了旧事实' }],
+  }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
+  const changedWithoutEvidence = sanitizeWorldProposalPublicProjection(previous, {
+    summary: '模型试图扩大旧揭示的公开范围。',
+    threads: [{ id: 'old', title: '旧事项', summary: '私有层新增了更多信息。', knowledge: 'observed', revealedSummary: '旧事实与新增秘密都公开。', revealEvidence: '正文没有新增证据' }],
+  }, { acceptedText: '本轮没有重新展示那份证据。' });
+  assert.equal(changedWithoutEvidence.proposal.threads[0].knowledge, 'observed');
+  assert.equal(changedWithoutEvidence.proposal.threads[0].revealedSummary, '旧事实已经公开。');
+  assert.equal(changedWithoutEvidence.proposal.threads[0].revealEvidence, '玩家亲眼看见了旧事实');
 });
 
 test('公开投影按知情语义而非裸秘密字样裁决，公开言行可保留但秘密身份断言仍拒绝', () => {
