@@ -76,6 +76,16 @@ test('仍有阶段待处理时运行态优先于完成措辞且恢复与手动�
   assert.match(source, /if \(!runtimeHasPendingWork\(\)\) \{\s*setStatus\('医生已就绪'/);
 });
 
+test('运行中的修复详情可以列出缺项但不会冒充红色终态失败', () => {
+  const presentation = source.slice(source.indexOf('function statusPresentation'), source.indexOf('function setStatus'));
+  const pendingGate = presentation.indexOf('if (pending && !terminalFailurePhase)');
+  const textFailureGate = presentation.indexOf("if (/失败|无法|缺少|错误|不一致|未确认|回滚失败/.test(text))");
+  assert.ok(pendingGate >= 0 && pendingGate < textFailureGate);
+  assert.match(presentation, /terminalFailurePhase = \/失败\|无法\|错误\|不一致\|未确认\|回滚失败\/\.test\(phase\)/);
+  assert.match(presentation, /pending && !terminalFailurePhase[\s\S]*severity: 'info'/);
+  assert.match(presentation, /test\(text\)[\s\S]*severity: 'error'/);
+});
+
 test('原变量块先经真实MVU确定性重放再判定落地，空补丁套话不能冒充核验', () => {
   const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
   assert.match(audit, /Mvu\.parseMessage\(original\.rawBlock, runtime\.core\.deepClone\(previousData\)\)/);

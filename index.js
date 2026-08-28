@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.16';
+  const DOCTOR_VERSION = '0.6.17';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -2926,9 +2926,12 @@
 
   function statusPresentation(phase = runtime.status.phase, detail = runtime.status.detail) {
     const text = `${phase} ${detail}`;
+    const pending = runtimeHasPendingWork();
+    const terminalFailurePhase = /失败|无法|错误|不一致|未确认|回滚失败/.test(phase);
+    if (pending && !terminalFailurePhase) return { severity: 'info', summary: phase, action: detail || '医生仍在处理当前回合。' };
     if (/失败|无法|缺少|错误|不一致|未确认|回滚失败/.test(text)) return { severity: 'error', summary: phase, action: detail || '本轮没有继续写入，请按诊断提示处理。' };
     if (/已取消|已作废|生成已停止|目标已变化|旧楼层状态已隔离/.test(text)) return { severity: 'warning', summary: phase, action: detail || '旧结果没有写入新目标。' };
-    if (runtimeHasPendingWork()) return { severity: 'info', summary: phase, action: detail || '医生仍在处理当前回合。' };
+    if (pending) return { severity: 'info', summary: phase, action: detail || '医生仍在处理当前回合。' };
     if (/完成|就绪|已确认|已恢复|已撤销|处理完成/.test(phase)) return { severity: 'success', summary: phase, action: detail || '无需处理。' };
     return { severity: 'info', summary: phase, action: detail || '医生正在等待下一步。' };
   }
