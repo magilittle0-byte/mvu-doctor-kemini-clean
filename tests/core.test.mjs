@@ -117,6 +117,26 @@ test('最终正文缺少唯一content闭合时只在明确结构边界前补回'
   assert.equal(repairAcceptedNarrativeEnvelope('<content>正文。</content><options></options>').changed, false);
 });
 
+test('唯一content闭合误放在完整选项与变量块之后时只搬移闭合标签', () => {
+  const source = '<konatan_planning~>计划</konatan_planning~>\n<content>正文。\n<check>检定</check>\n<options>\n>选项一：继续\n>选项二：观察\n>选项三：交谈\n>选项四：离开\n</options>\n<UpdateVariable>\n<Analysis>核对</Analysis>\n<JSONPatch>[]</JSONPatch>\n</UpdateVariable>\n</content>';
+  const repaired = repairAcceptedNarrativeEnvelope(source);
+  assert.equal(repaired.ok, true);
+  assert.equal(repaired.changed, true);
+  assert.equal(repaired.repairs[0], 'relocate_misplaced_content_close_before_structured_boundary');
+  assert.match(repaired.message, /<check>检定<\/check>\n<\/content>\n<options>/);
+  assert.match(repaired.message, /<\/options>\n<UpdateVariable>/);
+  assert.match(repaired.message, /<\/UpdateVariable>$/);
+  assert.equal((repaired.message.match(/<content>/g) || []).length, 1);
+  assert.equal((repaired.message.match(/<\/content>/g) || []).length, 1);
+});
+
+test('content闭合跨界时遇到自由正文、重复块或不平衡结构继续拒绝猜测', () => {
+  assert.equal(repairAcceptedNarrativeEnvelope('<content>正文<options></options>夹杂正文<UpdateVariable></UpdateVariable></content>').ok, false);
+  assert.equal(repairAcceptedNarrativeEnvelope('<content>正文<options></options><options></options></content>').ok, false);
+  assert.equal(repairAcceptedNarrativeEnvelope('<content>正文<options></options><UpdateVariable></content>').ok, false);
+  assert.equal(repairAcceptedNarrativeEnvelope('<content><options></options></content>').ok, false);
+});
+
 test('最终正文缺少唯一content开始标签时只在首个明确检定或正文容器前补回', () => {
   const source = '规划前缀\n<check>判定</check>\n<story_body>正文段落。</story_body>\n</content>\n<options><option>继续</option></options>\n<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>';
   const repaired = repairAcceptedNarrativeEnvelope(source);
@@ -131,7 +151,7 @@ test('最终正文缺少唯一content开始标签时只在首个明确检定或�
 test('正文content结构不唯一或缺少可证明边界时拒绝猜测', () => {
   assert.equal(repairAcceptedNarrativeEnvelope('<content>没有结构边界').ok, false);
   assert.equal(repairAcceptedNarrativeEnvelope('<content>甲</content><content>乙</content><options></options>').ok, false);
-  assert.equal(repairAcceptedNarrativeEnvelope('<content>正文<options></options></content>').ok, false);
+  assert.equal(repairAcceptedNarrativeEnvelope('<content>正文<options></options></content>').ok, true);
   assert.equal(repairAcceptedNarrativeEnvelope('自由文本</content><options></options>').ok, false);
   assert.equal(repairAcceptedNarrativeEnvelope('<check>判定</check></content>').ok, false);
   assert.deepEqual(repairAcceptedNarrativeEnvelope('没有content包装<options></options>'), {

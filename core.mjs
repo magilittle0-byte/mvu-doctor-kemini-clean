@@ -319,9 +319,10 @@ export function buildUpdateVariableBlock(operations, analysis = '变量更新。
 
 /**
  * Repairs only accepted-envelope defects with a deterministic structural boundary:
- * a missing close before options/variables, or a missing open immediately before the
- * first explicit narrative/check container that is already closed before those blocks.
- * Everything else fails closed instead of guessing where free prose begins or ends.
+ * a missing close before options/variables, a single misplaced close after complete
+ * options/variable blocks, or a missing open immediately before the first explicit
+ * narrative/check container that is already closed before those blocks. Everything
+ * else fails closed instead of guessing where free prose begins or ends.
  */
 export function repairAcceptedNarrativeEnvelope(message) {
   const source = String(message || '');
@@ -332,13 +333,52 @@ export function repairAcceptedNarrativeEnvelope(message) {
   }
   if (opens.length === 1 && closes.length === 1) {
     const openIndex = Number(opens[0].index);
+    const openEnd = openIndex + opens[0][0].length;
     const closeIndex = Number(closes[0].index);
-    const firstBoundary = [...source.matchAll(/<(?:options?|UpdateVariable)\b[^>]*>/gi)]
+    const closeEnd = closeIndex + closes[0][0].length;
+    const firstBoundary = [...source.matchAll(/<(?:options|UpdateVariable)\b[^>]*>/gi)]
       .map((match) => Number(match.index))
       .filter((index) => index > openIndex)
       .sort((left, right) => left - right)[0];
     if (openIndex < closeIndex && (firstBoundary === undefined || closeIndex < firstBoundary)) {
       return { ok: true, changed: false, message: source, repairs: [] };
+    }
+
+    if (openIndex < firstBoundary && firstBoundary < closeIndex && source.slice(closeEnd).trim() === '') {
+      const blocks = ['options', 'UpdateVariable'].flatMap((tag) => {
+        const pattern = new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}\\s*>`, 'gi');
+        return [...source.matchAll(pattern)].map((match) => ({
+          tag: tag.toLowerCase(),
+          start: Number(match.index),
+          end: Number(match.index) + match[0].length,
+        }));
+      }).filter((block) => block.start >= firstBoundary && block.end <= closeIndex)
+        .sort((left, right) => left.start - right.start);
+      const zone = source.slice(firstBoundary, closeIndex);
+      const openerCount = [...zone.matchAll(/<(?:options|UpdateVariable)\b[^>]*>/gi)].length;
+      const closerCount = [...zone.matchAll(/<\/(?:options|UpdateVariable)\s*>/gi)].length;
+      const uniqueTagCount = new Set(blocks.map((block) => block.tag)).size;
+      const boundariesAreComplete = blocks.length > 0
+        && blocks.length === openerCount
+        && blocks.length === closerCount
+        && blocks.length === uniqueTagCount
+        && blocks[0].start === firstBoundary
+        && source.slice(openEnd, firstBoundary).trim().length > 0
+        && blocks.every((block, index) => {
+          const previousEnd = index === 0 ? firstBoundary : blocks[index - 1].end;
+          return block.start >= previousEnd && source.slice(previousEnd, block.start).trim() === '';
+        })
+        && source.slice(blocks.at(-1).end, closeIndex).trim() === '';
+      if (boundariesAreComplete) {
+        const before = source.slice(0, firstBoundary).replace(/[ \t]+$/u, '').replace(/\n*$/u, '');
+        const structured = source.slice(firstBoundary, closeIndex).trim();
+        return {
+          ok: true,
+          changed: true,
+          message: `${before}\n</content>\n${structured}${source.slice(closeEnd)}`,
+          repairs: ['relocate_misplaced_content_close_before_structured_boundary'],
+        };
+      }
     }
     return { ok: false, changed: false, message: source, error: '正文content闭合标签顺序错误或跨入了选项/变量边界' };
   }
