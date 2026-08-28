@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.8';
+  const DOCTOR_VERSION = '0.6.9';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -2752,10 +2752,17 @@
     return next;
   }
 
+  function runtimeHasPendingWork() {
+    const progressBusy = Object.values(runtime.progress || {})
+      .some((state) => ['pending', 'ready', 'running'].includes(state));
+    return Boolean(runtime.active || runtime.timer || runtime.requestController || runtime.retrying || progressBusy);
+  }
+
   function statusPresentation(phase = runtime.status.phase, detail = runtime.status.detail) {
     const text = `${phase} ${detail}`;
     if (/失败|无法|缺少|错误|不一致|未确认|回滚失败/.test(text)) return { severity: 'error', summary: phase, action: detail || '本轮没有继续写入，请按诊断提示处理。' };
     if (/已取消|已作废|生成已停止|目标已变化|旧楼层状态已隔离/.test(text)) return { severity: 'warning', summary: phase, action: detail || '旧结果没有写入新目标。' };
+    if (runtimeHasPendingWork()) return { severity: 'info', summary: phase, action: detail || '医生仍在处理当前回合。' };
     if (/完成|就绪|已确认|已恢复|已撤销|处理完成/.test(phase)) return { severity: 'success', summary: phase, action: detail || '无需处理。' };
     return { severity: 'info', summary: phase, action: detail || '医生正在等待下一步。' };
   }
@@ -2772,7 +2779,7 @@
     if (detailNode) detailNode.textContent = runtime.status.detail;
     if (metricsNode) metricsNode.textContent = `档案 ${runtime.status.profiles} · 活跃世界项 ${runtime.status.branches} · ${Math.round(runtime.status.durationMs / 100) / 10}s`;
     const advice = statusPresentation(phase, detail);
-    root.dataset.state = advice?.severity === 'error' ? 'error' : advice?.severity === 'warning' ? 'warning' : /完成|就绪|恢复/.test(phase) ? 'ready' : 'busy';
+    root.dataset.state = advice?.severity === 'error' ? 'error' : advice?.severity === 'warning' ? 'warning' : advice?.severity === 'success' ? 'ready' : 'busy';
     renderStatusSurface(root);
     renderRetryControl();
   }
@@ -3858,7 +3865,7 @@ ${runtime.core.profileCompletionContract()}`;
   }
 
   async function manualVariableRecheck() {
-    if (runtime.active || runtime.timer || runtime.requestController || runtime.retrying) throw new Error('医生正在处理其他任务，请等待完成或先取消');
+    if (runtimeHasPendingWork()) throw new Error('医生正在处理其他任务，请等待完成或先取消');
     const context = getContext();
     const latestAi = latestMessage(context, false);
     if (!latestAi) throw new Error('当前聊天没有可检查的助手正文');
@@ -3897,7 +3904,7 @@ ${runtime.core.profileCompletionContract()}`;
   }
 
   async function undoLastVariableRepair() {
-    if (runtime.active || runtime.timer || runtime.requestController || runtime.retrying) throw new Error('医生正在处理其他任务，请等待完成或先取消');
+    if (runtimeHasPendingWork()) throw new Error('医生正在处理其他任务，请等待完成或先取消');
     const context = getContext();
     const record = latestUndoableVariableRepair(context);
     if (!record) throw new Error('当前聊天没有可撤销的变量修复');
@@ -4392,7 +4399,7 @@ ${runtime.core.profileCompletionContract()}`;
       const label = runtime.retry?.kind === 'variable-manual' ? '手动MVU复检' : runtime.retry?.kind === 'variable' ? 'MVU变量' : runtime.retry?.kind === 'profile' ? '人物档案' : '世界支线';
       button.textContent = runtime.retrying ? '正在重试失败步骤…' : runtime.retry ? `重试${label}失败步骤` : '当前没有可重试任务';
     }
-    const busy = Boolean(runtime.active || runtime.timer || runtime.requestController || runtime.retrying);
+    const busy = runtimeHasPendingWork();
     for (const button of root?.querySelectorAll?.('[data-role="cancel"]') || []) button.disabled = !busy;
     for (const button of root?.querySelectorAll?.('[data-role="manualVariableAudit"]') || []) {
       button.disabled = busy;
@@ -4798,7 +4805,7 @@ ${runtime.core.profileCompletionContract()}`;
           if (String(getContext()?.chatId || '') !== lifecycleChatId) return;
           await refreshUiData();
           if (String(getContext()?.chatId || '') !== lifecycleChatId) return;
-          if (!runtime.active && !runtime.timer && !runtime.requestController && !runtime.retrying) {
+          if (!runtimeHasPendingWork()) {
             setStatus('医生已就绪', '当前聊天状态已重新载入', { durationMs: 0 });
           }
         })().catch((error) => setStatus('世界存档恢复失败', error.message || String(error)));

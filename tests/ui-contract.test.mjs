@@ -6,8 +6,8 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.6.8控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
-  assert.match(source, /const DOCTOR_VERSION = '0\.6\.8'/);
+test('0.6.9控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
+  assert.match(source, /const DOCTOR_VERSION = '0\.6\.9'/);
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -24,7 +24,7 @@ test('0.6.8控制台包含变量、连接、人物、世界、诊断与独立手
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.6.8');
+  assert.equal(manifest.version, '0.6.9');
   assert.match(source, /normalizeVariableOperations/);
   assert.match(source, /assessVariableBaseline/);
   assert.doesNotMatch(source, /<AuditReceipt>/);
@@ -53,6 +53,18 @@ test('0.6.8控制台包含变量、连接、人物、世界、诊断与独立手
   assert.match(source, /unsupported_aliases_removed/);
   assert.match(source, /assessRecallConsumption/);
   assert.match(source, /正文未采用/);
+});
+
+test('仍有阶段待处理时运行态优先于完成措辞且恢复与手动入口共用同一忙碌门', () => {
+  const helper = source.slice(source.indexOf('function runtimeHasPendingWork'), source.indexOf('function statusPresentation'));
+  assert.match(helper, /\['pending', 'ready', 'running'\]/);
+  assert.match(helper, /runtime\.active \|\| runtime\.timer \|\| runtime\.requestController \|\| runtime\.retrying \|\| progressBusy/);
+
+  const presentation = source.slice(source.indexOf('function statusPresentation'), source.indexOf('function setStatus'));
+  assert.ok(presentation.indexOf('runtimeHasPendingWork()') < presentation.indexOf('/完成|就绪|已确认|已恢复|已撤销|处理完成/'));
+  assert.match(source, /root\.dataset\.state = advice\?\.severity === 'error'[\s\S]*advice\?\.severity === 'success' \? 'ready' : 'busy'/);
+  assert.match(source, /const busy = runtimeHasPendingWork\(\)/);
+  assert.match(source, /if \(!runtimeHasPendingWork\(\)\) \{\s*setStatus\('医生已就绪'/);
 });
 
 test('正文只接收世界公开投影，人物私有摘要只供Doctor内部阶段使用', () => {
