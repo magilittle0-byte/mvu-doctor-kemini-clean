@@ -1109,8 +1109,13 @@
 
     function stripNarrativeHtmlWidgets(text) {
       const source = String(text || '');
-      const unconditionalDropTags = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'style', 'script', 'svg']);
-      const widgetContainer = (tag, raw) => unconditionalDropTags.has(tag) || (
+      const unconditionalDropTags = new Set(['htmlcontent', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'style', 'script', 'svg']);
+      const hiddenElement = (raw) => (
+        /\shidden(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?(?=\s|\/?>)/iu.test(raw)
+        || /\baria-hidden\s*=\s*(?:["']?\s*true\s*["']?)/iu.test(raw)
+        || /\bstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["']/iu.test(raw)
+      );
+      const widgetContainer = (tag, raw) => unconditionalDropTags.has(tag) || hiddenElement(raw) || (
         ['div', 'section', 'aside', 'details', 'summary'].includes(tag)
         && /(?:\b(?:class|id)\s*=\s*["'][^"']*(?:status|card|panel|hud|inventory|profile|attribute|equipment|item|mvu)[^"']*["']|\bstyle\s*=\s*["'][^"']*(?:background|border|box-shadow|display\s*:\s*(?:flex|grid)|font-family)[^"']*["'])/i.test(raw)
       );
@@ -1158,8 +1163,6 @@
       '当前时间', '当前地点', '继续', '这番', '名称', '品质', '属性加成', '效果', '描述', '类型', '数量',
       'HP', 'MP', 'STR', 'AGI', 'CON', 'PER', 'EXP', 'UP',
     ]);
-    const PROFILE_GENERIC_ROLE = new Set(['守卫', '卫兵', '店员', '老板', '掌柜', '医师', '医生', '护士', '队长', '领队', '船长', '祭司', '导师', '侍者', '佣兵', '商人', '学徒', '管理员', '少女', '少年', '男人', '女人', '老人', '男孩', '女孩', '旅人', '冒险者']);
-    const PROFILE_ROLE_SUFFIX = /(?:接待员|引导者|守卫|卫兵|店员|老板|掌柜|医师|医生|护士|队长|领队|船长|祭司|导师|侍者|佣兵|商人|旅店老板|学徒|书记员|管理员|少女|少年|男人|女人|老人|男孩|女孩|旅人|冒险者)$/u;
     const PROFILE_IDENTITY_GRAMMAR_BLOCKLIST = new Set([
       '还是', '也就是', '就是', '但每个人', '每个人', '那么', '所以', '因此', '因为', '如果', '虽然', '然而',
       '于是', '随后', '接着', '然后', '这时', '此时', '与此同时', '已经', '正在', '开始', '结束', '继续',
@@ -1195,15 +1198,7 @@
 
     function usableObservedSubject(label, source) {
       if (!profileIdentitySurface(label) || label.length > 24) return false;
-      if (/^(?:你|我|他|她|它|他们|她们|它们|自己|有人|某人|一个人|那人|此人)$/u.test(label)) return false;
-      if (/^(?:那|这|其|此|便|可|将|让|把|因|为|由于|如果|随后|继续|已经|正在|开始|结束)/u.test(label) || /的$/u.test(label)) return false;
-      if (/^NPC[-_ ]?\d+$/iu.test(label)) return true;
-      if (/^[A-Za-z][A-Za-z0-9_.-]{1,23}$/u.test(label)) return /[a-z]/.test(label);
-      if (!/^[\p{Script=Han}A-Za-z0-9_.\-·]{2,24}$/u.test(label)) return false;
-      if (PROFILE_GENERIC_ROLE.has(label)) return source === 'speaker-label';
-      if (/\p{Script=Han}/u.test(label) && label.length <= 4) return true;
-      if (PROFILE_ROLE_SUFFIX.test(label)) return source === 'speaker-label' || label.length <= 12;
-      return source === 'speaker-label' && label.length <= 12;
+      return source === 'stable-id' && /^(?:NPC|ACTOR)[-_ ]?\d+$/iu.test(label);
     }
 
     function profileNamesFromInput(profiles) {
@@ -1239,20 +1234,13 @@
         found.set(normalized, { label, aliases: [label], evidence: evidence ? [evidence] : [], sources: [source], firstIndex: Number(index) || 0 });
       };
 
-      const speakerLabels = /(?:^|\n)\s*(?:[-*>]\s*)?([^\n：:]{2,24})\s*[：:]\s*([^\n]{1,240})/gu;
-      for (const match of narrative.matchAll(speakerLabels)) {
-        const tail = String(match[2] || '').trim();
-        if (!tail || /^[+\-]?\d+(?:\.\d+)?(?:\s*[/|]\s*[+\-]?\d+(?:\.\d+)?)?\s*(?:%|kg|m|点|级)?$/iu.test(tail)) continue;
-        record(match[1], 'speaker-label', (match.index || 0) + match[0].indexOf(match[1]));
-      }
-
-      const stableIds = /\b(?:NPC[-_ ]?\d+|[A-Za-z][A-Za-z0-9_.-]{1,23})\b(?=\s*(?:[：:]|说|问|答|喊|开口|回应|点头|摇头|抬手|伸手|转身|走进|推开|看向))/giu;
+      const stableIds = /\b(?:NPC|ACTOR)[-_ ]?\d+\b(?=\s*(?:[：:]|说|问|答|喊|开口|回应|点头|摇头|抬手|伸手|转身|走进|推开|看向))/giu;
       for (const match of narrative.matchAll(stableIds)) record(match[0], 'stable-id', match.index || 0);
 
-      // Free prose is not a deterministic NER surface. The profile model reviews
-      // the complete accepted narrative and every returned identity is validated
-      // against a literal, non-grammatical name/alias below. Script-owned required
-      // anchors intentionally remain limited to explicit speaker labels and IDs.
+      // Free prose, including "label: value" lines, is not a deterministic NER
+      // surface. The profile model owns whole-narrative discovery; the script only
+      // supplies explicitly structural numeric IDs as a mechanical lower bound and
+      // validates every returned name/alias against the sanitized narrative below.
       return [...found.values()].sort((left, right) => left.firstIndex - right.firstIndex);
     }
 

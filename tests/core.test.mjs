@@ -139,7 +139,7 @@ test('正文content结构不唯一或缺少可证明边界时拒绝猜测', () =
   });
 });
 
-test('脚本从最终正文提取实际说话或行动的稳定人物锚点，并排除角色卡主体与已存档人物', () => {
+test('脚本不把中文说话标签冒充人物识别，完整正文发现由人物模型负责', () => {
   const subjects = discoverProfileSubjects(
     '<gm_chain>让黑衣人下回合登场</gm_chain><content>白露低声说道：“先等等。”\n独眼守卫：谁在那里？\n当前环境：雨势渐大。少女点头后退。</content><options>询问黑衣人</options>',
     {
@@ -147,9 +147,7 @@ test('脚本从最终正文提取实际说话或行动的稳定人物锚点，�
       existingProfiles: { existing: { name: '药房老板', aliases: ['老周'] } },
     },
   );
-  assert.deepEqual(subjects.map((subject) => subject.label), ['独眼守卫']);
-  assert.equal(subjects[0].sources.includes('speaker-label'), true);
-  assert.doesNotMatch(JSON.stringify(subjects), /黑衣人/);
+  assert.deepEqual(subjects, []);
 });
 
 test('人物发现器丢弃正文内嵌面板字段、全大写属性和语法碎片，不用自由散文正则猜身份', () => {
@@ -163,14 +161,39 @@ test('人物发现器丢弃正文内嵌面板字段、全大写属性和语法�
   assert.deepEqual(subjects.map((subject) => subject.label), []);
 });
 
-test('人物发现器保留普通叙事容器中的实际人物，不因存在HTML就整段删除', () => {
-  const subjects = discoverProfileSubjects('<div class="narrative">白露：记录先放在这里。</div>');
-  assert.deepEqual(subjects.map((subject) => subject.label), ['白露']);
+test('人物观察保留普通可见叙事容器，但不把冒号前文本机械升级为人物', () => {
+  const narrative = profileNarrativeText('<div class="narrative">白露：记录先放在这里。</div>');
+  assert.match(narrative, /白露：记录先放在这里/);
+  assert.deepEqual(discoverProfileSubjects(narrative), []);
 });
 
-test('人物发现器只把显式标签与稳定ID作为机械锚点，不把统计缩写或散文主语当人物', () => {
+test('人物发现器只把显式结构ID作为机械锚点，不把英文标签、统计缩写或散文主语当人物', () => {
   const subjects = discoverProfileSubjects('Alice: Wait here.\nNPC-7点头回应。\n白露微笑着收起纸笔。\nHP: 12\nSTR说道：这不该成为人物。');
-  assert.deepEqual(subjects.map((subject) => subject.label), ['Alice', 'NPC-7']);
+  assert.deepEqual(subjects.map((subject) => subject.label), ['NPC-7']);
+});
+
+test('人物观察剥离Izumi的htmlcontent与隐藏摘要，但保留其后的真实正文', () => {
+  const source = `<content>
+<htmlcontent><div class="status-panel">白露：状态卡说明。</div></htmlcontent>
+<span style="display: none;">HTML内容简述：展示玩家初始面板和选项。</span>
+<span hidden>隐藏标签：不属于正文。</span>
+<span aria-hidden="true">辅助说明：不属于正文。</span>
+<span style='visibility : hidden'>折叠说明：不属于正文。</span>
+林澄推开药房的门，对柜台后的来客点了点头。
+</content>`;
+  const narrative = profileNarrativeText(source);
+  assert.doesNotMatch(narrative, /白露：状态卡说明|HTML内容简述|隐藏标签|辅助说明|折叠说明/);
+  assert.match(narrative, /林澄推开药房的门/);
+  assert.deepEqual(discoverProfileSubjects(narrative), []);
+});
+
+test('模型在清理后的正文中发现人物后，逐字身份仍能通过完整档案原子门', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const profile = completeProfile(ticket);
+  const accepted = '<content><span style="display:none">HTML内容简述：展示人物档案。</span>林澄正在药房柜台后整理新送到的药材。</content>';
+  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} }, accepted, []);
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.deepEqual(prepared.profiles[0].narrativeKnownNames, ['林澄']);
 });
 
 test('人物发现器不把机制字段、连接词和动作片段升级为必须建档人物', () => {
@@ -188,15 +211,17 @@ test('人物档案批次必须以name或aliases逐一覆盖脚本确认的稳定
 });
 
 test('同名半档案不是可用既有人物，再次出场仍必须进入补全门', () => {
-  const subjects = discoverProfileSubjects('林澄说道：“今天照常营业。”', {
-    existingProfiles: { partial: { profileId: 'partial', name: '林澄', aliases: [] } },
+  const subjects = discoverProfileSubjects('NPC-7说道：“今天照常营业。”', {
+    existingProfiles: { partial: { profileId: 'partial', name: 'NPC-7', aliases: [] } },
   });
-  assert.deepEqual(subjects.map((subject) => subject.label), ['林澄']);
-  assert.equal(profileCompletenessReport({ profileId: 'partial', name: '林澄', aliases: [] }).ok, false);
+  assert.deepEqual(subjects.map((subject) => subject.label), ['NPC-7']);
+  assert.equal(profileCompletenessReport({ profileId: 'partial', name: 'NPC-7', aliases: [] }).ok, false);
 
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const complete = completeProfile(ticket);
-  const excluded = discoverProfileSubjects('林澄说道：“今天照常营业。”', { existingProfiles: { complete } });
+  complete.name = 'NPC-7';
+  complete.aliases = [];
+  const excluded = discoverProfileSubjects('NPC-7说道：“今天照常营业。”', { existingProfiles: { complete } });
   assert.deepEqual(excluded, []);
 });
 
