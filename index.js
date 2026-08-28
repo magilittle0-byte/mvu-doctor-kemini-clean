@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.6';
+  const DOCTOR_VERSION = '0.6.7';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -2884,6 +2884,7 @@
   }
 
   async function prepareGeneration(kind = 'normal') {
+    await sleep(0);
     const context = getContext();
     const config = settings(context);
     if (!config.enabled || !runtime.core || runtime.internalGeneration) return;
@@ -2892,6 +2893,13 @@
     const generationInputText = target?.reroll || target?.userAlreadyAppended
       ? atStartLatestUser?.message?.mes || ''
       : String(document.querySelector?.('#send_textarea')?.value || '');
+    const hasMainGenerationEvidence = Boolean(
+      target?.reroll
+      || target?.continuation
+      || target?.userAlreadyAppended
+      || String(generationInputText || '').trim()
+    );
+    if (!hasMainGenerationEvidence) return;
     if (isRerollGeneration(kind)) {
       if (runtime.active || runtime.timer || runtime.requestController) cancelCurrent('重 roll 已使旧医生任务失效');
       clearInjection(context);
@@ -3693,16 +3701,31 @@ ${runtime.core.profileCompletionContract()}`;
     return { ok: false, error: `世界引擎失败：${failure}` };
   }
 
+  function releaseSessionRecall(context, session, reason) {
+    const packageId = session?.recallPackage?.packageId;
+    if (!packageId) return false;
+    const settled = runtime.core.settleRecallPackage(metadata(context).world, packageId, 'released', {
+      sourceKey: `${session.chatId}:released-before-accepted-processing`,
+      messageId: session.finalMessageId ?? null,
+      reason: String(reason || 'accepted-final没有进入可处理终态'),
+    });
+    metadata(context).world = settled.world;
+    runtime.progress = { ...runtime.progress, recall: 'released' };
+    return settled.changed;
+  }
+
   async function acceptFinal(session) {
     const context = getContext();
     if (session.cancelled || runtime.epoch !== session.epoch || String(context?.chatId || '') !== session.chatId) return;
     const latestAi = latestMessage(context, false);
     if (session.targetIndex !== null && Number.isInteger(Number(session.targetIndex)) && Number(latestAi?.index) !== Number(session.targetIndex)) {
+      releaseSessionRecall(context, session, '新回复楼层与生成前目标不一致');
       setStatus('最终正文目标已变化', '新回复没有落在本次生成绑定的楼层；旧医生任务已作废');
       await finalizeRun(session, { ok: false, stage: 'accepted-final', error: '新回复楼层与生成前目标不一致' }, context);
       return;
     }
     if (!latestAi || (latestAi.index === session.baselineIndex && latestAi.message.mes === session.baselineText)) {
+      releaseSessionRecall(context, session, '500ms后没有读到新的最终助手消息');
       setStatus('最终正文未确认', '500ms后没有读到新的最终助手消息');
       await finalizeRun(session, { ok: false, stage: 'accepted-final', error: '500ms后没有读到新的最终助手消息' }, context);
       return;
@@ -3711,6 +3734,7 @@ ${runtime.core.profileCompletionContract()}`;
     let acceptedText = String(latestAi.message.mes || '');
     const structure = runtime.core.repairAcceptedNarrativeEnvelope(acceptedText);
     if (!structure.ok) {
+      releaseSessionRecall(context, session, structure.error);
       addDiagnostic('accepted_structure_failed', structure.error, context);
       await saveMetadata(context);
       setStatus('正文结构无法安全修复', structure.error, { durationMs: doctorElapsed(session) });
@@ -3725,6 +3749,7 @@ ${runtime.core.profileCompletionContract()}`;
         traceRun(session, 'accepted-structure:repaired', { messageId: latestAi.index, repairs: structure.repairs });
       } catch (error) {
         const detail = error.message || String(error);
+        releaseSessionRecall(context, session, detail);
         addDiagnostic('accepted_structure_failed', detail, context);
         await saveMetadata(context);
         setStatus('正文结构修复未能持久化', detail, { durationMs: doctorElapsed(session) });

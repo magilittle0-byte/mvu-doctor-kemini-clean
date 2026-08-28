@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '进入场景' }]) {
+function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '进入场景' }], pendingInput = '', stopVisible = false) {
   const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
   const handlers = new Map();
   const prompts = [];
@@ -49,6 +49,11 @@ function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '
     window: { SillyTavern: { getContext: () => context }, Mvu, crypto: globalThis.crypto },
     document: {
       currentScript: null,
+      querySelector: (selector) => {
+        if (selector === '#send_textarea') return { value: pendingInput };
+        if (selector === '#mes_stop' && stopVisible) return { getBoundingClientRect: () => ({ width: 48, height: 24 }) };
+        return null;
+      },
       getElementById: () => uiRoot,
       createElement: () => ({
         textContent: '', className: '', dataset: {}, style: {}, value: '', checked: false,
@@ -99,7 +104,7 @@ test('regenerate restores the logical floor checkpoint before building the new i
 });
 
 test('real Tavern timing checkpoints the future assistant floor before the user message is appended', async () => {
-  const harness = runtimeHarness([{ is_user: false, is_system: false, mes: '默认开场' }]);
+  const harness = runtimeHarness([{ is_user: false, is_system: false, mes: '默认开场' }], '进入场景');
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   await harness.handlers.get('generation_started')('normal', {}, false);
@@ -119,6 +124,40 @@ test('real Tavern timing checkpoints the future assistant floor before the user 
   assert.deepEqual(store.profiles, {});
   assert.notEqual(store.world.summary, 'REJECTED_WORLD');
   assert.doesNotMatch(harness.prompts.filter(Boolean).at(-1), /REJECTED_PROFILE|REJECTED_WORLD|被放弃的旧回复/);
+});
+
+test('accepted assistant之后无新用户、无输入的下游事件即使全局停止控件可见也不会重新启动Doctor', async () => {
+  const harness = runtimeHarness([
+    { is_user: false, is_system: false, mes: '默认开场' },
+    { is_user: true, is_system: false, mes: '进入场景' },
+    { is_user: false, is_system: false, mes: '已接受正文', swipe_id: 0 },
+  ], '', true);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
+  const promptsBefore = harness.prompts.length;
+  await harness.handlers.get('generation_started')('normal', {}, false);
+  assert.equal(harness.prompts.length, promptsBefore);
+  assert.equal(store.replyCheckpoint, null);
+});
+
+test('accepted正文结构失败会释放本次召回预约且不进入变量人物世界阶段', async () => {
+  const harness = runtimeHarness([{ is_user: true, is_system: false, mes: '进入场景' }]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await harness.handlers.get('generation_started')('normal', {}, false);
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
+  assert.ok(store.world.recall.pending);
+  harness.context.chat.push({
+    is_user: false,
+    is_system: false,
+    mes: '<content>第一段</content><content>第二段</content><options></options>',
+    swipe_id: 0,
+  });
+  harness.handlers.get('generation_ended')();
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(store.world.recall.pending, null);
+  assert.equal(store.fullRuns.length, 1);
+  assert.equal(store.fullRuns[0].outcome.stage, 'accepted-structure');
+  assert.equal(store.profiles && Object.keys(store.profiles).length, 0);
 });
 
 test('manual latest-message swipe restores the same pre-generation authority state', async () => {
