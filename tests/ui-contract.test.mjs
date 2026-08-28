@@ -67,7 +67,7 @@ test('控制台包含变量、连接、人物、世界、诊断与独立手动�
 test('仍有阶段待处理时运行态优先于完成措辞且恢复与手动入口共用同一忙碌门', () => {
   const helper = source.slice(source.indexOf('function runtimeHasPendingWork'), source.indexOf('function statusPresentation'));
   assert.match(helper, /\['pending', 'ready', 'running'\]/);
-  assert.match(helper, /runtime\.active \|\| runtime\.timer \|\| runtime\.requestController \|\| runtime\.retrying \|\| progressBusy/);
+  assert.match(helper, /runtime\.active \|\| runtime\.timer \|\| runtime\.requestControllers\.size \|\| runtime\.requestController \|\| runtime\.retrying \|\| progressBusy/);
 
   const presentation = source.slice(source.indexOf('function statusPresentation'), source.indexOf('function setStatus'));
   assert.ok(presentation.indexOf('runtimeHasPendingWork()') < presentation.indexOf('/完成|就绪|已确认|已恢复|已撤销|处理完成/'));
@@ -100,12 +100,35 @@ test('原变量块先经真实MVU确定性重放再判定落地，空补丁套�
 
 test('正文只接收世界公开投影，人物私有摘要只供Doctor内部阶段使用', () => {
   assert.match(source, /worldRecallPackage_publicProjection/);
-  assert.match(source, /只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction与observableConsequence/);
+  assert.match(source, /只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction、observableConsequence与作为逐字结算依据的consumptionAnchors/);
   assert.match(source, /privateProfileDigestFromData\(dataWithRecoveredProfiles/);
   assert.match(source, /privateProfileDigestFromData\(data\), 30000/);
   assert.match(source, /validateWorldProposal\(proposal, \{ previous: baseline, acceptedText:/);
   assert.match(source, /正文只接收公开投影/);
   assert.match(source, /医生私有推进/);
+});
+
+test('accepted-final并行准备但保持变量、人物、世界三段提交主权', () => {
+  const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
+  const variableStart = accepted.indexOf('const variableTask = auditVariables');
+  const profileStart = accepted.indexOf('const profileTask = commitProfiles');
+  const variableWait = accepted.indexOf('const variableResult = await variableTask');
+  const worldStart = accepted.indexOf('const worldTask = advanceWorld');
+  const profileWait = accepted.indexOf('const profileResult = await profileTask');
+  assert.ok(variableStart >= 0 && profileStart > variableStart && variableWait > profileStart);
+  assert.ok(worldStart > variableWait && profileWait > worldStart);
+  assert.match(accepted, /commitBarrier: variableTask/);
+  assert.match(accepted, /profileBarrier: profileTask/);
+
+  const profiles = source.slice(source.indexOf('async function commitProfiles'), source.indexOf('async function commitWorldCandidate'));
+  assert.ok(profiles.indexOf('await execution.commitBarrier') < profiles.indexOf('await Mvu.replaceMvuData(candidate'));
+  assert.match(profiles, /人物候选保持未提交/);
+
+  const world = source.slice(source.indexOf('async function advanceWorld'), source.indexOf('function releaseSessionRecall'));
+  assert.ok(world.indexOf('await execution.profileBarrier') < world.indexOf('applyWorldProposal(baseline'));
+  assert.match(world, /人物档案没有进入原子读回终态；世界候选未提交/);
+  assert.match(source, /requestControllers: new Set\(\)/);
+  assert.match(source, /internalGenerationDepth/);
 });
 
 test('世界公开字段先局部净化再校验，取消会话不再进入重试、失败诊断或迟到终结', () => {

@@ -201,13 +201,18 @@ test('缝合输入只用最后一个当前行动包做召回相关性，不让�
 });
 
 test('召回只有被最终正文可核对地采用才算消费，忽略的注入明确释放', () => {
-  const packet = {
-    packageId: 'recall-proof',
-    items: [{ recordType: 'sensory_surface', publicSurface: '南街药房门口贴出了限购告示。', publicClues: [] }],
-  };
-  const adopted = assessRecallConsumption('走到南街药房门口，门板上果然挂着限购告示。', packet);
+  const world = applyWorldProposal(emptyWorldState('chat-a'), {
+    threads: [{ id: 'recall-proof-thread', title: '南街限购', publicSurface: '南街药房门口贴出了限购告示。', urgency: 8 }],
+  }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' } });
+  const packet = prepareRecallPackage(world, '去南街药房', {}, 8, { chatId: 'chat-a', sourceKey: 'g2' });
+  assert.ok(packet.items[0].consumptionAnchors.length > 0);
+  const adopted = assessRecallConsumption('走到街口时，南街药房门口贴出了限购告示，几名客人正在排队。', packet);
   assert.equal(adopted.consumed, true);
   assert.equal(adopted.consumedItemCount, 1);
+  assert.ok(adopted.itemResults[0].matchedAnchorCount > 0);
+  const paraphrased = assessRecallConsumption('走到南街药房门口，门板上果然挂着限购告示。', packet);
+  assert.equal(paraphrased.consumed, false);
+  assert.equal(paraphrased.itemResults[0].matchedAnchorCount, 0);
   const ignored = assessRecallConsumption('你转身去了北港，潮水正在石阶下起伏。', packet);
   assert.equal(ignored.consumed, false);
   assert.match(ignored.reason, /不能记为已消费/);
@@ -226,12 +231,25 @@ test('required_once未采用时optional命中不能冒充整包消费', () => {
       { usage: 'optional', recordType: 'sensory_surface', publicSurface: '门外传来一阵短促的铃声。' },
     ],
   };
-  const optionalOnly = assessRecallConsumption('门外响起一阵短促铃声，你仍看向货架。', packet);
+  const optionalOnly = assessRecallConsumption('门外传来一阵短促的铃声。你仍看向货架。', packet);
   assert.equal(optionalOnly.consumedItemCount, 1);
   assert.equal(optionalOnly.requiredItemCount, 1);
   assert.equal(optionalOnly.consumedRequiredItemCount, 0);
   assert.equal(optionalOnly.consumed, false);
   assert.match(optionalOnly.reason, /required_once/);
+});
+
+test('并行世界候选只能在档案读回后按稳定称谓解析真实人物ID与裁决', () => {
+  const world = applyWorldProposal(emptyWorldState('chat-a'), {
+    threads: [{ id: 't-pending', title: '待建档人物行动', summary: '人物准备追查线索' }],
+    actorActions: [{ actorId: '', actorName: '林澄', threadId: 't-pending', action: '询问三家药商' }],
+    adjudications: [{ actorId: '', actorName: '林澄', threadId: 't-pending', status: 'partial', resultSummary: '找到一条可疑转运线' }],
+  }, { chatId: 'chat-a', turn: 1, sourceRef: { sourceKey: 'm1' }, profiles: [profile] });
+  assert.equal(world.attempts.length, 1);
+  assert.equal(world.attempts[0].actorId, profile.profileId);
+  assert.equal(world.adjudications.length, 1);
+  assert.equal(world.adjudications[0].actorId, profile.profileId);
+  assert.equal(world.lanes.actors.find((item) => item.actorId === profile.profileId)?.status, 'ready');
 });
 
 test('accepted-final前释放保留真实召回条目数且不伪造消息号', () => {
@@ -297,6 +315,8 @@ test('隐藏支线只把表象和线索投影给正文，私有真相与下一�
   assert.match(injection, /观察岚音/);
   assert.match(injection, /required_once/);
   assert.match(injection, /自然写入当前因果波且只出现一次/);
+  assert.match(injection, /consumptionAnchors/);
+  assert.match(injection, /逐字保留/);
   assert.match(injection, /不补写输入外动机/);
   assert.doesNotMatch(injection, /小本本|暗中评估|秘密记录|继续暗中记录/);
   assert.equal(packet.items[0].recordType, 'sensory_surface');

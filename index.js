@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.18';
+  const DOCTOR_VERSION = '0.6.19';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -2210,7 +2210,12 @@
         }
         attempt.status = 'pending_world';
         newAttempts.push(attempt);
-        const rawResult = (proposal.adjudications || []).find((item) => cleanText(item?.attemptId) === attempt.attemptId || (cleanText(item?.actorId || item?.actor) === cleanText(raw.actorId || raw.actor) && cleanText(item?.threadId) === attempt.threadId));
+        const rawActorKey = cleanText(raw.actorId || raw.actor || raw.actorName).toLocaleLowerCase();
+        const rawResult = (proposal.adjudications || []).find((item) => {
+          if (cleanText(item?.attemptId) === attempt.attemptId) return true;
+          const resultActorKey = cleanText(item?.actorId || item?.actor || item?.actorName).toLocaleLowerCase();
+          return Boolean(rawActorKey && resultActorKey === rawActorKey && cleanText(item?.threadId) === attempt.threadId);
+        });
         if (rawResult) {
           const result = normalizeAdjudication({ ...rawResult, attemptId: attempt.attemptId, actorId }, index, sourceRef);
           if (result.resultSummary || result.observableConsequence) {
@@ -2547,7 +2552,10 @@
     function prepareRecallPackage(worldInput, userInput, profiles = {}, limit = 8, options = {}) {
       const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
       const selectionInput = recallSelectionInput(userInput);
-      const items = selectWorldRecall(world, selectionInput, profiles, limit).map(({ score, ...entry }) => entry);
+      const items = selectWorldRecall(world, selectionInput, profiles, limit).map(({ score, ...entry }) => ({
+        ...entry,
+        consumptionAnchors: recallConsumptionAnchors(entry),
+      }));
       const packageId = stableWorldId('recall', world.chatId, world.revision, options.sourceKey, selectionInput, options.at || new Date().toISOString());
       return { packageId, worldRevision: world.revision, worldCommitId: world.commitId, items, preparedAt: options.at || new Date().toISOString(), sourceKey: cleanText(options.sourceKey) };
     }
@@ -2562,13 +2570,6 @@
       return String(value || '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
     }
 
-    function recallBigrams(value) {
-      const text = recallComparableText(value);
-      const result = new Set();
-      for (let index = 0; index < text.length - 1; index += 1) result.add(text.slice(index, index + 2));
-      return result;
-    }
-
     function recallPublicFragments(item) {
       return [
         item?.publicSurface,
@@ -2580,17 +2581,23 @@
       ].map((value) => String(value || '').trim()).filter(Boolean);
     }
 
-    function recallFragmentAppears(narrative, fragment) {
+    function recallConsumptionAnchors(item) {
+      const anchors = [];
+      for (const fragment of recallPublicFragments(item)) {
+        const clauses = String(fragment).split(/[，。！？；、,:;!?\n]+/u)
+          .map((value) => recallComparableText(value)).filter((value) => value.length >= 6);
+        const selected = clauses[0] || recallComparableText(fragment);
+        if (selected.length >= 6) anchors.push(selected.slice(0, 18));
+        if (anchors.length >= 3) break;
+      }
+      return [...new Set(anchors)];
+    }
+
+    function recallExactFragmentAppears(narrative, fragment) {
       const body = recallComparableText(narrative);
       const target = recallComparableText(fragment);
       if (target.length < 4) return false;
-      if (body.includes(target)) return true;
-      if (target.length < 6) return false;
-      const targetBigrams = recallBigrams(target);
-      const bodyBigrams = recallBigrams(body);
-      let shared = 0;
-      for (const gram of targetBigrams) if (bodyBigrams.has(gram)) shared += 1;
-      return shared >= 3 && shared / Math.max(1, targetBigrams.size) >= 0.42;
+      return body.includes(target);
     }
 
     /** Verifies that a one-turn public recall projection actually surfaced in the accepted narrative. */
@@ -2598,8 +2605,19 @@
       const items = Array.isArray(recallPackage?.items) ? recallPackage.items : [];
       const itemResults = items.map((item, index) => {
         const fragments = recallPublicFragments(item);
-        const matchedFragments = fragments.filter((fragment) => recallFragmentAppears(narrative, fragment));
-        return { index, usage: item?.usage === 'required_once' ? 'required_once' : 'optional', consumed: matchedFragments.length > 0, matchedFragments };
+        const anchors = cleanStringArray(item?.consumptionAnchors, 3)
+          .map((value) => recallComparableText(value)).filter((value) => value.length >= 6);
+        const matchedAnchors = anchors.filter((anchor) => recallExactFragmentAppears(narrative, anchor));
+        const matchedFragments = anchors.length
+          ? []
+          : fragments.filter((fragment) => recallExactFragmentAppears(narrative, fragment));
+        return {
+          index,
+          usage: item?.usage === 'required_once' ? 'required_once' : 'optional',
+          consumed: matchedAnchors.length > 0 || matchedFragments.length > 0,
+          matchedAnchorCount: matchedAnchors.length,
+          matchedFragmentCount: matchedFragments.length,
+        };
       });
       const consumedItemCount = itemResults.filter((item) => item.consumed).length;
       const requiredItems = itemResults.filter((item) => item.usage === 'required_once');
@@ -2655,9 +2673,9 @@
         'worldRecallPackage_publicProjection（仅供本次生成消费一次；这是医生私有世界状态生成的公开投影，不含可直接公开的隐藏真相）：',
         JSON.stringify(recallItems),
         requiredCount
-          ? `召回执行要求：先服从本轮玩家动作，再把每条usage=required_once投影的一个公开片段自然写入当前因果波且只出现一次；共${requiredCount}条。若立刻转场，先写转场前可见反应，或在转场后写其已经造成的可观察后果。usage=optional只有自然相关时才使用，可以完全不写。`
+          ? `召回执行要求：先服从本轮玩家动作，再把每条usage=required_once投影自然写入当前因果波且只出现一次；共${requiredCount}条。每条被采用的required_once必须在不展示字段名的前提下，逐字保留其consumptionAnchors中的至少一个自然短语，供脚本确定性结算；仅改写成近义句不会被算作消费。若立刻转场，先写转场前可见反应，或在转场后写其已经造成的可观察后果。usage=optional只有自然相关时才使用，可以完全不写。`
           : '召回执行要求：本轮没有required_once投影；usage=optional只有自然相关时才使用，可以完全不写。',
-        '只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction与observableConsequence。不得从recordType、空白字段、标签或线索反推出隐藏动机、真实身份、镜头外行动及其成败；传闻不得写成事实。',
+        '只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction、observableConsequence与作为逐字结算依据的consumptionAnchors。不得从recordType、空白字段、标签或线索反推出隐藏动机、真实身份、镜头外行动及其成败；传闻不得写成事实。',
         '正文不得展示usage、recordType、调度说明或任何Doctor标签；它们只决定如何自然续接公开因果。',
         '召回包不得覆盖玩家当前指令、角色卡、世界书、已接受事实或MVU当前状态。任何平行事件详情、NPC私密心理与未揭示真相都由医生继续在私有世界状态中推进，主回复不得输出。',
         '已有人物档案公开身份句柄（只表示不得重复随机，不代表其档案中的隐藏资料可被叙事者知道）：',
@@ -2754,7 +2772,9 @@
     processingSession: null,
     timer: null,
     internalGeneration: false,
+    internalGenerationDepth: 0,
     requestController: null,
+    requestControllers: new Set(),
     retry: null,
     retrying: false,
     uiProfiles: {},
@@ -3000,6 +3020,8 @@
     const recallTerminal = ['consumed', 'released', 'idle'].includes(next.recall) ? next.recall : 'pending';
     if (/医生已就绪|正在初始化|聊天已切换/.test(text)) return { variable: 'idle', profiles: 'idle', world: 'idle', recall: 'idle' };
     if (/正文生成中/.test(text)) return { variable: 'pending', profiles: 'pending', world: 'pending', recall: 'ready' };
+    if (/变量与人物并行检查/.test(text)) return { variable: 'running', profiles: 'running', world: 'pending', recall: recallTerminal };
+    if (/变量已闭合，人物与世界并行准备/.test(text)) return { variable: 'done', profiles: 'running', world: 'running', recall: recallTerminal };
     if (/医生处理中|正在检查MVU|正在手动复检/.test(text)) return { variable: 'running', profiles: 'pending', world: 'pending', recall: recallTerminal };
     if (/手动MVU变量复检完成|手动MVU变量复检已恢复|变量修复已撤销/.test(text)) return { variable: 'done', profiles: 'idle', world: 'idle', recall: 'idle' };
     if (/MVU变量处理完成/.test(text)) return { variable: 'done', profiles: 'running', world: 'pending', recall: recallTerminal };
@@ -3019,7 +3041,7 @@
   function runtimeHasPendingWork() {
     const progressBusy = Object.values(runtime.progress || {})
       .some((state) => ['pending', 'ready', 'running'].includes(state));
-    return Boolean(runtime.active || runtime.timer || runtime.requestController || runtime.retrying || progressBusy);
+    return Boolean(runtime.active || runtime.timer || runtime.requestControllers.size || runtime.requestController || runtime.retrying || progressBusy);
   }
 
   function statusPresentation(phase = runtime.status.phase, detail = runtime.status.detail) {
@@ -3118,9 +3140,9 @@
     const config = settings();
     const api = config.api;
     if (!String(api.model || '').trim()) throw new Error('请先在连接页填写模型名称');
-    if (runtime.requestController) throw new Error('医生已有模型请求正在运行，请等待或先取消当前任务');
     const controller = new AbortController();
-    runtime.requestController = controller;
+    runtime.requestControllers.add(controller);
+    runtime.requestController ||= controller;
     try {
       const payload = await fetchJson(runtime.core.openAiChatEndpoint(api.endpoint), {
         method: 'POST',
@@ -3139,7 +3161,8 @@
       });
       return runtime.core.chatCompletionText(payload);
     } finally {
-      if (runtime.requestController === controller) runtime.requestController = null;
+      runtime.requestControllers.delete(controller);
+      if (runtime.requestController === controller) runtime.requestController = runtime.requestControllers.values().next().value || null;
     }
   }
 
@@ -3149,6 +3172,7 @@
     const extra = String(config.additionalPrompt || '').trim();
     const finalSystemPrompt = extra ? `${systemPrompt}\n\n【用户全局模型适配附加提示词】\n${extra}` : systemPrompt;
     traceRun(session, `${task}:request`, { systemPrompt: finalSystemPrompt, prompt, responseLength });
+    runtime.internalGenerationDepth += 1;
     runtime.internalGeneration = true;
     try {
       let output;
@@ -3163,7 +3187,8 @@
       traceRun(session, `${task}:error`, { error: error.message || String(error) });
       throw error;
     } finally {
-      runtime.internalGeneration = false;
+      runtime.internalGenerationDepth = Math.max(0, runtime.internalGenerationDepth - 1);
+      runtime.internalGeneration = runtime.internalGenerationDepth > 0;
     }
   }
 
@@ -3835,19 +3860,21 @@ ${runtime.core.profileCompletionContract()}`;
     return response;
   }
 
-  async function commitProfiles(session, messageId, message, variableData = null, profileRecovery = null) {
+  async function commitProfiles(session, messageId, message, variableData = null, profileRecovery = null, execution = {}) {
     assertSessionCurrent(session);
     const context = getContext();
     const Mvu = await getMvu();
     const hasMvu = Mvu?.getMvuData && Mvu?.parseMessage && Mvu?.replaceMvuData;
     if (hasMvu) await waitForMvuIdle(Mvu, session);
-    const liveData = hasMvu ? (variableData || await mvuDataAt(Mvu, messageId)) : null;
-    const oldData = dataWithRecoveredProfiles(liveData, context);
+    let liveData = hasMvu ? (variableData || await mvuDataAt(Mvu, messageId)) : null;
+    let oldData = dataWithRecoveredProfiles(liveData, context);
     const requiredSubjects = runtime.core.discoverProfileSubjects(message, {
       existingProfiles: combinedProfiles(oldData, context),
       excludedNames: profileSubjectExclusions(context),
     });
     traceRun(session, 'profile:subjects-discovered', { requiredSubjects });
+    try { execution.onSubjectsDiscovered?.(runtime.core.deepClone(requiredSubjects)); }
+    catch { /* discovery notification is scheduling glue, not profile authority */ }
     let receiptText = message;
     let receipt = runtime.core.parseProfileReceipt(receiptText);
     const upstreamProfiles = receipt.kind === 'update' ? receipt.profiles : [];
@@ -3891,10 +3918,21 @@ ${runtime.core.profileCompletionContract()}`;
           traceRun(session, 'profile:candidate-preserved', { attempt: attempt + 1, candidateProfiles, requiredSubjects, errors: prepared.errors, normalizationRepairs: prepared.normalizationRepairs || [] });
         } else prepared = { ok: false, errors: [receipt.error || '修复模型没有返回有效档案回执'] };
       } catch (error) {
+        if (isSessionCancellation(error, session)) return { ok: false, cancelled: true, error: '人物档案任务已取消；候选未写入' };
         prepared = { ok: false, errors: [`修复请求失败：${error.message || error}`] };
       }
     }
     assertSessionCurrent(session);
+    if (execution.commitBarrier) {
+      const gate = await execution.commitBarrier;
+      if (!gate?.ok) return { ok: false, dependencyFailed: true, error: 'MVU变量没有进入已验证终态；人物候选保持未提交' };
+      assertSessionCurrent(session);
+      liveData = hasMvu ? await mvuDataAt(Mvu, messageId) : null;
+      oldData = dataWithRecoveredProfiles(liveData, context);
+      if (prepared.ok) {
+        prepared = withSubjectCoverage(runtime.core.prepareProfileBatch(prepared.profiles, session.tickets, oldData, message, requiredSubjects));
+      }
+    }
     if (auditedNochange) {
       if (hasMvu && Object.keys(metadata().profiles || {}).length && !runtime.core.semanticJsonEqual(runtime.core.statDataOf(liveData)?.人物档案 || {}, runtime.core.statDataOf(oldData)?.人物档案 || {})) {
         try {
@@ -4003,7 +4041,7 @@ ${runtime.core.profileCompletionContract()}`;
     return { restored, reason: restored ? restoration.reason : 'readback_mismatch' };
   }
 
-  async function advanceWorld(session, acceptedText, data) {
+  async function advanceWorld(session, acceptedText, data, execution = {}) {
     assertSessionCurrent(session);
     const context = getContext();
     if (!settings(context).worldEngine) return { ok: true, skipped: true };
@@ -4011,13 +4049,16 @@ ${runtime.core.profileCompletionContract()}`;
     const messageId = Number.isInteger(Number(session.finalMessageId)) ? Number(session.finalMessageId) : latestMessage(context, false)?.index;
     const sourceKey = `${session.chatId}:message:${messageId ?? 'unknown'}`;
     const profiles = runtime.core.privateProfileDigestFromData(dataWithRecoveredProfiles(data, context));
+    const pendingProfileSubjects = (Array.isArray(execution.pendingProfileSubjects) ? execution.pendingProfileSubjects : [])
+      .map((subject) => ({ actorName: String(subject?.label || '').trim(), aliases: Array.isArray(subject?.aliases) ? subject.aliases : [] }))
+      .filter((subject) => subject.actorName);
     const systemPrompt = `你是世界连续性引擎 v5。你维护医生私有的完整世界状态，并把能进入下一回合正文的内容拆成最小公开投影。脚本会用稳定ID合并旧记录并原子提交。
 
 职责：
 1. 推进与玩家当前所在场景有关的线索，也推进镜头外仍有目标、资源和机会的NPC、阵营与环境；不要让整个世界只围着玩家转。
 2. actorActions写人物实际准备或尝试的行动；adjudications单独写世界裁决。尝试不等于成功，不能跳过成本、时间、风险和可观察后果。
 3. 不替玩家决定行动、感受、同意、关系或结果。需要玩家选择的事项标playerDecisionRequired=true，并停在可交互位置。
-4. 只有人物档案摘要中存在profileId的人物可以提交自主行动；没有行动就不编造。新人物可建立结构性支线，但在档案就绪前不得自主行动。
+4. 只有人物档案摘要中存在profileId的人物可以最终提交自主行动；没有行动就不编造。并行准备列表中的新人物尚未取得提交权，你可以为其准备候选行动，但actorId必须留空、actorName必须逐字使用列表中的稳定称谓；脚本只会在同回合人物档案已原子提交并读回、且该称谓能解析到真实profileId后才提交，否则候选行动自动保持blocked_unready。
 5. 只输出新增或本轮改变的项目；旧项目遗漏不代表删除。需要结束旧支线时把原ID放进resolvedThreadIds。
 6. 当前MVU仅是只读事实来源，不要输出变量补丁，不接管数据库。
 7. knowledge默认hidden。summary、offscreenBeat、nextBeat、stakes、行动的goal/intent/action、裁决的resultSummary与revealPath属于医生私有层，可以记录真实动机、伪装真相、秘密计划、镜头外行动及其世界裁决，但绝不能复制到公开字段。
@@ -4026,8 +4067,8 @@ ${runtime.core.profileCompletionContract()}`;
 10. 每名行动就绪且仍有独立目标的NPC都应被考虑是否需要镜头外推进；没有合理时机可以不行动，不能为了凑数制造灾难。隐秘行动可以真实发生并裁决，但下一回合正文只能收到其表象、无因果归属的可观察后果或已合法揭示的事实。
 
 只输出一个JSON对象，不要代码围栏：
-{"summary":"医生私有的本轮世界总体变化","threads":[{"id":"更新旧项时必须沿用旧ID；新项可留空","kind":"parallel|personal|promise|enemy|mystery|social|resource|environment","title":"医生私有标题","stage":"seeded|advancing|manifested|dormant|resolved|failed","actorIds":[],"factionIds":[],"locations":[],"keywords":[],"summary":"医生私有的完整真相摘要","offscreenBeat":"镜头外实际发生或正在形成的私有变化","publicTitle":"不泄露真相的公开标题，可空","publicSurface":"当前视角可直接观察的表象，可空","publicClues":["只写可观察线索，不写原因"],"trigger":"进入正文的条件","nextBeat":"医生私有下一步","stakes":"医生私有代价与风险","urgency":0,"knowledge":"hidden|rumor|observed","causedBy":[],"effects":[],"rumors":["仅限世界中真实流传的不确定传闻"],"revealedSummary":"仅knowledge=observed时填写已揭示部分","revealEvidence":"knowledge=observed时逐字复制最终正文证据","knownByActorIds":[]}],"actorActions":[{"actorId":"必须来自人物档案profileId","actorName":"","threadId":"","goal":"医生私有目标","intent":"医生私有意图","action":"具体尝试，医生私有","knowledgeBasis":[],"capabilityBasis":[],"resourceCosts":[],"expectedDuration":"","risk":"","visibility":"hidden|rumor|observable","publicSurface":"不泄露行动的可见表象，可空","publicClues":["无因果归属的可见线索"],"playerDecisionRequired":false,"planSteps":[],"nextActionTurn":0}],"adjudications":[{"actorId":"与actorActions一致","threadId":"与actorActions一致","status":"success|partial|failure|delayed|blocked","resultSummary":"医生私有世界裁决","actualCosts":[],"actualDuration":"","observableConsequence":"只写外部可观察结果，不写隐秘原因，可空","publicClues":[],"appliedStateChanges":[],"revealPath":"医生私有的发现路径"}],"factions":[{"id":"旧阵营沿用ID","name":"","goal":"","status":"","relation":"","condition":"","summary":"","sourceThreadIds":[]}],"environment":{"summary":"","economy":"","incidents":[],"trends":[],"winds":[]},"resolvedThreadIds":[]}。`;
-    const basePrompt = `【权威世界连续性状态 v5（医生私有；不得把隐藏字段直接送入正文）】\n${cropForModel(baseline, 52000)}\n\n【行动就绪人物完整摘要（医生私有）】\n${cropForModel(profiles, 30000)}\n\n【当前MVU只读事实】\n${cropForModel(runtime.core.statDataOf(data), 36000)}\n\n【最终接受正文】\n${cropForModel(runtime.core.stripProfileReceipt(acceptedText), 52000)}`;
+{"summary":"医生私有的本轮世界总体变化","threads":[{"id":"更新旧项时必须沿用旧ID；新项可留空","kind":"parallel|personal|promise|enemy|mystery|social|resource|environment","title":"医生私有标题","stage":"seeded|advancing|manifested|dormant|resolved|failed","actorIds":[],"factionIds":[],"locations":[],"keywords":[],"summary":"医生私有的完整真相摘要","offscreenBeat":"镜头外实际发生或正在形成的私有变化","publicTitle":"不泄露真相的公开标题，可空","publicSurface":"当前视角可直接观察的表象，可空","publicClues":["只写可观察线索，不写原因"],"trigger":"进入正文的条件","nextBeat":"医生私有下一步","stakes":"医生私有代价与风险","urgency":0,"knowledge":"hidden|rumor|observed","causedBy":[],"effects":[],"rumors":["仅限世界中真实流传的不确定传闻"],"revealedSummary":"仅knowledge=observed时填写已揭示部分","revealEvidence":"knowledge=observed时逐字复制最终正文证据","knownByActorIds":[]}],"actorActions":[{"actorId":"已建档者必须填写profileId；并行待建档者必须留空","actorName":"并行待建档者必须逐字填写稳定称谓","threadId":"","goal":"医生私有目标","intent":"医生私有意图","action":"具体尝试，医生私有","knowledgeBasis":[],"capabilityBasis":[],"resourceCosts":[],"expectedDuration":"","risk":"","visibility":"hidden|rumor|observable","publicSurface":"不泄露行动的可见表象，可空","publicClues":["无因果归属的可见线索"],"playerDecisionRequired":false,"planSteps":[],"nextActionTurn":0}],"adjudications":[{"actorId":"与actorActions一致；并行待建档者留空","actorName":"与actorActions的稳定称谓逐字一致","threadId":"与actorActions一致","status":"success|partial|failure|delayed|blocked","resultSummary":"医生私有世界裁决","actualCosts":[],"actualDuration":"","observableConsequence":"只写外部可观察结果，不写隐秘原因，可空","publicClues":[],"appliedStateChanges":[],"revealPath":"医生私有的发现路径"}],"factions":[{"id":"旧阵营沿用ID","name":"","goal":"","status":"","relation":"","condition":"","summary":"","sourceThreadIds":[]}],"environment":{"summary":"","economy":"","incidents":[],"trends":[],"winds":[]},"resolvedThreadIds":[]}。`;
+    const basePrompt = `【权威世界连续性状态 v5（医生私有；不得把隐藏字段直接送入正文）】\n${cropForModel(baseline, 52000)}\n\n【已原子提交并行动就绪的人物完整摘要（医生私有）】\n${cropForModel(profiles, 30000)}\n\n【本回合并行准备、尚待档案读回的人物称谓】\n${cropForModel(pendingProfileSubjects, 12000)}\n这些称谓只允许生成待验证候选；不得假装档案已经提交。\n\n【当前MVU只读事实】\n${cropForModel(runtime.core.statDataOf(data), 36000)}\n\n【最终接受正文】\n${cropForModel(runtime.core.stripProfileReceipt(acceptedText), 52000)}`;
     let failure = '';
     let previousRaw = '';
     const attempts = Math.max(1, Math.min(4, Number(settings(context).repairAttempts) + 1 || 1));
@@ -4055,12 +4096,20 @@ ${runtime.core.profileCompletionContract()}`;
         }
         const proposalValidation = runtime.core.validateWorldProposal(proposal, { previous: baseline, acceptedText: runtime.core.stripProfileReceipt(acceptedText) });
         if (!proposalValidation.ok) throw new Error(`世界候选内容不足：${proposalValidation.errors.join('；')}`);
+        let committedProfileData = data;
+        if (execution.profileBarrier) {
+          const profileResult = await execution.profileBarrier;
+          if (!profileResult?.ok) return { ok: false, dependencyFailed: true, error: '人物档案没有进入原子读回终态；世界候选未提交' };
+          assertSessionCurrent(session);
+          committedProfileData = profileResult.data;
+        }
+        const committedProfiles = runtime.core.privateProfileDigestFromData(dataWithRecoveredProfiles(committedProfileData, context));
         candidate = runtime.core.applyWorldProposal(baseline, proposal, {
           chatId: session.chatId,
           turn: messageId,
           at: new Date().toISOString(),
           sourceRef: { chatId: session.chatId, messageId, turn: messageId, sourceKey, excerpt: runtime.core.stripProfileReceipt(acceptedText).slice(0, 500) },
-          profiles,
+          profiles: committedProfiles,
         });
         const committed = await commitWorldCandidate(session, baseline.revision, candidate, { attempt, raw, proposal, sourceKey });
         assertSessionCurrent(session);
@@ -4174,10 +4223,27 @@ ${runtime.core.profileCompletionContract()}`;
       await finalizeRun(session, { ok: false, stage: 'reroll-restore', error: rerollRestore.error }, context);
       return;
     }
-    setStatus('医生处理中', `先检查并修复MVU变量；人物与世界尚未开始。${recallAssessment.reason}`, { progress: { recall: recallStage } });
-    const variableResult = await auditVariables(session, latestAi.index, acceptedText);
+    let subjectsResolved = false;
+    let resolveProfileSubjects;
+    const profileSubjectsReady = new Promise((resolve) => { resolveProfileSubjects = resolve; });
+    const publishProfileSubjects = (subjects) => {
+      if (subjectsResolved) return;
+      subjectsResolved = true;
+      resolveProfileSubjects(Array.isArray(subjects) ? subjects : []);
+    };
+    const asTaskFailure = (stage) => (error) => ({ ok: false, error: `${stage}异常：${error?.message || error}` });
+    setStatus('变量与人物并行检查', `变量审计与人物候选生成已经并行启动；两者仍各守提交边界。${recallAssessment.reason}`, { progress: { recall: recallStage } });
+    const variableTask = auditVariables(session, latestAi.index, acceptedText).catch(asTaskFailure('MVU变量'));
+    const profileTask = commitProfiles(session, latestAi.index, acceptedText, null, null, {
+      commitBarrier: variableTask,
+      onSubjectsDiscovered: publishProfileSubjects,
+    }).catch(asTaskFailure('人物档案'));
+    profileTask.then(() => publishProfileSubjects([]));
+    const variableResult = await variableTask;
     if (!sessionIsCurrent(session)) return;
     if (!variableResult.ok) {
+      await profileTask;
+      if (!sessionIsCurrent(session)) return;
       addDiagnostic('variable_failed', variableResult.error, context);
       await saveMetadata(context);
       setRetry({ kind: 'variable', session, messageId: latestAi.index, message: latestAi.message.mes });
@@ -4185,10 +4251,21 @@ ${runtime.core.profileCompletionContract()}`;
       await finalizeRun(session, { ok: false, stage: 'variable', error: variableResult.error }, context);
       return;
     }
-    setStatus('MVU变量处理完成', variableResult.changed ? '纠错补丁已写入、读回并合并保存；正在校验人物档案' : variableResult.note || '模型未发现需追加修复；正在校验人物档案');
-    const profileResult = await commitProfiles(session, latestAi.index, variableResult.message, variableResult.data);
+    const pendingProfileSubjects = await profileSubjectsReady;
+    if (!sessionIsCurrent(session)) return;
+    setStatus('变量已闭合，人物与世界并行准备', variableResult.changed
+      ? '纠错补丁已写入并读回；人物候选等待原子提交，世界候选同时准备。'
+      : `${variableResult.note || '模型未发现需追加修复'}；人物候选与世界候选正在并行准备。`);
+    const finalAcceptedText = getContext().chat?.[latestAi.index]?.mes || variableResult.message;
+    const worldTask = advanceWorld(session, finalAcceptedText, variableResult.data, {
+      profileBarrier: profileTask,
+      pendingProfileSubjects,
+    }).catch(asTaskFailure('世界引擎'));
+    const profileResult = await profileTask;
     if (!sessionIsCurrent(session)) return;
     if (!profileResult.ok) {
+      await worldTask;
+      if (!sessionIsCurrent(session)) return;
       addDiagnostic('profile_failed', profileResult.error, context);
       await saveMetadata(context);
       setRetry({ kind: 'profile', session, messageId: latestAi.index, message: getContext().chat?.[latestAi.index]?.mes || variableResult.message, data: variableResult.data, profileRecovery: profileResult.recovery || null });
@@ -4197,8 +4274,7 @@ ${runtime.core.profileCompletionContract()}`;
       return;
     }
     setStatus('人物档案已完成', profileResult.changed ? `原子提交 ${profileResult.changed} 张完整档案` : '本轮明确无档案变化');
-    const finalAcceptedText = getContext().chat?.[latestAi.index]?.mes || variableResult.message;
-    const worldResult = await advanceWorld(session, finalAcceptedText, profileResult.data);
+    const worldResult = await worldTask;
     if (!sessionIsCurrent(session) || worldResult.cancelled) return;
     const world = metadata(context).world;
     const profileCount = Object.keys(combinedProfiles(profileResult.data, context)).length;
@@ -4462,6 +4538,8 @@ ${runtime.core.profileCompletionContract()}`;
     const active = runtime.active;
     const processing = runtime.processingSession;
     runtime.epoch += 1;
+    for (const controller of runtime.requestControllers) controller.abort();
+    runtime.requestControllers.clear();
     runtime.requestController?.abort();
     runtime.requestController = null;
     if (runtime.active) runtime.active.cancelled = true;

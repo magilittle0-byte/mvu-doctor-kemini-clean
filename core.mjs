@@ -2186,7 +2186,12 @@ export function applyWorldProposal(previousInput, proposalInput, options = {}) {
     }
     attempt.status = 'pending_world';
     newAttempts.push(attempt);
-    const rawResult = (proposal.adjudications || []).find((item) => cleanText(item?.attemptId) === attempt.attemptId || (cleanText(item?.actorId || item?.actor) === cleanText(raw.actorId || raw.actor) && cleanText(item?.threadId) === attempt.threadId));
+    const rawActorKey = cleanText(raw.actorId || raw.actor || raw.actorName).toLocaleLowerCase();
+    const rawResult = (proposal.adjudications || []).find((item) => {
+      if (cleanText(item?.attemptId) === attempt.attemptId) return true;
+      const resultActorKey = cleanText(item?.actorId || item?.actor || item?.actorName).toLocaleLowerCase();
+      return Boolean(rawActorKey && resultActorKey === rawActorKey && cleanText(item?.threadId) === attempt.threadId);
+    });
     if (rawResult) {
       const result = normalizeAdjudication({ ...rawResult, attemptId: attempt.attemptId, actorId }, index, sourceRef);
       if (result.resultSummary || result.observableConsequence) {
@@ -2523,7 +2528,10 @@ export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
 export function prepareRecallPackage(worldInput, userInput, profiles = {}, limit = 8, options = {}) {
   const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
   const selectionInput = recallSelectionInput(userInput);
-  const items = selectWorldRecall(world, selectionInput, profiles, limit).map(({ score, ...entry }) => entry);
+  const items = selectWorldRecall(world, selectionInput, profiles, limit).map(({ score, ...entry }) => ({
+    ...entry,
+    consumptionAnchors: recallConsumptionAnchors(entry),
+  }));
   const packageId = stableWorldId('recall', world.chatId, world.revision, options.sourceKey, selectionInput, options.at || new Date().toISOString());
   return { packageId, worldRevision: world.revision, worldCommitId: world.commitId, items, preparedAt: options.at || new Date().toISOString(), sourceKey: cleanText(options.sourceKey) };
 }
@@ -2538,13 +2546,6 @@ function recallComparableText(value) {
   return String(value || '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
-function recallBigrams(value) {
-  const text = recallComparableText(value);
-  const result = new Set();
-  for (let index = 0; index < text.length - 1; index += 1) result.add(text.slice(index, index + 2));
-  return result;
-}
-
 function recallPublicFragments(item) {
   return [
     item?.publicSurface,
@@ -2556,17 +2557,23 @@ function recallPublicFragments(item) {
   ].map((value) => String(value || '').trim()).filter(Boolean);
 }
 
-function recallFragmentAppears(narrative, fragment) {
+function recallConsumptionAnchors(item) {
+  const anchors = [];
+  for (const fragment of recallPublicFragments(item)) {
+    const clauses = String(fragment).split(/[，。！？；、,:;!?\n]+/u)
+      .map((value) => recallComparableText(value)).filter((value) => value.length >= 6);
+    const selected = clauses[0] || recallComparableText(fragment);
+    if (selected.length >= 6) anchors.push(selected.slice(0, 18));
+    if (anchors.length >= 3) break;
+  }
+  return [...new Set(anchors)];
+}
+
+function recallExactFragmentAppears(narrative, fragment) {
   const body = recallComparableText(narrative);
   const target = recallComparableText(fragment);
   if (target.length < 4) return false;
-  if (body.includes(target)) return true;
-  if (target.length < 6) return false;
-  const targetBigrams = recallBigrams(target);
-  const bodyBigrams = recallBigrams(body);
-  let shared = 0;
-  for (const gram of targetBigrams) if (bodyBigrams.has(gram)) shared += 1;
-  return shared >= 3 && shared / Math.max(1, targetBigrams.size) >= 0.42;
+  return body.includes(target);
 }
 
 /** Verifies that a one-turn public recall projection actually surfaced in the accepted narrative. */
@@ -2574,8 +2581,19 @@ export function assessRecallConsumption(narrative, recallPackage) {
   const items = Array.isArray(recallPackage?.items) ? recallPackage.items : [];
   const itemResults = items.map((item, index) => {
     const fragments = recallPublicFragments(item);
-    const matchedFragments = fragments.filter((fragment) => recallFragmentAppears(narrative, fragment));
-    return { index, usage: item?.usage === 'required_once' ? 'required_once' : 'optional', consumed: matchedFragments.length > 0, matchedFragments };
+    const anchors = cleanStringArray(item?.consumptionAnchors, 3)
+      .map((value) => recallComparableText(value)).filter((value) => value.length >= 6);
+    const matchedAnchors = anchors.filter((anchor) => recallExactFragmentAppears(narrative, anchor));
+    const matchedFragments = anchors.length
+      ? []
+      : fragments.filter((fragment) => recallExactFragmentAppears(narrative, fragment));
+    return {
+      index,
+      usage: item?.usage === 'required_once' ? 'required_once' : 'optional',
+      consumed: matchedAnchors.length > 0 || matchedFragments.length > 0,
+      matchedAnchorCount: matchedAnchors.length,
+      matchedFragmentCount: matchedFragments.length,
+    };
   });
   const consumedItemCount = itemResults.filter((item) => item.consumed).length;
   const requiredItems = itemResults.filter((item) => item.usage === 'required_once');
@@ -2631,9 +2649,9 @@ export function formatGenerationInjection({ tickets, recall, profileDigest = [],
     'worldRecallPackage_publicProjection（仅供本次生成消费一次；这是医生私有世界状态生成的公开投影，不含可直接公开的隐藏真相）：',
     JSON.stringify(recallItems),
     requiredCount
-      ? `召回执行要求：先服从本轮玩家动作，再把每条usage=required_once投影的一个公开片段自然写入当前因果波且只出现一次；共${requiredCount}条。若立刻转场，先写转场前可见反应，或在转场后写其已经造成的可观察后果。usage=optional只有自然相关时才使用，可以完全不写。`
+      ? `召回执行要求：先服从本轮玩家动作，再把每条usage=required_once投影自然写入当前因果波且只出现一次；共${requiredCount}条。每条被采用的required_once必须在不展示字段名的前提下，逐字保留其consumptionAnchors中的至少一个自然短语，供脚本确定性结算；仅改写成近义句不会被算作消费。若立刻转场，先写转场前可见反应，或在转场后写其已经造成的可观察后果。usage=optional只有自然相关时才使用，可以完全不写。`
       : '召回执行要求：本轮没有required_once投影；usage=optional只有自然相关时才使用，可以完全不写。',
-    '只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction与observableConsequence。不得从recordType、空白字段、标签或线索反推出隐藏动机、真实身份、镜头外行动及其成败；传闻不得写成事实。',
+    '只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction、observableConsequence与作为逐字结算依据的consumptionAnchors。不得从recordType、空白字段、标签或线索反推出隐藏动机、真实身份、镜头外行动及其成败；传闻不得写成事实。',
     '正文不得展示usage、recordType、调度说明或任何Doctor标签；它们只决定如何自然续接公开因果。',
     '召回包不得覆盖玩家当前指令、角色卡、世界书、已接受事实或MVU当前状态。任何平行事件详情、NPC私密心理与未揭示真相都由医生继续在私有世界状态中推进，主回复不得输出。',
     '已有人物档案公开身份句柄（只表示不得重复随机，不代表其档案中的隐藏资料可被叙事者知道）：',
