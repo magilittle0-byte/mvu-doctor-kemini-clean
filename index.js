@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.5';
+  const DOCTOR_VERSION = '0.6.6';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -53,7 +53,7 @@
       'currentState.condition', 'currentState.emotion', 'currentState.goal',
     ];
     const REQUIRED_ARRAYS = ['relationships', 'knowledge', 'capabilities', 'resources', 'evidence', 'inferences'];
-    const EMPTY_WORDS = /^(未知|不详|待定|待确认|未登记|暂无|无|unknown|null|n\/a)$/i;
+    const EMPTY_WORDS = /^(?:(?:未知|不详|待定|待确认|未登记|未说明|暂无|尚不明确|无法确认|无法判断|不可知|unknown|null|n\/a)(?:$|[\s（(：:，,。；;])|无$)/i;
 
     function profileCompletionContract() {
       return `每个人物必须按以下唯一结构输出完整对象；正文没有明说的内容不是空项，而是结合权威材料、世界观、人物身份和同一张骰票主动设计，并在inferences中说明为可修订补全：
@@ -61,11 +61,11 @@
       "profileId": "旧人物沿用既有ID；新人留空字符串",
       "ticketId": "新人使用分配的本轮ticketId；旧人物保持原值",
       "name": "正文中可稳定单指的姓名、编号或唯一称谓",
-      "aliases": ["正文已经出现的别名；没有可用空数组"],
+      "aliases": ["仅填写最终正文逐字出现的稳定别名或既有档案已确认的别名；不要把代词、动作片段或句子残片当别名；没有可用空数组"],
       "identity": {
         "species": "物种",
         "gender": "性别或该物种适用的性别说明",
-        "age": "明确年龄或符合世界观的年龄段",
+        "age": "明确年龄或符合世界观的具体年龄段；不得写未知（外观……）一类伪补全",
         "occupation": "职业或实际职责",
         "affiliation": "所属组织、社区或独立状态",
         "socialPosition": "在当前社会与关系网络中的位置"
@@ -97,7 +97,7 @@
       "evidence": ["至少一条来自最终叙事或权威材料的直接依据"],
       "inferences": ["至少一条医生主动设计且可被后续证据修订的补全说明"]
     }
-    禁止用未知、待定、未登记、正文未提及或空字符串逃避补全。不适用字段必须写明不适用的世界观原因。所有列表字段必须是数组。`;
+    禁止用未知、待定、未登记、正文未提及或空字符串逃避补全；在这些占位词后加括号解释仍然不算完成。不适用字段必须写明不适用的世界观原因。所有列表字段必须是数组。`;
     }
 
     function deepClone(value) {
@@ -326,6 +326,61 @@
         '</JSONPatch>',
         '</UpdateVariable>',
       ].join('\n');
+    }
+
+    /**
+     * Repairs only the one unambiguous envelope defect observed in accepted output:
+     * one opening <content>, no closing tag, followed by a known out-of-content block.
+     * Everything else is either already valid or fails closed instead of guessing.
+     */
+    function repairAcceptedNarrativeEnvelope(message) {
+      const source = String(message || '');
+      const opens = [...source.matchAll(/<content\b[^>]*>/gi)];
+      const closes = [...source.matchAll(/<\/content\s*>/gi)];
+      if (opens.length === 0 && closes.length === 0) {
+        return { ok: true, changed: false, message: source, repairs: [] };
+      }
+      if (opens.length === 1 && closes.length === 1) {
+        const openIndex = Number(opens[0].index);
+        const closeIndex = Number(closes[0].index);
+        const firstBoundary = [...source.matchAll(/<(?:options?|UpdateVariable)\b[^>]*>/gi)]
+          .map((match) => Number(match.index))
+          .filter((index) => index > openIndex)
+          .sort((left, right) => left - right)[0];
+        if (openIndex < closeIndex && (firstBoundary === undefined || closeIndex < firstBoundary)) {
+          return { ok: true, changed: false, message: source, repairs: [] };
+        }
+        return { ok: false, changed: false, message: source, error: '正文content闭合标签顺序错误或跨入了选项/变量边界' };
+      }
+      if (opens.length === 1 && closes.length === 0) {
+        const openEnd = Number(opens[0].index) + opens[0][0].length;
+        const boundaries = [...source.matchAll(/<(?:options?|UpdateVariable)\b[^>]*>/gi)]
+          .map((match) => Number(match.index))
+          .filter((index) => index > openEnd)
+          .sort((left, right) => left - right);
+        if (boundaries.length < 1) {
+          return { ok: false, changed: false, message: source, error: '正文缺少content闭合标签，且没有可证明的选项或变量边界' };
+        }
+        const boundary = boundaries[0];
+        const narrative = source.slice(openEnd, boundary).trim();
+        if (!narrative) {
+          return { ok: false, changed: false, message: source, error: '正文content为空，不能自动补闭合标签' };
+        }
+        const before = source.slice(0, boundary).replace(/[ \t]+$/u, '').replace(/\n*$/u, '');
+        const after = source.slice(boundary).replace(/^\s*/u, '');
+        return {
+          ok: true,
+          changed: true,
+          message: `${before}\n</content>\n${after}`,
+          repairs: ['insert_missing_content_close_before_structured_boundary'],
+        };
+      }
+      return {
+        ok: false,
+        changed: false,
+        message: source,
+        error: `正文content结构不唯一：开始标签${opens.length}个，闭合标签${closes.length}个`,
+      };
     }
 
     function pointerParts(path) {
@@ -1116,9 +1171,14 @@
       };
     }
 
-    function normalizeProfileCandidates(rawProfiles, acceptedText = '') {
+    function normalizeProfileCandidates(rawProfiles, acceptedText = '', requiredSubjects = null) {
       if (!Array.isArray(rawProfiles)) return [];
       const source = profileNarrativeText(acceptedText);
+      const exactAnchors = new Set((requiredSubjects || []).flatMap((subject) => [
+        subject?.label,
+        ...(Array.isArray(subject?.aliases) ? subject.aliases : []),
+      ]).map((value) => String(value || '').trim().toLocaleLowerCase()).filter(Boolean));
+      const exactOnly = Array.isArray(requiredSubjects);
       return rawProfiles.map((input) => {
         if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
         let profile = deepClone(input);
@@ -1130,7 +1190,9 @@
         if (!Array.isArray(profile.evidence) || profile.evidence.length < 1) {
           const label = [profile.name, ...profile.aliases]
             .map((value) => String(value || '').trim())
-            .find((value) => value && source.includes(value));
+            .find((value) => value && (exactOnly
+              ? exactAnchors.has(value.toLocaleLowerCase())
+              : source.includes(value)));
           if (label) profile.evidence = [`最终已接受正文明确出现“${label}”；该人物的可观察出场与互动是本档案的直接依据。`];
         }
         return profile;
@@ -1183,12 +1245,17 @@
       return merged;
     }
 
-    function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedText = '') {
-      const normalizedProfiles = normalizeProfileCandidates(rawProfiles, acceptedText);
+    function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedText = '', requiredSubjects = null) {
+      const normalizedProfiles = normalizeProfileCandidates(rawProfiles, acceptedText, requiredSubjects);
       if (normalizedProfiles.length < 1) {
-        return { ok: false, errors: ['人物档案批次为空'], profiles: [] };
+        return { ok: false, errors: ['人物档案批次为空'], profiles: [], normalizationRepairs: [] };
       }
       const existing = existingProfilesFromData(currentData);
+      const enforceObservedAliases = Array.isArray(requiredSubjects);
+      const observedAnchors = new Set((requiredSubjects || []).flatMap((subject) => [
+        subject?.label,
+        ...(Array.isArray(subject?.aliases) ? subject.aliases : []),
+      ]).map((value) => String(value || '').trim().toLocaleLowerCase()).filter(Boolean));
       const ticketMap = new Map((tickets || []).map((ticket) => [String(ticket.ticketId), ticket]));
       const claimedTickets = new Set(normalizedProfiles
         .map((profile) => String(profile?.ticketId || ''))
@@ -1202,9 +1269,12 @@
       const ids = new Set();
       const prepared = [];
       const errors = [];
+      const normalizationRepairs = [];
       const narrative = profileNarrativeText(acceptedText).toLocaleLowerCase();
       const orderedProfiles = normalizedProfiles.map((profile, originalIndex) => {
-        const positions = normalizedNames(profile).map((name) => narrative.indexOf(name)).filter((position) => position >= 0);
+        const positions = normalizedNames(profile)
+          .filter((name) => !enforceObservedAliases || observedAnchors.has(name))
+          .map((name) => narrative.indexOf(name)).filter((position) => position >= 0);
         return { profile, originalIndex, position: positions.length ? Math.min(...positions) : Number.MAX_SAFE_INTEGER };
       }).sort((left, right) => left.position - right.position || left.originalIndex - right.originalIndex);
 
@@ -1214,6 +1284,20 @@
           continue;
         }
         let profile = deepClone(input);
+        const rawAliases = asList(profile.aliases).map((value) => String(value).trim()).filter(Boolean);
+        const retainedAliases = rawAliases.filter((alias) => {
+          const normalized = alias.toLocaleLowerCase();
+          return !enforceObservedAliases || observedAnchors.has(normalized) || nameIndex.has(normalized);
+        });
+        const rejectedAliases = rawAliases.filter((alias) => !retainedAliases.includes(alias));
+        if (rejectedAliases.length) {
+          normalizationRepairs.push({
+            profileIndex: index,
+            code: 'unsupported_aliases_removed',
+            count: rejectedAliases.length,
+          });
+        }
+        profile.aliases = retainedAliases;
         const matchedId = normalizedNames(profile).map((name) => nameIndex.get(name)).find(Boolean);
         const requestedId = String(profile.profileId || '').trim();
         let profileId = String(matchedId || (requestedId && existing[requestedId] ? requestedId : '')).trim();
@@ -1224,7 +1308,9 @@
         if (isExisting) profile = mergeCandidateValue(existing[profileId], profile);
         const namesSeenInNarrative = [profile?.name, ...(Array.isArray(profile?.aliases) ? profile.aliases : [])]
           .map((item) => cleanText(item))
-          .filter((item) => item && narrative.includes(item.toLocaleLowerCase()));
+          .filter((item) => item && (enforceObservedAliases
+            ? observedAnchors.has(item.toLocaleLowerCase())
+            : narrative.includes(item.toLocaleLowerCase())));
         profile.narrativeKnownNames = cleanStringArray([...persistedNarrativeKnownNames, ...namesSeenInNarrative], 24);
         let ticket = ticketMap.get(String(profile.ticketId || ''));
         if (!isExisting) {
@@ -1249,7 +1335,7 @@
         errors.push(...profileCompletenessReport(profile, `第${index + 1}张档案`).errors);
         prepared.push(profile);
       }
-      return { ok: errors.length === 0, errors, profiles: prepared };
+      return { ok: errors.length === 0, errors, profiles: prepared, normalizationRepairs };
     }
 
     function buildProfilePatch(currentData, profiles) {
@@ -1339,6 +1425,12 @@
       }
       if (['variable_manual_completed', 'variable_recovered', 'variable_undo_completed'].includes(code)) {
         return { severity: 'success', summary: 'MVU变量事务已经完成并取得读回证据。', action: '无需处理；可在完整报告中查看检查回执和路径快照。' };
+      }
+      if (code === 'accepted_structure_repaired') {
+        return { severity: 'success', summary: '最终正文缺失的唯一闭合标签已在明确边界前补回并持久化。', action: '正文内容、选项与变量块未被改写；无需处理。' };
+      }
+      if (code === 'accepted_structure_failed') {
+        return { severity: 'error', summary: '最终正文的结构不唯一，医生没有猜测或继续写入。', action: '请重roll本条正文；变量、人物档案与世界推进均未开始。' };
       }
       if (code === 'variable_recovery_failed') {
         return { severity: 'error', summary: '中断的MVU变量事务与当前正文或状态发生分叉。', action: '医生没有自动覆盖；请导出完整报告并先手动复检当前MVU变量。' };
@@ -2363,7 +2455,7 @@
       return visit(value);
     }
 
-    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, semanticJsonEqual, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
+    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, repairAcceptedNarrativeEnvelope, semanticJsonEqual, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
@@ -3106,6 +3198,38 @@
     return merged.message;
   }
 
+  async function saveAcceptedStructureRepair(session, context, messageId, expectedText, repairedText) {
+    assertSessionCurrent(session);
+    const message = context.chat?.[messageId];
+    if (!message) throw new Error('正文结构修复目标消息已不存在');
+    if (String(message.mes || '') !== String(expectedText || '')) throw new Error('正文在结构修复前已变化，旧候选不得覆盖新正文');
+    const beforeMes = message.mes;
+    const swipeId = Number(message.swipe_id);
+    const beforeSwipe = Array.isArray(message.swipes) && Number.isInteger(swipeId) ? message.swipes[swipeId] : undefined;
+    message.mes = repairedText;
+    if (Array.isArray(message.swipes) && Number.isInteger(swipeId)) message.swipes[swipeId] = repairedText;
+    if (message.extra && typeof message.extra === 'object') delete message.extra.display_text;
+    if (typeof context.saveChat !== 'function') throw new Error('宿主没有提供正文结构修复持久化接口');
+    let persisted = false;
+    try {
+      await context.saveChat();
+      persisted = true;
+      assertSessionCurrent(session);
+      if (String(getContext().chat?.[messageId]?.mes || '') !== String(repairedText || '')) {
+        throw new Error('正文结构修复保存后读回不一致');
+      }
+    } catch (error) {
+      message.mes = beforeMes;
+      if (Array.isArray(message.swipes) && Number.isInteger(swipeId)) message.swipes[swipeId] = beforeSwipe;
+      if (persisted && String(getContext()?.chatId || '') === session.chatId) {
+        try { await context.saveChat(); } catch { /* primary readback failure remains authoritative */ }
+      }
+      throw error;
+    }
+    try { context.updateMessageBlock?.(messageId, message); } catch { /* persisted state is authoritative */ }
+    return repairedText;
+  }
+
   async function saveVariableOperationsBlock(context, messageId, operations, analysis) {
     const message = context.chat?.[messageId];
     if (!message) throw new Error('变量操作目标消息已不存在');
@@ -3338,9 +3462,11 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
     const narrative = runtime.core.profileNarrativeText(message);
     const systemPrompt = `你是MVU人物档案医师，不是正文作者、数据库填表器或人物审查员。正文只负责确认谁实际出场以及哪些事实不能违背，不是档案信息上限。凡有姓名、编号或稳定唯一称谓，并在最终叙事中实际说话、行动或持续参与的NPC，都必须生成一张立即可用的完整档案；玩家本人、当前角色卡扮演主体、纯群体、只被提及者和一次性幻象不建档。
 
-权威顺序：玩家明确设定与自主权 > 角色卡/世界书/原著 > 最终接受正文与真实骰值 > 当前MVU > 已持久档案 > 本轮最佳候选 > 创意补全。正文或权威材料没有说死的字段必须结合世界观、身份逻辑、同一张characterCreationTicket和已有上下文主动设计，不得留空，不得用“未知/待定/未登记/正文未提及”逃避。所有创作补全写进inferences，后续硬证据可以修订；已经确认的事实和已有正确候选不得被覆盖。
+权威顺序：玩家明确设定与自主权 > 角色卡/世界书/原著 > 最终接受正文与真实骰值 > 当前MVU > 已持久档案 > 本轮最佳候选 > 创意补全。正文或权威材料没有说死的字段必须结合世界观、身份逻辑、同一张characterCreationTicket和已有上下文主动设计，不得留空，不得用“未知/待定/未登记/正文未提及”逃避；“未知（外观像青年）”“待定（以后确认）”仍是占位，不算补全。所有创作补全写进inferences，后续硬证据可以修订；已经确认的事实和已有正确候选不得被覆盖。
 
 原创空白人物沿用分配票据的十四轴，不重新掷骰；权威材料已有明确人格时优先保留权威设定，只用票据填真正空缺的轴。临时伤势、恐惧、衣着和情绪只写当前状态，不固化为永久人格或生理基线。不得替玩家决定行动、感受、同意、关系或结果。
+
+aliases只能保留最终正文逐字出现的稳定称谓或既有档案已经确认的别名。“她微”“她轻”“我的回答是”之类代词、动作截断和句子片段绝不是人物别名；若为正文唯一称谓补出真名，必须把脚本提供的原称谓逐字放入aliases。
 
 只输出一个完整<人物档案更新>[JSON对象数组]</人物档案更新>。即使本轮只是补四个缺项，也必须把合并后的完整人物对象全部返回。只有独立复核后确实没有任何合格人物时才能输出<人物档案无变化/>。
 
@@ -3377,7 +3503,7 @@ ${runtime.core.profileCompletionContract()}`;
       return coverage.ok ? result : { ...result, ok: false, errors: coverage.errors, missingSubjects: coverage.missing };
     };
     const upstreamPrepared = candidateProfiles.length
-      ? withSubjectCoverage(runtime.core.prepareProfileBatch(candidateProfiles, session.tickets, oldData, message))
+      ? withSubjectCoverage(runtime.core.prepareProfileBatch(candidateProfiles, session.tickets, oldData, message, requiredSubjects))
       : { ok: false, errors: [receipt.kind === 'nochange' ? '预设声称人物档案无变化；医生必须独立复核正文是否出现稳定NPC' : receipt.error || '人物档案回执无效'] };
     let prepared = candidateAudited
       ? upstreamPrepared
@@ -3404,8 +3530,8 @@ ${runtime.core.profileCompletionContract()}`;
         if (receipt.kind === 'update') {
           candidateProfiles = runtime.core.mergeProfileCandidates(candidateProfiles, receipt.profiles);
           candidateAudited = true;
-          prepared = withSubjectCoverage(runtime.core.prepareProfileBatch(candidateProfiles, session.tickets, oldData, message));
-          traceRun(session, 'profile:candidate-preserved', { attempt: attempt + 1, candidateProfiles, requiredSubjects, errors: prepared.errors });
+          prepared = withSubjectCoverage(runtime.core.prepareProfileBatch(candidateProfiles, session.tickets, oldData, message, requiredSubjects));
+          traceRun(session, 'profile:candidate-preserved', { attempt: attempt + 1, candidateProfiles, requiredSubjects, errors: prepared.errors, normalizationRepairs: prepared.normalizationRepairs || [] });
         } else prepared = { ok: false, errors: [receipt.error || '修复模型没有返回有效档案回执'] };
       } catch (error) {
         prepared = { ok: false, errors: [`修复请求失败：${error.message || error}`] };
@@ -3451,7 +3577,7 @@ ${runtime.core.profileCompletionContract()}`;
       runtime.status = { ...runtime.status, profiles: Object.keys(runtime.uiProfiles).length };
       renderProfiles();
       renderStatusSurface();
-      traceRun(session, 'profile:committed', { projectionMode, profiles: prepared.profiles, patch, readback });
+      traceRun(session, 'profile:committed', { projectionMode, profiles: prepared.profiles, patch, readback, normalizationRepairs: prepared.normalizationRepairs || [] });
       return { ok: true, changed: prepared.profiles.length, data: readback };
     } catch (error) {
       metadata().profiles = metadataProfilesBefore;
@@ -3581,10 +3707,34 @@ ${runtime.core.profileCompletionContract()}`;
       await finalizeRun(session, { ok: false, stage: 'accepted-final', error: '500ms后没有读到新的最终助手消息' }, context);
       return;
     }
-    session.finalMessageId = latestAi.index;
-    session.acceptedText = latestAi.message.mes;
     session.doctorStartedAt = Date.now();
-    const recallAssessment = runtime.core.assessRecallConsumption(latestAi.message.mes, session.recallPackage);
+    let acceptedText = String(latestAi.message.mes || '');
+    const structure = runtime.core.repairAcceptedNarrativeEnvelope(acceptedText);
+    if (!structure.ok) {
+      addDiagnostic('accepted_structure_failed', structure.error, context);
+      await saveMetadata(context);
+      setStatus('正文结构无法安全修复', structure.error, { durationMs: doctorElapsed(session) });
+      await finalizeRun(session, { ok: false, stage: 'accepted-structure', error: structure.error }, context);
+      return;
+    }
+    if (structure.changed) {
+      try {
+        acceptedText = await saveAcceptedStructureRepair(session, context, latestAi.index, acceptedText, structure.message);
+        addDiagnostic('accepted_structure_repaired', '已在明确的结构边界前补回正文闭合标签；正文内容、选项和变量块均保持原样', context);
+        await saveMetadata(context);
+        traceRun(session, 'accepted-structure:repaired', { messageId: latestAi.index, repairs: structure.repairs });
+      } catch (error) {
+        const detail = error.message || String(error);
+        addDiagnostic('accepted_structure_failed', detail, context);
+        await saveMetadata(context);
+        setStatus('正文结构修复未能持久化', detail, { durationMs: doctorElapsed(session) });
+        await finalizeRun(session, { ok: false, stage: 'accepted-structure', error: detail }, context);
+        return;
+      }
+    }
+    session.finalMessageId = latestAi.index;
+    session.acceptedText = acceptedText;
+    const recallAssessment = runtime.core.assessRecallConsumption(acceptedText, session.recallPackage);
     const recallStage = recallAssessment.totalItemCount < 1 ? 'idle' : recallAssessment.consumed ? 'consumed' : 'released';
     if (session.recallPackage?.packageId) {
       const settled = runtime.core.settleRecallPackage(metadata(context).world, session.recallPackage.packageId, recallAssessment.consumed ? 'consumed' : 'released', {
@@ -3608,7 +3758,7 @@ ${runtime.core.profileCompletionContract()}`;
       return;
     }
     setStatus('医生处理中', `先检查并修复MVU变量；人物与世界尚未开始。${recallAssessment.reason}`, { progress: { recall: recallStage } });
-    const variableResult = await auditVariables(session, latestAi.index, latestAi.message.mes);
+    const variableResult = await auditVariables(session, latestAi.index, acceptedText);
     if (!variableResult.ok) {
       addDiagnostic('variable_failed', variableResult.error, context);
       await saveMetadata(context);

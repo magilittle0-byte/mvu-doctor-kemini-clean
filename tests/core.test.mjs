@@ -31,6 +31,7 @@ import {
   restorePathSnapshot,
   restoreTouchedData,
   removeApiFromExport,
+  repairAcceptedNarrativeEnvelope,
   selectWorldRecall,
   semanticJsonEqual,
   statDataOf,
@@ -102,6 +103,25 @@ test('人物档案只把最终叙事当作已发生事实', () => {
   const narrative = profileNarrativeText('<gm_chain>计划让甲登场</gm_chain><content>乙正在柜台后说话。</content><options>去找甲</options><UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>');
   assert.doesNotMatch(narrative, /计划让甲登场|去找甲|JSONPatch/);
   assert.match(narrative, /乙正在柜台后说话/);
+});
+
+test('最终正文缺少唯一content闭合时只在明确结构边界前补回', () => {
+  const source = '<content>正文段落。\n<options><option>继续</option></options>\n<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>';
+  const repaired = repairAcceptedNarrativeEnvelope(source);
+  assert.equal(repaired.ok, true);
+  assert.equal(repaired.changed, true);
+  assert.match(repaired.message, /正文段落。\n<\/content>\n<options>/);
+  assert.equal((repaired.message.match(/<UpdateVariable>/g) || []).length, 1);
+  assert.equal(repairAcceptedNarrativeEnvelope('<content>正文。</content><options></options>').changed, false);
+});
+
+test('正文content结构不唯一或缺少可证明边界时拒绝猜测', () => {
+  assert.equal(repairAcceptedNarrativeEnvelope('<content>没有结构边界').ok, false);
+  assert.equal(repairAcceptedNarrativeEnvelope('<content>甲</content><content>乙</content><options></options>').ok, false);
+  assert.equal(repairAcceptedNarrativeEnvelope('<content>正文<options></options></content>').ok, false);
+  assert.deepEqual(repairAcceptedNarrativeEnvelope('没有content包装<options></options>'), {
+    ok: true, changed: false, message: '没有content包装<options></options>', repairs: [],
+  });
 });
 
 test('脚本从最终正文提取实际说话或行动的稳定人物锚点，并排除角色卡主体与已存档人物', () => {
@@ -473,6 +493,38 @@ test('任一必填字段缺失会使整批校验失败', () => {
   const prepared = prepareProfileBatch([good, bad], tickets, { stat_data: {} });
   assert.equal(prepared.ok, false);
   assert.match(prepared.errors.join('；'), /appearance\.voice/);
+});
+
+test('占位词后追加外观解释仍不是完整人物字段', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const profile = completeProfile(ticket);
+  profile.identity.age = '未知（外观为青年女性）';
+  const report = profileCompletenessReport(profile);
+  assert.equal(report.ok, false);
+  assert.match(report.errors.join('；'), /identity\.age/);
+  profile.identity.age = '青年期，按本世界人类寿命约二十至二十五岁';
+  assert.equal(profileCompletenessReport(profile).ok, true);
+});
+
+test('人物档案只保留脚本锚点或既有身份支持的别名，不用正文子串制造别名', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const profile = completeProfile(ticket);
+  profile.aliases = ['她微', '她轻', '我的回答是', '药房引导者'];
+  delete profile.evidence;
+  const requiredSubjects = [{ label: '药房引导者', aliases: ['药房引导者'] }];
+  const prepared = prepareProfileBatch(
+    [profile],
+    [ticket],
+    { stat_data: {} },
+    '药房引导者微微点头，她轻声说明登记流程。我的回答是暂时观察。',
+    requiredSubjects,
+  );
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.deepEqual(prepared.profiles[0].aliases, ['药房引导者']);
+  assert.deepEqual(prepared.profiles[0].narrativeKnownNames, ['药房引导者']);
+  assert.match(prepared.profiles[0].evidence[0], /药房引导者/);
+  assert.doesNotMatch(prepared.profiles[0].evidence[0], /她微|她轻|我的回答是/);
+  assert.deepEqual(prepared.normalizationRepairs, [{ profileIndex: 0, code: 'unsupported_aliases_removed', count: 3 }]);
 });
 
 test('新人自创ID或漏票据时按正文首次出现顺序绑定骰票，仍禁止复用票据', () => {
