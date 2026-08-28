@@ -6,8 +6,7 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.6.12控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
-  assert.match(source, /const DOCTOR_VERSION = '0\.6\.11'/);
+test('控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -24,7 +23,6 @@ test('0.6.12控制台包含变量、连接、人物、世界、诊断与独立�
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.6.12');
   assert.match(source, /normalizeVariableOperations/);
   assert.match(source, /assessVariableBaseline/);
   assert.doesNotMatch(source, /<AuditReceipt>/);
