@@ -6,8 +6,8 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('0.6.9控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
-  assert.match(source, /const DOCTOR_VERSION = '0\.6\.9'/);
+test('0.6.10控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
+  assert.match(source, /const DOCTOR_VERSION = '0\.6\.10'/);
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
@@ -24,7 +24,7 @@ test('0.6.9控制台包含变量、连接、人物、世界、诊断与独立手
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.equal(manifest.version, '0.6.9');
+  assert.equal(manifest.version, '0.6.10');
   assert.match(source, /normalizeVariableOperations/);
   assert.match(source, /assessVariableBaseline/);
   assert.doesNotMatch(source, /<AuditReceipt>/);
@@ -65,6 +65,18 @@ test('仍有阶段待处理时运行态优先于完成措辞且恢复与手动�
   assert.match(source, /root\.dataset\.state = advice\?\.severity === 'error'[\s\S]*advice\?\.severity === 'success' \? 'ready' : 'busy'/);
   assert.match(source, /const busy = runtimeHasPendingWork\(\)/);
   assert.match(source, /if \(!runtimeHasPendingWork\(\)\) \{\s*setStatus\('医生已就绪'/);
+});
+
+test('原变量块先经真实MVU确定性重放再判定落地，空补丁套话不能冒充核验', () => {
+  const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
+  assert.match(audit, /Mvu\.parseMessage\(original\.rawBlock, runtime\.core\.deepClone\(previousData\)\)/);
+  assert.equal((audit.match(/Mvu\.parseMessage\(original\.rawBlock/g) || []).length, 2);
+  assert.match(audit, /assessOriginalMvuReplay\(\{ currentData, firstReplayData, secondReplayData \}\)/);
+  assert.match(audit, /originalReplay,/);
+  assert.match(audit, /validateVariableAuditAnalysis\(parsed\.analysis, \{ emptyPatch: !parsed\.operations\.length \}\)/);
+  assert.match(audit, /variable:analysis-unsubstantiated/);
+  assert.match(audit, /JSON Pointer路径/);
+  assert.match(audit, /差异为0.*不能单独作为依据/);
 });
 
 test('正文只接收世界公开投影，人物私有摘要只供Doctor内部阶段使用', () => {

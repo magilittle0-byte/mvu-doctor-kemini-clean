@@ -291,6 +291,19 @@ export function parseUpdateVariableBlock(message) {
   return { ok: true, operations, block, rawBlock, analysis };
 }
 
+export function validateVariableAuditAnalysis(analysis, { emptyPatch = false } = {}) {
+  const text = String(analysis || '').trim();
+  if (!text) return { ok: false, code: 'analysis_missing', error: '变量审计没有提供Analysis核验依据' };
+  const compact = text.normalize('NFKC').toLowerCase().replace(/[\s，,。；;：:、“”"'`*#【】\[\]（）()<>]/g, '');
+  const copiedTemplate = '正文事实当前值应有值的简洁对照没有修复时说明为什么当前状态已经闭合';
+  if (compact.includes(copiedTemplate)) return { ok: false, code: 'analysis_prompt_template', error: '变量审计复述了提示词模板，没有提供本回合核验依据' };
+  if (!emptyPatch) return { ok: true, code: 'analysis_specific' };
+  const hasConcretePath = /\/[\p{L}\p{N}_~\-]+(?:\/[\p{L}\p{N}_~\-]+)+/u.test(text);
+  const hasComparison = /正文|原更新|上一楼层|当前值|当前状态|差异|变化|一致|未变|落地|闭合/u.test(text);
+  if (!hasConcretePath || !hasComparison) return { ok: false, code: 'analysis_unsubstantiated_nochange', error: '空补丁必须引用至少一个真实JSON Pointer路径，并写出该路径的正文事实或前后值对照' };
+  return { ok: true, code: 'analysis_specific_nochange' };
+}
+
 export function buildUpdateVariableBlock(operations, analysis = '变量更新。') {
   return [
     '<UpdateVariable>',
@@ -710,7 +723,36 @@ export function normalizeVariableOperations(currentData, operations = []) {
   return { ok: true, operations: normalized, repairs };
 }
 
-export function assessVariableBaseline({ narrative = '', previousData = null, currentData = null, original = null } = {}) {
+export function assessOriginalMvuReplay({ currentData = null, firstReplayData = null, secondReplayData = null, error = '' } = {}) {
+  if (error) return { ok: false, reflected: false, deterministic: false, code: 'real_mvu_replay_failed', detail: String(error) };
+  const first = statDataOf(firstReplayData);
+  const second = statDataOf(secondReplayData);
+  if (!Object.keys(first).length || !Object.keys(second).length) {
+    return { ok: false, reflected: false, deterministic: false, code: 'real_mvu_replay_missing', detail: '真实MVU没有返回两份可比较的stat_data' };
+  }
+  if (!semanticJsonEqual(first, second)) {
+    return {
+      ok: false,
+      reflected: false,
+      deterministic: false,
+      code: 'real_mvu_replay_nondeterministic',
+      replayDiffCount: diffStatData(firstReplayData, secondReplayData, 1200).length,
+      detail: '相同原变量块的两次真实MVU重放结果不一致',
+    };
+  }
+  const current = statDataOf(currentData);
+  const reflected = semanticJsonEqual(current, first);
+  return {
+    ok: reflected,
+    reflected,
+    deterministic: true,
+    code: reflected ? 'real_mvu_replay_reflected' : 'real_mvu_replay_not_reflected',
+    replayDiffCount: diffStatData(firstReplayData, currentData, 1200).length,
+    detail: reflected ? '当前stat_data与真实MVU确定性重放结果一致' : '当前stat_data与真实MVU确定性重放结果不一致',
+  };
+}
+
+export function assessVariableBaseline({ narrative = '', previousData = null, currentData = null, original = null, originalReplay = null } = {}) {
   const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
   const diff = hasPrevious ? diffStatData(previousData, currentData, 1200) : [];
   const checklist = buildVariableAuditChecklist({
@@ -740,6 +782,18 @@ export function assessVariableBaseline({ narrative = '', previousData = null, cu
       diffCount: diff.length,
       highRisk,
       checklist,
+    };
+  }
+  if (originalReplay) {
+    return {
+      code: originalReplay.ok ? 'original_patch_reflected_by_real_mvu' : `original_patch_${originalReplay.code}`,
+      requiresCorrection: !originalReplay.ok,
+      diffCount: diff.length,
+      highRisk,
+      checklist,
+      repairs: normalized.repairs,
+      realMvuReplay: deepClone(originalReplay),
+      detail: originalReplay.detail || '',
     };
   }
   const validation = validatePatchOperations(previousData, normalized.operations);

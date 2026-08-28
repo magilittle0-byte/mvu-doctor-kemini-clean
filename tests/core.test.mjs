@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assessOriginalMvuReplay,
   assessVariableBaseline,
   assessVariableWriteAuthority,
   buildUpdateVariableBlock,
@@ -36,6 +37,7 @@ import {
   semanticJsonEqual,
   statDataOf,
   validatePatchOperations,
+  validateVariableAuditAnalysis,
   validateProfileSubjectCoverage,
   verifyCommittedProfiles,
   verifyPatchOperations,
@@ -274,6 +276,61 @@ test('变量基线用真实前后状态识别死区块与已落地原更新', ()
   const reflected = assessVariableBaseline({ narrative: '支付了三枚金币。', previousData, currentData: { stat_data: { 玩家: { 金钱: 7 } } }, original });
   assert.equal(reflected.code, 'original_patch_reflected');
   assert.equal(reflected.requiresCorrection, false);
+});
+
+test('变量基线服从真实MVU重放而不是JSONPatch字面值', () => {
+  const previousData = {
+    stat_data: {
+      契约者: {
+        基础属性: { 体质: 10, 敏捷: 12, 力量: 10 },
+        衍生属性: { MP_最大: 100, 防御: 3, 闪避: 12, 负重_上限: 30 },
+      },
+    },
+  };
+  const original = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"replace","path":"/契约者/基础属性/体质","value":11},{"op":"replace","path":"/契约者/衍生属性/MP_最大","value":100},{"op":"replace","path":"/契约者/衍生属性/防御","value":3},{"op":"replace","path":"/契约者/衍生属性/闪避","value":12},{"op":"replace","path":"/契约者/衍生属性/负重_上限","value":30}]</JSONPatch></UpdateVariable>');
+  const officialReplay = {
+    stat_data: {
+      契约者: {
+        基础属性: { 体质: 11, 敏捷: 12, 力量: 10 },
+        衍生属性: { MP_最大: 110, 防御: 4, 闪避: 13, 负重_上限: 55 },
+      },
+    },
+  };
+  const receipt = assessOriginalMvuReplay({
+    currentData: structuredClone(officialReplay),
+    firstReplayData: structuredClone(officialReplay),
+    secondReplayData: structuredClone(officialReplay),
+  });
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.deterministic, true);
+  assert.equal(receipt.reflected, true);
+  const baseline = assessVariableBaseline({
+    narrative: '基础属性已经建立，衍生属性由前端公式计算。',
+    previousData,
+    currentData: officialReplay,
+    original,
+    originalReplay: receipt,
+  });
+  assert.equal(baseline.code, 'original_patch_reflected_by_real_mvu');
+  assert.equal(baseline.requiresCorrection, false);
+});
+
+test('真实MVU重放缺失、报错、不确定或与当前状态不一致时保持失败关闭', () => {
+  const currentData = { stat_data: { 玩家: { 金钱: 7 } } };
+  const replayed = { stat_data: { 玩家: { 金钱: 7 } } };
+  const changedReplay = { stat_data: { 玩家: { 金钱: 6 } } };
+  assert.equal(assessOriginalMvuReplay({ currentData }).code, 'real_mvu_replay_missing');
+  assert.equal(assessOriginalMvuReplay({ currentData, error: 'schema rejected' }).code, 'real_mvu_replay_failed');
+  assert.equal(assessOriginalMvuReplay({ currentData, firstReplayData: replayed, secondReplayData: changedReplay }).code, 'real_mvu_replay_nondeterministic');
+  assert.equal(assessOriginalMvuReplay({ currentData, firstReplayData: changedReplay, secondReplayData: changedReplay }).code, 'real_mvu_replay_not_reflected');
+});
+
+test('空补丁审计拒绝提示词模板和无证据套话，只接受具体核验依据', () => {
+  assert.equal(validateVariableAuditAnalysis('正文事实、当前值、应有值的简洁对照；没有修复时说明为什么当前状态已经闭合', { emptyPatch: true }).ok, false);
+  assert.equal(validateVariableAuditAnalysis('逐项核对后无需修复。', { emptyPatch: true }).ok, false);
+  assert.equal(validateVariableAuditAnalysis('真实状态差异为0，原变量块31项均已落地。', { emptyPatch: true }).ok, false);
+  assert.equal(validateVariableAuditAnalysis('原变量块31项经真实MVU重放后与当前stat_data一致；/契约者/衍生属性/防御由前端公式归一化，无需追加修复。', { emptyPatch: true }).ok, true);
+  assert.equal(validateVariableAuditAnalysis('修复 /玩家/金钱 到正文裁决后的7。', { emptyPatch: false }).ok, true);
 });
 
 test('变量纠错在交给MVU前拒绝不存在路径与复杂节点整块覆盖', () => {

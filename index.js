@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const DOCTOR_VERSION = '0.6.9';
+  const DOCTOR_VERSION = '0.6.10';
   const PROMPT_KEY = 'mvu-doctor-kemini-clean-runtime';
   const DEFAULT_API = Object.freeze({ mode: 'tavern', endpoint: '', apiKey: '', model: '' });
   const DEFAULTS = Object.freeze({
@@ -313,6 +313,19 @@
       const analysis = rawBlock.match(/<Analysis\b[^>]*>([\s\S]*?)<\/Analysis\s*>/i)?.[1]?.trim() || '';
       const block = buildUpdateVariableBlock(operations, '变量医生仅提交经MVU解析验证的纠错补丁。');
       return { ok: true, operations, block, rawBlock, analysis };
+    }
+
+    function validateVariableAuditAnalysis(analysis, { emptyPatch = false } = {}) {
+      const text = String(analysis || '').trim();
+      if (!text) return { ok: false, code: 'analysis_missing', error: '变量审计没有提供Analysis核验依据' };
+      const compact = text.normalize('NFKC').toLowerCase().replace(/[\s，,。；;：:、“”"'`*#【】\[\]（）()<>]/g, '');
+      const copiedTemplate = '正文事实当前值应有值的简洁对照没有修复时说明为什么当前状态已经闭合';
+      if (compact.includes(copiedTemplate)) return { ok: false, code: 'analysis_prompt_template', error: '变量审计复述了提示词模板，没有提供本回合核验依据' };
+      if (!emptyPatch) return { ok: true, code: 'analysis_specific' };
+      const hasConcretePath = /\/[\p{L}\p{N}_~\-]+(?:\/[\p{L}\p{N}_~\-]+)+/u.test(text);
+      const hasComparison = /正文|原更新|上一楼层|当前值|当前状态|差异|变化|一致|未变|落地|闭合/u.test(text);
+      if (!hasConcretePath || !hasComparison) return { ok: false, code: 'analysis_unsubstantiated_nochange', error: '空补丁必须引用至少一个真实JSON Pointer路径，并写出该路径的正文事实或前后值对照' };
+      return { ok: true, code: 'analysis_specific_nochange' };
     }
 
     function buildUpdateVariableBlock(operations, analysis = '变量更新。') {
@@ -734,7 +747,36 @@
       return { ok: true, operations: normalized, repairs };
     }
 
-    function assessVariableBaseline({ narrative = '', previousData = null, currentData = null, original = null } = {}) {
+    function assessOriginalMvuReplay({ currentData = null, firstReplayData = null, secondReplayData = null, error = '' } = {}) {
+      if (error) return { ok: false, reflected: false, deterministic: false, code: 'real_mvu_replay_failed', detail: String(error) };
+      const first = statDataOf(firstReplayData);
+      const second = statDataOf(secondReplayData);
+      if (!Object.keys(first).length || !Object.keys(second).length) {
+        return { ok: false, reflected: false, deterministic: false, code: 'real_mvu_replay_missing', detail: '真实MVU没有返回两份可比较的stat_data' };
+      }
+      if (!semanticJsonEqual(first, second)) {
+        return {
+          ok: false,
+          reflected: false,
+          deterministic: false,
+          code: 'real_mvu_replay_nondeterministic',
+          replayDiffCount: diffStatData(firstReplayData, secondReplayData, 1200).length,
+          detail: '相同原变量块的两次真实MVU重放结果不一致',
+        };
+      }
+      const current = statDataOf(currentData);
+      const reflected = semanticJsonEqual(current, first);
+      return {
+        ok: reflected,
+        reflected,
+        deterministic: true,
+        code: reflected ? 'real_mvu_replay_reflected' : 'real_mvu_replay_not_reflected',
+        replayDiffCount: diffStatData(firstReplayData, currentData, 1200).length,
+        detail: reflected ? '当前stat_data与真实MVU确定性重放结果一致' : '当前stat_data与真实MVU确定性重放结果不一致',
+      };
+    }
+
+    function assessVariableBaseline({ narrative = '', previousData = null, currentData = null, original = null, originalReplay = null } = {}) {
       const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
       const diff = hasPrevious ? diffStatData(previousData, currentData, 1200) : [];
       const checklist = buildVariableAuditChecklist({
@@ -764,6 +806,18 @@
           diffCount: diff.length,
           highRisk,
           checklist,
+        };
+      }
+      if (originalReplay) {
+        return {
+          code: originalReplay.ok ? 'original_patch_reflected_by_real_mvu' : `original_patch_${originalReplay.code}`,
+          requiresCorrection: !originalReplay.ok,
+          diffCount: diff.length,
+          highRisk,
+          checklist,
+          repairs: normalized.repairs,
+          realMvuReplay: deepClone(originalReplay),
+          detail: originalReplay.detail || '',
         };
       }
       const validation = validatePatchOperations(previousData, normalized.operations);
@@ -2483,7 +2537,7 @@
       return visit(value);
     }
 
-    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, buildUpdateVariableBlock, repairAcceptedNarrativeEnvelope, semanticJsonEqual, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
+    return Object.freeze({ PROFILE_ROOT, profileCompletionContract, deepClone, generateTicketBatch, statDataOf, VARIABLE_AUDIT_CATEGORIES, parseUpdateVariableBlock, validateVariableAuditAnalysis, buildUpdateVariableBlock, repairAcceptedNarrativeEnvelope, semanticJsonEqual, diffStatData, buildVariableAuditChecklist, assessVariableWriteAuthority, normalizeVariableOperations, assessOriginalMvuReplay, assessVariableBaseline, validatePatchOperations, verifyPatchOperations, verifyPatchApplication, partitionVariableOperationsByApplication, restoreTouchedData, verifyRestoredPaths, capturePathSnapshot, restorePathSnapshot, verifyPathSnapshot, mergeUpdateVariableBlocks, parseProfileReceipt, stripProfileReceipt, profileCompletenessReport, profileNarrativeText, discoverProfileSubjects, validateProfileSubjectCoverage, normalizeProfileCandidates, mergeProfileCandidates, prepareProfileBatch, buildProfilePatch, mergeProfileRootDirect, verifyCommittedProfiles, openAiChatEndpoint, openAiModelsEndpoint, chatCompletionText, redactDiagnostic, diagnosticAdvice, WORLD_SCHEMA_VERSION, worldDigest, emptyWorldState, normalizeWorldState, parseWorldProposal, repairWorldProposalLinks, validateWorldProposal, applyWorldProposal, prepareWorldTransaction, recoverPreparedWorldState, markWorldReadback, verifyWorldReadback, activeWorldCount, recoverLatestLegacyWorld, worldConsistencyReport, parseWorldState, selectWorldRecall, prepareRecallPackage, reserveRecallPackage, assessRecallConsumption, settleRecallPackage, formatGenerationInjection, profileDigestFromData, privateProfileDigestFromData, profilesFromData, removeApiFromExport });
   })();
   /* MVU_KEMINI_EMBEDDED_CORE_END */
   const runtime = {
@@ -3317,12 +3371,28 @@
     if (!currentData || !Object.keys(runtime.core.statDataOf(currentData) || {}).length) return { ok: false, error: '变量医生无法读取最终正文对应的stat_data，零写入' };
     const previousData = await previousMvuData(Mvu, context, messageId);
     const original = runtime.core.parseUpdateVariableBlock(acceptedText);
+    let originalReplay = null;
+    if (previousData && original.ok && original.operations.length) {
+      try {
+        const firstReplayData = await Mvu.parseMessage(original.rawBlock, runtime.core.deepClone(previousData));
+        const secondReplayData = await Mvu.parseMessage(original.rawBlock, runtime.core.deepClone(previousData));
+        originalReplay = runtime.core.assessOriginalMvuReplay({ currentData, firstReplayData, secondReplayData });
+      } catch (error) {
+        originalReplay = runtime.core.assessOriginalMvuReplay({ currentData, error: error?.message || String(error) });
+      }
+      traceRun(session, 'variable:original-real-mvu-replay', {
+        code: originalReplay.code,
+        reflected: originalReplay.reflected,
+        deterministic: originalReplay.deterministic,
+        replayDiffCount: originalReplay.replayDiffCount ?? null,
+      });
+    }
     const checklist = runtime.core.buildVariableAuditChecklist({
       narrative: runtime.core.stripProfileReceipt(acceptedText), previousData, currentData,
       originalOperations: original.ok ? original.operations : [],
     });
     const baseline = runtime.core.assessVariableBaseline({
-      narrative: runtime.core.stripProfileReceipt(acceptedText), previousData, currentData, original,
+      narrative: runtime.core.stripProfileReceipt(acceptedText), previousData, currentData, original, originalReplay,
     });
     const reference = collectMvuReference(context, { opening: !previousData });
     const rejectedHypotheses = [];
@@ -3334,11 +3404,11 @@
 
 严格服从本角色卡Schema、初始化条目与变量规则，不猜其他卡路径，不修改/人物档案，不写下划线开头路径。先在Analysis里用自然语言写清楚“正文事实、当前值、应有值”三者的对照；然后只提交必要修复。输出且只输出一个完整区块：
 <UpdateVariable>
-<Analysis>正文事实、当前值、应有值的简洁对照；没有修复时说明为什么当前状态已经闭合</Analysis>
+<Analysis>填写本回合的具体核验依据</Analysis>
 <JSONPatch>[replace|delta|insert|remove|move操作]</JSONPatch>
 </UpdateVariable>
 
-JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修复。不要为了证明自己检查过而复制大段正文、HTML或整份状态；脚本会独立校验路径、类型、MVU实际执行结果和写后读回。`;
+Analysis里的说明文字只是位置标记，禁止复述。JSONPatch为空数组时，Analysis必须引用至少一个本回合真实JSON Pointer路径，并写清它对应的正文事实、上一楼层值与当前值；“全部正确”“差异为0”或核对项数量都不能单独作为依据。不要为了证明自己检查过而复制大段正文、HTML或整份状态；脚本会独立校验路径、类型、MVU实际执行结果和写后读回。`;
     let reason = '';
     const attempts = Math.max(1, Math.min(4, Number(config.repairAttempts) + 1 || 1));
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -3359,6 +3429,13 @@ JSONPatch为空数组表示你在逐项对照后没有发现需要追加的修�
         traceRun(session, 'variable:parse-failed', { attempt, reason, raw });
         if (attempt < attempts) continue;
         return { ok: false, error: `变量医生输出无法解析：${reason}；零写入` };
+      }
+      const analysisValidation = runtime.core.validateVariableAuditAnalysis(parsed.analysis, { emptyPatch: !parsed.operations.length });
+      if (!analysisValidation.ok) {
+        reason = analysisValidation.error;
+        traceRun(session, 'variable:analysis-unsubstantiated', { attempt, reason, code: analysisValidation.code, analysis: parsed.analysis });
+        if (attempt < attempts) continue;
+        return { ok: false, error: `${reason}；零写入` };
       }
       const normalized = runtime.core.normalizeVariableOperations(currentData, parsed.operations);
       if (!normalized.ok) {
