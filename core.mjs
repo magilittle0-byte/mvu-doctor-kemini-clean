@@ -34,8 +34,8 @@ const EMPTY_WORDS = /^(?:(?:未知|不详|待定|待确认|未登记|未说明|�
 export function profileCompletionContract() {
   return `每个人物必须按以下唯一结构输出完整对象；正文没有明说的内容不是空项，而是结合权威材料、世界观、人物身份和同一张骰票主动设计，并在inferences中说明为可修订补全：
 {
-  "profileId": "旧人物沿用既有ID；有效生成前票据回执中的原创新人由脚本绑定票据ID；缺失、无效或未覆盖回执的完整新人由脚本建立稳定无票据ID；角色卡或世界书已有权威身份者由脚本建立稳定权威ID",
-  "ticketId": "仅原创新人在有效生成前消费回执中绑定的本轮ticketId；回执缺失、无效、未覆盖以及权威人物都留空；旧人物保持原值",
+  "profileId": "旧人物沿用既有ID；原创新人由脚本按最终叙事首次出场顺序绑定生成前票据并建立稳定ID；票据不足时建立稳定无票据ID；角色卡或世界书已有权威身份者由脚本建立稳定权威ID",
+  "ticketId": "仅填写脚本从本轮生成前票据账本按叙事顺序绑定给该原创新人的ticketId；权威人物留空；旧人物保持原值",
   "name": "正文中可稳定单指的姓名、编号或唯一称谓",
   "aliases": ["仅填写最终正文逐字出现的稳定别名或既有档案已确认的别名；不要把代词、动作片段或句子残片当别名；没有可用空数组"],
   "identity": {
@@ -73,7 +73,7 @@ export function profileCompletionContract() {
   "evidence": ["至少一条来自最终叙事或权威材料的直接依据"],
   "inferences": ["至少一条医生主动设计且可被后续证据修订的补全说明"]
 }
-禁止用未知、待定、未登记、正文未提及或空字符串逃避补全；在这些占位词后加括号解释仍然不算完成。不适用字段必须写明不适用的世界观原因。所有列表字段必须是数组。ticketBinding由脚本根据生成前回执与权威材料写入，模型不得自行声明。`;
+禁止用未知、待定、未登记、正文未提及或空字符串逃避补全；在这些占位词后加括号解释仍然不算完成。不适用字段必须写明不适用的世界观原因。所有列表字段必须是数组。ticketBinding由脚本根据生成前票据账本、最终叙事顺序与权威材料写入，模型不得自行声明。`;
 }
 
 export function deepClone(value) {
@@ -415,6 +415,16 @@ export function repairAcceptedNarrativeEnvelope(message) {
       .filter((index) => index > openIndex)
       .sort((left, right) => left - right)[0];
     if (openIndex < closeIndex && (firstBoundary === undefined || closeIndex < firstBoundary)) {
+      const prefix = source.slice(0, openIndex);
+      const knownPlanningPrefix = /(?:<\/?(?:konatan_planning~?|gm_chain|thinking|analysis)\b|<CharacterTicketReceipt>|<\/konatan_planning~?>)/iu.test(prefix);
+      if (prefix.trim() && knownPlanningPrefix) {
+        return {
+          ok: true,
+          changed: true,
+          message: source.slice(openIndex).trimStart(),
+          repairs: ['strip_known_planning_prefix_before_content'],
+        };
+      }
       return { ok: true, changed: false, message: source, repairs: [] };
     }
 
@@ -1139,6 +1149,41 @@ export function parseCharacterTicketReceipt(message, tickets = []) {
   }
   if (errors.length) return { kind: 'invalid', assignments: [], errors, error: errors.join('；') };
   return { kind: 'complete', assignments };
+}
+
+export function assignCharacterTicketsByNarrativeOrder(subjects = [], tickets = [], existingProfiles = {}, authorityNames = []) {
+  const existingNameSet = new Set(Object.values(existingProfiles && typeof existingProfiles === 'object' ? existingProfiles : {})
+    .flatMap((profile) => [profile?.name, ...(Array.isArray(profile?.aliases) ? profile.aliases : [])])
+    .map((name) => cleanText(name).toLocaleLowerCase()).filter(Boolean));
+  const authorityNameSet = new Set((Array.isArray(authorityNames) ? authorityNames : [authorityNames])
+    .map((name) => cleanText(name).toLocaleLowerCase()).filter(Boolean));
+  const availableTickets = (Array.isArray(tickets) ? tickets : [])
+    .filter((ticket) => cleanText(ticket?.ticketId));
+  let nextTicket = 0;
+  const assignments = [];
+  for (const subject of Array.isArray(subjects) ? subjects : []) {
+    const names = [...new Set([
+      subject?.label,
+      ...(Array.isArray(subject?.names) ? subject.names : []),
+      ...(Array.isArray(subject?.aliases) ? subject.aliases : []),
+    ].map((name) => cleanText(name)).filter(Boolean))];
+    const name = names[0] || '';
+    if (!name) continue;
+    const normalized = names.map((value) => value.toLocaleLowerCase());
+    if (normalized.some((value) => existingNameSet.has(value))) {
+      assignments.push({ name, source: 'existing', ticketId: '' });
+      continue;
+    }
+    if (normalized.some((value) => authorityNameSet.has(value))) {
+      assignments.push({ name, source: 'authority', ticketId: '' });
+      continue;
+    }
+    const ticket = availableTickets[nextTicket];
+    if (!ticket) continue;
+    nextTicket += 1;
+    assignments.push({ name, source: 'ticket', ticketId: cleanText(ticket.ticketId) });
+  }
+  return assignments;
 }
 
 export function stripProfileReceipt(message) {
@@ -2026,7 +2071,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
       } else if (ticket) {
         if (submittedTicketId && submittedTicketId !== ticket.ticketId) normalizationRepairs.push({
           profileIndex: index,
-          code: 'candidate_ticket_replaced_by_generation_receipt',
+          code: 'candidate_ticket_replaced_by_generation_mapping',
           from: submittedTicketId,
           to: ticket.ticketId,
         });
@@ -2060,7 +2105,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
       if (ticket && !hasAuthorityIdentity) {
         profileId = ticket.ticketId;
         profile.ticketId = ticket.ticketId;
-        profile.ticketBinding = { status: 'bound', source: 'character-ticket-receipt', ticketId: ticket.ticketId };
+        profile.ticketBinding = { status: 'bound', source: 'pre-generation-ticket-ledger', ticketId: ticket.ticketId };
         delete profile.authoritySource;
         profile.personality = mergeCandidateValue(profile.personality || {}, ticket.axes, 'personality');
         if (usedTickets.has(ticket.ticketId)) localErrors.push(`同一票据被多名新人物重复使用：${ticket.ticketId}`);
@@ -3998,7 +4043,7 @@ export function worldConsistencyReport(worldInput) {
 export function recallSelectionInput(value) {
   const source = String(value || '').trim();
   const wrappers = [
-    /<本轮用户输入\b[^>]*>([\s\S]*?)<\/本轮用户输入>/giu,
+    /<本轮用户输入(?:\s[^>]*)?>([\s\S]*?)<\/本轮用户输入\s*>/giu,
     /<user_input\b[^>]*>([\s\S]*?)<\/user_input>/giu,
     /<current_user_input\b[^>]*>([\s\S]*?)<\/current_user_input>/giu,
     /<input\b[^>]*>([\s\S]*?)<\/input>/giu,
@@ -4063,6 +4108,18 @@ export function selectWorldRecall(worldInput, userInput, _profiles = {}, limit =
 }
 
 export function formatGenerationInjection({ tickets, recall, profileDigest = [], currentAction = '' }) {
+  void currentAction;
+  const ticketProjection = (Array.isArray(tickets) ? tickets : []).slice(0, 24).map((ticket, index) => ({
+    ticketId: String(ticket?.ticketId || ''),
+    order: Number(ticket?.ordinal) || index + 1,
+    shaping: {
+      temperament: String(ticket?.axes?.temperament || ''),
+      coreDesire: String(ticket?.axes?.coreDesire || ''),
+      socialMotive: String(ticket?.axes?.socialMotive || ''),
+      expression: String(ticket?.axes?.expression || ''),
+      actionHabit: String(ticket?.axes?.actionHabit || ''),
+    },
+  }));
   const publicEffects = (Array.isArray(recall) ? recall : []).map((entry) => ({
     effectId: entry.effectId,
     publicEffect: entry.publicEffect,
@@ -4071,18 +4128,16 @@ export function formatGenerationInjection({ tickets, recall, profileDigest = [],
   }));
   return [
     '<MVUDoctorRuntime>',
-    '本轮玩家明确动作（这是玩家侧唯一授权边界；只执行其字面动作，不补写输入外动机、对白、同意、感受或下一步）：',
-    JSON.stringify(recallSelectionInput(currentAction)),
-    'characterCreationTicket（按首次出现顺序使用；有权威设定或已有档案者跳过）：',
-    JSON.stringify(tickets || []),
-    '正文生成前必须在<konatan_planning~>规划区写出唯一<CharacterTicketReceipt>JSON数组</CharacterTicketReceipt>：每个本轮实际出场的稳定NPC逐一映射为source=ticket、authority或existing；ticket只填写实际采用的本轮ticketId，authority/existing不填ticketId。name必须是随后正文逐字出现的稳定姓名或唯一称谓。Doctor只保存这份消费映射，不会在正文后从未消费票据里替人物补抽。',
+    '原创空白NPC候选（玩家输入已由宿主和预设提供，这里不再复述）：',
+    JSON.stringify(ticketProjection),
+    '只在正文确实创造原创空白NPC时按首次出场顺序使用第1、2……张；角色卡、世界书、原作人物和已有档案跳过且不占序号。首次出场自然表现最多三个辨识特征，不输出ticketId、字段名、票据回执或Doctor调度语。完整十四轴已由Doctor在后台保存，正文无需复写。',
     '世界后台已经造成、现在可能进入正文的公开影响：',
     JSON.stringify(publicEffects),
     '公开影响不要求逐字照抄，也不要求全部出现。先服从玩家当前动作；在时间、地点和因果上自然到达时，才通过相应渠道写成环境痕迹、未证实传闻、具名公开行动或直接可见后果。',
     '不得从公开影响反推出行动者的私密动机、未公开身份、镜头外步骤、知识来源或完整真相；没有公开影响时，不得自行泄露后台世界。',
     '世界后台可能推进与玩家完全无关的事项；不要为了让玩家成为中心而强行把所有影响送到玩家面前，也不要替玩家决定任何行动、感受、同意或结果。',
     '已有人物档案公开身份句柄（只表示不得重复随机，不代表叙事者知道私密档案）：',
-    JSON.stringify(profileDigest || []),
+    JSON.stringify((Array.isArray(profileDigest) ? profileDigest : []).slice(0, 24)),
     '</MVUDoctorRuntime>',
   ].join('\n');
 }

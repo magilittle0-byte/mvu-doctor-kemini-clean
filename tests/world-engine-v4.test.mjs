@@ -1115,6 +1115,65 @@ test('私下推进会保存为真实变化，没有公开影响时不会进入�
   assert.doesNotMatch(injection, /贴身口袋|两条未公开信息|补记同行者/);
 });
 
+test('正文注入不复述玩家输入或要求票据回执，只提供压缩人物塑形轴与公开影响', () => {
+  const allAxes = {
+    temperament: '压缩轴-气质',
+    coreDesire: '压缩轴-欲望',
+    values: '后台轴-价值观',
+    thinking: '后台轴-思考方式',
+    attachment: '后台轴-依恋',
+    socialMotive: '压缩轴-社交动机',
+    interest: '后台轴-利益取向',
+    conflict: '后台轴-冲突方式',
+    stress: '后台轴-压力反应',
+    moralBoundary: '后台轴-道德边界',
+    expression: '压缩轴-表达方式',
+    actionHabit: '压缩轴-行动习惯',
+    weakness: '后台轴-弱点',
+    humor: '后台轴-幽默感',
+  };
+  const injection = formatGenerationInjection({
+    tickets: [{ ticketId: 'ticket-compact', ordinal: 1, axes: allAxes }],
+    recall: [{
+      effectId: 'effect-public',
+      publicEffect: '公开影响_SENTINEL',
+      publicChannel: 'environment_trace',
+      relatedToCurrentAction: true,
+    }],
+    currentAction: '玩家原文_SENTINEL\n插件后缀_SENTINEL',
+  });
+
+  assert.doesNotMatch(injection, /玩家原文_SENTINEL|插件后缀_SENTINEL/u);
+  assert.doesNotMatch(injection, /CharacterTicketReceipt|正文生成前必须/u);
+  assert.match(injection, /公开影响_SENTINEL/u);
+
+  const lines = injection.split('\n');
+  const projectionLabel = lines.indexOf('原创空白NPC候选（玩家输入已由宿主和预设提供，这里不再复述）：');
+  assert.ok(projectionLabel >= 0);
+  const projection = JSON.parse(lines[projectionLabel + 1]);
+  assert.deepEqual(Object.keys(projection[0].shaping), [
+    'temperament', 'coreDesire', 'socialMotive', 'expression', 'actionHabit',
+  ]);
+  assert.deepEqual(projection[0].shaping, {
+    temperament: allAxes.temperament,
+    coreDesire: allAxes.coreDesire,
+    socialMotive: allAxes.socialMotive,
+    expression: allAxes.expression,
+    actionHabit: allAxes.actionHabit,
+  });
+  for (const hiddenValue of [
+    allAxes.values,
+    allAxes.thinking,
+    allAxes.attachment,
+    allAxes.interest,
+    allAxes.conflict,
+    allAxes.stress,
+    allAxes.moralBoundary,
+    allAxes.weakness,
+    allAxes.humor,
+  ]) assert.doesNotMatch(injection, new RegExp(hiddenValue, 'u'));
+});
+
 test('公开字段泄密时只清空公开投影，私密结算和主体状态不会被回滚', () => {
   const baseline = worldWith([
     subject({ id: 'person-bailu', type: 'person', name: '白露', current: '在队伍中保持低调', nextCheckTurn: 2 }),
@@ -1381,6 +1440,19 @@ test('缝合输入仍只取最后一个真实当前行动包，不让历史包�
   assert.equal(recallSelectionInput('直接输入的行动'), '直接输入的行动');
 });
 
+test('中文本轮用户输入单独存在时只提取标签内玩家段并丢弃插件后缀', () => {
+  const processed = [
+    '以下是用户的本轮输入：',
+    '<本轮用户输入>',
+    '真正玩家动作_SENTINEL',
+    '</本轮用户输入>',
+    '以下输入的代码为既定事实记忆的对应索引编码。',
+    '插件后缀_MUST_NOT_BECOME_ACTION',
+  ].join('\n');
+
+  assert.equal(recallSelectionInput(processed), '真正玩家动作_SENTINEL');
+});
+
 function runtimeHarness(worldResponse, actorResponse = null) {
   const runtimeSource = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8')
     .replace('\n  init().catch((error) => {', '\n  window.__doctorTestHooks = { retryLastFailure, manualWorldRecheck, runtime };\n\n  init().catch((error) => {');
@@ -1470,6 +1542,7 @@ function runtimeHarness(worldResponse, actorResponse = null) {
     setTimeout,
     clearTimeout,
     structuredClone,
+    AbortController,
   };
   vm.runInNewContext(runtimeSource, sandbox, { filename: 'index.js' });
   return { context, handlers, worldRequests, actorRequests, worldSaveTransitions, hooks: sandbox.window.__doctorTestHooks };

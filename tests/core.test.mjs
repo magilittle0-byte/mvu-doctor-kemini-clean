@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   WORLD_SCHEMA_VERSION,
+  assignCharacterTicketsByNarrativeOrder,
   buildUpdateVariableBlock,
   buildProfilePatch,
   capturePathSnapshot,
@@ -168,6 +169,30 @@ test('人物票据消费回执在正文生成前固定人物到票据或权威�
   assert.equal(parseCharacterTicketReceipt('<CharacterTicketReceipt>[{"name":"林澄","source":"ticket","ticketId":"fake"}]</CharacterTicketReceipt>', [ticket]).kind, 'invalid');
 });
 
+test('叙事顺序分配票据时既有人物与权威人物跳过且不消费候选票', () => {
+  const tickets = [
+    { ticketId: 'ticket-first' },
+    { ticketId: 'ticket-second' },
+    { ticketId: 'ticket-unused' },
+  ];
+  const assignments = assignCharacterTicketsByNarrativeOrder([
+    { label: '药房姑娘', names: ['药房姑娘'] },
+    { label: '原创甲', names: ['原创甲'] },
+    { label: '新人引导者', names: ['新人引导者'] },
+    { label: '原创乙', names: ['原创乙'] },
+  ], tickets, {
+    'profile-lin': { name: '林澄', aliases: ['药房姑娘'] },
+  }, ['新人引导者']);
+
+  assert.deepEqual(assignments, [
+    { name: '药房姑娘', source: 'existing', ticketId: '' },
+    { name: '原创甲', source: 'ticket', ticketId: 'ticket-first' },
+    { name: '新人引导者', source: 'authority', ticketId: '' },
+    { name: '原创乙', source: 'ticket', ticketId: 'ticket-second' },
+  ]);
+  assert.equal(assignments.some((assignment) => assignment.ticketId === 'ticket-unused'), false);
+});
+
 test('合法JSON中的中文引号不会被修复器反向破坏', () => {
   const receipt = parseProfileReceipt('<人物档案更新>[{"name":"林澄","inferences":["她把‘草稿’收好，并说明这是‘暂定’记录。"]}]</人物档案更新>');
   assert.equal(receipt.kind, 'update');
@@ -193,6 +218,28 @@ test('人物档案只把最终叙事当作已发生事实', () => {
   const izumiNarrative = profileNarrativeText('<konatan_planning~>计划让丙担任引导者</konatan_planning~><content>丁正在柜台后说明登记流程。</content><options>询问丙</options>');
   assert.doesNotMatch(izumiNarrative, /计划让丙|询问丙/);
   assert.equal(izumiNarrative, '丁正在柜台后说明登记流程。');
+});
+
+test('已知planning前缀从accepted正文剥离但content、选项与变量块完整保留', () => {
+  const acceptedEnvelope = [
+    '<content>林澄在柜台后核对登记簿。</content>',
+    '<options><option>询问登记规则</option></options>',
+    '<UpdateVariable><Analysis>登记簿没有改变当前变量。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>',
+  ].join('\n');
+  const source = [
+    '规划阶段只决定候选人物，不属于最终正文。',
+    '<CharacterTicketReceipt>[{"name":"规划人物","source":"ticket","ticketId":"ticket-planning"}]</CharacterTicketReceipt>',
+    '</konatan_planning~>',
+    acceptedEnvelope,
+  ].join('\n');
+
+  const repaired = repairAcceptedNarrativeEnvelope(source);
+
+  assert.equal(repaired.ok, true);
+  assert.equal(repaired.changed, true);
+  assert.deepEqual(repaired.repairs, ['strip_known_planning_prefix_before_content']);
+  assert.equal(repaired.message, acceptedEnvelope);
+  assert.doesNotMatch(repaired.message, /规划人物|CharacterTicketReceipt|konatan_planning/u);
 });
 
 test('最终正文缺少唯一content闭合时只在明确结构边界前补回', () => {
@@ -910,7 +957,7 @@ test('候选错票据时只服从正文生成前消费映射，不按正文顺�
     tickets[1].ticketId,
     tickets[2].ticketId,
   ]);
-  assert.equal(prepared.normalizationRepairs.some((repair) => repair.code === 'candidate_ticket_replaced_by_generation_receipt'), true);
+  assert.equal(prepared.normalizationRepairs.some((repair) => repair.code === 'candidate_ticket_replaced_by_generation_mapping'), true);
 });
 
 test('世界书权威只接受结构化ID、唯一精确key或label，不从正文子串和通用alias推断', () => {
@@ -1309,11 +1356,11 @@ test('新人物只接受正文生成前的票据消费映射，不在正文后�
   assert.equal(normalized.profiles[0].profileId, ticket.ticketId);
   assert.equal(normalized.profiles[0].ticketId, ticket.ticketId);
   assert.deepEqual(normalized.profiles[0].ticketBinding, {
-    status: 'bound', source: 'character-ticket-receipt', ticketId: ticket.ticketId,
+    status: 'bound', source: 'pre-generation-ticket-ledger', ticketId: ticket.ticketId,
   });
-  assert.deepEqual(normalized.normalizationRepairs.find((repair) => repair.code === 'candidate_ticket_replaced_by_generation_receipt'), {
+  assert.deepEqual(normalized.normalizationRepairs.find((repair) => repair.code === 'candidate_ticket_replaced_by_generation_mapping'), {
     profileIndex: 0,
-    code: 'candidate_ticket_replaced_by_generation_receipt',
+    code: 'candidate_ticket_replaced_by_generation_mapping',
     from: 'not-a-ticket',
     to: ticket.ticketId,
   });

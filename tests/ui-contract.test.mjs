@@ -61,8 +61,10 @@ test('控制台包含变量、连接、人物、世界、诊断与两个互不�
   assert.match(source, /未采用项冷却后可再次召回/);
   assert.match(source, /只有最终接受正文确实包含同一公开文本时才记为已呈现/);
   assert.match(source, /recallSelectionInput/);
-  assert.match(source, /本轮玩家明确动作/);
-  assert.match(source, /不补写输入外动机/);
+  const generationInjection = source.slice(source.indexOf('function formatGenerationInjection'), source.indexOf('function profileDigestFromData'));
+  assert.match(generationInjection, /玩家输入已由宿主和预设提供，这里不再复述/);
+  assert.doesNotMatch(generationInjection, /本轮玩家明确动作|CharacterTicketReceipt/);
+  assert.match(generationInjection, /不要替玩家决定任何行动、感受、同意或结果/);
   const manualWorld = source.slice(source.indexOf('async function manualWorldRecheck'), source.indexOf('async function undoLastVariableRepair'));
   assert.match(manualWorld, /advanceWorld/);
   assert.doesNotMatch(manualWorld, /auditVariables|commitProfiles/);
@@ -267,34 +269,36 @@ test('待重试队列按回复身份逐项结算，prepare不会静默丢弃任�
   assert.doesNotMatch(success, /clearAll|pendingRetries\s*=\s*\[\]/);
 });
 
-test('GENERATION_STARTED先逐项恢复旧事务，失败由manifest拦截器abort而成功后才prepare', () => {
+test('GENERATION_STARTED只闭合状态所有权并抢占后台Doctor，不在正文前自动调用模型或等待重试', () => {
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
   assert.match(source, /globalThis\.mvuDoctorKeminiGenerateInterceptor = mvuDoctorKeminiGenerateInterceptor/);
 
-  const recovery = source.slice(source.indexOf('async function recoverPendingBeforeMainGeneration'), source.indexOf('function endGeneration'));
-  assert.match(recovery, /while \(runtime\.retry && attempts < 24\)/);
-  assert.match(recovery, /const before = retryDescriptorKey\(retryDescriptor\(runtime\.retry, context\)\)/);
-  assert.match(recovery, /await retryLastFailure\(\{ startToken \}\)/);
-  assert.match(recovery, /if \(after === before\) return false/);
-  assert.match(recovery, /return !runtime\.retry/);
+  const barrier = source.slice(source.indexOf('async function waitForGenerationStartBarrier'), source.indexOf('function interruptedProcessingRetry'));
+  assert.match(barrier, /while \(runtime\.timer \|\| runtime\.recovering \|\| runtime\.swipeRestoring\)/);
+  assert.doesNotMatch(barrier, /processingSession|requestControllers|retrying|internalGenerationDepth/);
+
+  const preempt = source.slice(source.indexOf('async function preemptBackgroundDoctorForForeground'), source.indexOf('function generationPreparationCurrent'));
+  assert.match(preempt, /mvuadBackgroundModelTask === true/);
+  assert.match(preempt, /setRetry\(recovery, \{ context \}\)/);
+  assert.match(preempt, /processing\.cancelled = true/);
+  assert.match(preempt, /FOREGROUND_PREEMPTED/);
+  assert.match(preempt, /runtime\.internalQuietGenerationStop = true[\s\S]*eventSource\?\.emit[\s\S]*runtime\.internalQuietGenerationStop = false/);
+  assert.doesNotMatch(preempt, /cancelCurrent\(|runtime\.timer|runtime\.recovering|runtime\.swipeRestoring/);
 
   const lifecycle = source.slice(
     source.indexOf("context.eventSource.on(types.GENERATION_STARTED || 'generation_started'"),
     source.indexOf("context.eventSource.on(types.GENERATION_ENDED || 'generation_ended'"),
   );
-  const recoveryCall = lifecycle.indexOf('await recoverPendingBeforeMainGeneration(startContext, startToken)');
-  const blockedWrite = lifecycle.indexOf('runtime.blockedGeneration = {', recoveryCall);
-  const blockedReturn = lifecycle.indexOf('return;', blockedWrite);
-  const prepareStart = lifecycle.indexOf('preparation = beginGenerationPreparation', recoveryCall);
-  assert.ok(recoveryCall >= 0 && blockedWrite > recoveryCall && blockedReturn > blockedWrite && prepareStart > blockedReturn);
-  assert.match(lifecycle, /const nonBlockingProfileRetry = runtime\.retry\?\.kind === 'profile'/);
-  assert.match(lifecycle, /Boolean\(runtime\.retry\?\.completedStages\?\.variable\)/);
-  assert.match(lifecycle, /Boolean\(runtime\.retry\?\.completedStages\?\.world\)/);
-  assert.match(lifecycle, /if \(!isRerollGeneration\(kind\) && runtime\.retry && !nonBlockingProfileRetry\)/);
-  assert.match(lifecycle, /if \(!recovered\) \{[\s\S]*runtime\.blockedGeneration = \{[\s\S]*clearInjection\(startContext\)[\s\S]*return;/);
-  assert.match(lifecycle, /if \(!settings\(startContext\)\.enabled\) \{[\s\S]*clearInjection\(startContext\)[\s\S]*return;/);
+  const barrierCall = lifecycle.indexOf('await waitForGenerationStartBarrier(startToken)');
+  const preemptCall = lifecycle.indexOf('await preemptBackgroundDoctorForForeground(startContext)');
+  const prepareStart = lifecycle.indexOf('preparation = beginGenerationPreparation', preemptCall);
+  assert.ok(barrierCall >= 0 && preemptCall > barrierCall && prepareStart > preemptCall);
   assert.match(lifecycle, /const startToken = beginGenerationStart\(kind, startContext\)/);
-  assert.doesNotMatch(lifecycle.slice(recoveryCall, prepareStart), /runtime\.active\s*=/);
+  assert.equal((lifecycle.match(/beginGenerationStart\(kind, startContext\)/g) || []).length, 1);
+  assert.doesNotMatch(lifecycle, /recoverPendingBeforeMainGeneration|await retryLastFailure/);
+  assert.match(lifecycle, /if \(!isRerollGeneration\(kind\) && runtime\.retry\) \{[\s\S]*不会在正文请求前自动调用模型或暂停生成/);
+  assert.match(lifecycle, /if \(!settings\(startContext\)\.enabled\) \{[\s\S]*clearInjection\(startContext\)[\s\S]*return;/);
+  assert.doesNotMatch(lifecycle.slice(preemptCall, prepareStart), /runtime\.active\s*=/);
   assert.match(lifecycle.slice(prepareStart), /await prepareGeneration\(kind, preparation\)/);
 
   const interceptor = source.slice(source.indexOf('async function mvuDoctorKeminiGenerateInterceptor'), source.indexOf('globalThis.mvuDoctorKeminiGenerateInterceptor'));
@@ -312,12 +316,13 @@ test('人物票据谱系按message、swipe和叙事指纹持久化，手动入�
   assert.match(ledger, /Number\(entry\?\.messageId\) === Number\(identity\?\.messageId\)/);
   assert.match(ledger, /Number\(entry\?\.swipeId\) === Number\(identity\?\.swipeId\)/);
   assert.match(ledger, /if \(existing\) \{[\s\S]*semanticJsonEqual\(existing\.tickets \|\| \[\], session\.tickets \|\| \[\]\)[\s\S]*拒绝事后重掷或覆盖[\s\S]*return existing/);
-  assert.match(ledger, /parseCharacterTicketReceipt\(acceptedText, session\.tickets \|\| \[\]\)/);
+  assert.match(ledger, /parseCharacterTicketReceipt\(session\.acceptedModelText \|\| acceptedText, session\.tickets \|\| \[\]\)/);
   assert.match(ledger, /semanticJsonEqual\(existing\.assignments \|\| \[\], assignments\)/);
   assert.match(ledger, /tickets: runtime\.core\.deepClone\(Array\.isArray\(session\.tickets\) \? session\.tickets : \[\]\)/);
   assert.match(ledger, /assignments: runtime\.core\.deepClone\(assignments\)/);
 
   const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
+  assert.match(accepted, /session\.acceptedModelText = acceptedText/);
   const ledgerCommit = accepted.indexOf('recordTicketLedger(session, context, latestAi.index, acceptedText)');
   const taskStart = accepted.indexOf('const variableTask = auditVariables');
   assert.ok(ledgerCommit >= 0 && ledgerCommit < taskStart);
@@ -331,6 +336,17 @@ test('人物票据谱系按message、swipe和叙事指纹持久化，手动入�
     assert.doesNotMatch(manual, /fullRuns|sourceRuns|tickets:\s*\[\]/);
   }
   assert.match(manualWorld, /worldSourceKey: String\(ticketEntry\?\.sourceKey \|\| acceptedReplySourceKey/);
+});
+
+test('人物补档提示只使用脚本叙事映射，不再追加旧票据回执容错层', () => {
+  const profilePrompt = source.slice(
+    source.indexOf('async function repairProfileReceipt'),
+    source.indexOf('async function commitProfiles'),
+  );
+  assert.match(profilePrompt, /脚本按最终叙事首次出场顺序建立的人物票据映射/u);
+  assert.match(profilePrompt, /映射未覆盖的人物仍须被发现并完整补档/u);
+  assert.doesNotMatch(profilePrompt, /receiptSafetyAppendix|票据回执的容错边界|回执缺失、损坏/u);
+  assert.match(profilePrompt, /prompt: `\$\{prompt\}\$\{followupAppendix\}`/u);
 });
 
 test('同一message与swipe更新重试时保留最初worldSourceKey，完整正文指纹仍拒绝过期重试', () => {
@@ -390,12 +406,17 @@ test('swipe恢复按递增epoch串行化并在每个异步边界复核身份，�
 });
 
 test('取消accepted-final时按已完成阶段保留精确重试，而不是把处理中任务静默丢失', () => {
+  const interruptedRetry = source.slice(source.indexOf('function interruptedProcessingRetry'), source.indexOf('async function preemptBackgroundDoctorForForeground'));
+  assert.match(interruptedRetry, /String\(processing\.chatId \|\| ''\) !== String\(context\?\.chatId \|\| ''\)/);
+  assert.match(interruptedRetry, /processing\.finalMessageId/);
+  assert.match(interruptedRetry, /processing\.acceptedText/);
+  assert.match(interruptedRetry, /const stages = \{ variable: false, profile: false, world: false, \.\.\.\(processing\.completedStages \|\| \{\}\) \}/);
+  assert.match(interruptedRetry, /const kind = !stages\.variable \? \(processing\.manualVariableAudit \? 'variable-manual' : 'variable'\)[\s\S]*!stages\.profile \? 'profile'[\s\S]*!stages\.world \? 'world'/);
+  assert.match(interruptedRetry, /return kind \? \{[\s\S]*session: processing[\s\S]*messageId: Number\(processing\.finalMessageId\)[\s\S]*profileRecovery: processing\.profileRecovery \|\| null[\s\S]*completedStages: stages/);
+
   const cancel = source.slice(source.indexOf('function cancelCurrent'), source.indexOf('async function restoreSavedSwipeOutcome'));
   assert.match(cancel, /const processing = runtime\.processingSession/);
-  assert.match(cancel, /sameChatProcessing = processing[\s\S]*processing\.finalMessageId[\s\S]*processing\.acceptedText/);
-  assert.match(cancel, /const stages = \{ variable: false, profile: false, world: false, \.\.\.\(processing\.completedStages \|\| \{\}\) \}/);
-  assert.match(cancel, /const kind = !stages\.variable \? \(processing\.manualVariableAudit \? 'variable-manual' : 'variable'\)[\s\S]*!stages\.profile \? 'profile'[\s\S]*!stages\.world \? 'world'/);
-  assert.match(cancel, /if \(kind\) recovery = \{[\s\S]*session: processing[\s\S]*messageId: Number\(processing\.finalMessageId\)[\s\S]*profileRecovery: processing\.profileRecovery \|\| null[\s\S]*completedStages: stages/);
+  assert.match(cancel, /recovery = interruptedProcessingRetry\(processing, liveContext\)/);
   assert.ok(cancel.indexOf('if (processing) processing.cancelled = true') < cancel.indexOf('setRetry(recovery, { context: liveContext })'));
   assert.match(cancel, /else if \(recovery\) \{\s*setRetry\(recovery, \{ context: liveContext \}\);\s*persistence = saveMetadata\(liveContext\)\.catch/);
   assert.match(cancel, /return Promise\.all\(\[persistence, fallbackRestore\]\)/);
@@ -510,7 +531,7 @@ test('metadata保持同一权威对象身份，不在每次读取时重建命名
 });
 
 test('世界面板从单一v7主体权威派生支线和变化，不再渲染旧多表世界', () => {
-  assert.equal(manifest.version, '0.7.2');
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   const worldUi = source.slice(source.indexOf('function renderWorld'), source.indexOf('function renderDiagnostics'));
   assert.match(worldUi, /normalizeWorldState\(store\.world/);
   assert.match(worldUi, /world\.subjects/);

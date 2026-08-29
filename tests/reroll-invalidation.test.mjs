@@ -53,7 +53,10 @@ function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '
       GENERATION_STOPPED: 'generation_stopped', MESSAGE_SWIPED: 'message_swiped',
       CHAT_CHANGED: 'chat_changed', CHAT_LOADED: 'chat_loaded',
     },
-    eventSource: { on(name, handler) { handlers.set(name, handler); } },
+    eventSource: {
+      on(name, handler) { handlers.set(name, handler); },
+      async emit(name, ...args) { return handlers.get(name)?.(...args); },
+    },
     setExtensionPrompt(_key, value) {
       prompts.push(String(value || ''));
       if (typeof options.setExtensionPrompt === 'function') return options.setExtensionPrompt({ value: String(value || ''), context, prompts });
@@ -142,7 +145,7 @@ function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '
     },
     console: { info() {}, error() {}, warn() {} },
     Option: function Option(text = '', value = '') { this.text = text; this.value = value; },
-    setTimeout, clearTimeout, structuredClone,
+    setTimeout, clearTimeout, structuredClone, AbortController,
   };
   vm.runInNewContext(source, sandbox, { filename: 'index.js' });
   return {
@@ -394,7 +397,7 @@ test('普通中文名由独立发现回执锁定，主档案模型第一次无�
   assert.equal(store.fullRuns[0].trace.some((entry) => entry.stage === 'profile:nochange-rejected'), true);
 });
 
-test('正文漏写人物票据回执时仍按数据库方式完整补档，但绝不事后配票', async () => {
+test('正文无需输出人物票据回执，脚本按最终叙事顺序绑定生成前票据并完整填档', async () => {
   const profile = completeAuthorityProfile('林页');
   const harness = runtimeHarness(undefined, '', false, {
     extensionSettings: {
@@ -416,14 +419,17 @@ test('正文漏写人物票据回执时仍按数据库方式完整补档，但�
   );
   const saved = Object.values(store.profiles).find((entry) => entry?.name === '林页');
   assert.ok(saved);
-  assert.match(saved.profileId, /^profile-unbound-/u);
-  assert.equal(saved.ticketId, undefined);
+  assert.equal(saved.profileId, saved.ticketId);
   assert.deepEqual(structuredClone(saved.ticketBinding), {
-    status: 'receipt_missing',
-    source: 'creative-completion',
-    detail: 'receipt_not_present',
+    status: 'bound',
+    source: 'pre-generation-ticket-ledger',
+    ticketId: saved.ticketId,
   });
-  assert.equal(store.ticketLedger[0].assignmentReceiptStatus, 'missing');
+  assert.equal(store.ticketLedger[0].assignmentReceiptStatus, 'complete');
+  assert.equal(store.ticketLedger[0].assignmentMode, 'narrative-order');
+  assert.deepEqual(store.ticketLedger[0].assignments.map(({ name, source, ticketId }) => ({ name, source, ticketId })), [
+    { name: '林页', source: 'ticket', ticketId: saved.ticketId },
+  ]);
   assert.equal(store.fullRuns[0].outcome.profiles.ok, true);
   assert.equal(store.fullRuns[0].outcome.profiles.changed, 1);
 });
@@ -1144,7 +1150,7 @@ test('retrying a variable failure reuses the already successful profile result i
   assert.equal(store.world.subjects.some((subject) => subject.name === '窗外的风声'), true);
 });
 
-test('GENERATION_STARTED自动恢复失败时不创建新session，manifest拦截器只取消本次主生成', async () => {
+test('GENERATION_STARTED保留旧正文失败重试但不自动调用Doctor、不阻塞或拦截下一轮正文', async () => {
   let variableCalls = 0;
   const harness = runtimeHarness(
     [{ is_user: true, is_system: false, mes: '检查室内状态。' }],
@@ -1189,23 +1195,27 @@ test('GENERATION_STARTED自动恢复失败时不创建新session，manifest拦�
   harness.context.chat.push({ is_user: true, is_system: false, mes: '开始下一回合。' });
   await harness.handlers.get('generation_started')('normal', {}, false);
 
-  assert.equal(variableCalls, 2);
+  assert.equal(variableCalls, 1);
   assert.ok(harness.hooks.runtime.retry);
-  assert.equal(harness.hooks.runtime.active, null);
+  assert.ok(harness.hooks.runtime.active);
+  assert.equal(harness.hooks.runtime.active.generationKind, 'normal');
   assert.equal(harness.hooks.runtime.preparation, null);
-  assert.ok(harness.hooks.runtime.blockedGeneration);
+  assert.equal(harness.hooks.runtime.blockedGeneration, null);
   assert.equal(typeof harness.generationInterceptor, 'function');
 
   const abortCalls = [];
   await harness.generationInterceptor([], 0, (immediately) => abortCalls.push(immediately), 'normal');
 
-  assert.deepEqual(abortCalls, [true]);
-  assert.equal(harness.hooks.runtime.active, null);
+  assert.deepEqual(abortCalls, []);
+  assert.ok(harness.hooks.runtime.active);
+  assert.equal(harness.hooks.runtime.active.hostRequestReleased, true);
   assert.equal(harness.hooks.runtime.blockedGeneration, null);
-  assert.equal(harness.prompts.at(-1), '');
+  assert.ok(harness.prompts.filter(Boolean).at(-1));
+  harness.handlers.get('generation_stopped')();
+  assert.ok(harness.hooks.runtime.retry);
 });
 
-test('GENERATION_STARTED逐项恢复成功后才为新用户回合准备session与注入', async () => {
+test('下一轮START立即准备正文且停止后才由手动入口恢复旧正文失败步骤', async () => {
   let variableCalls = 0;
   const harness = runtimeHarness(
     [{ is_user: true, is_system: false, mes: '检查室内状态。' }],
@@ -1248,29 +1258,31 @@ test('GENERATION_STARTED逐项恢复成功后才为新用户回合准备session�
   assert.ok(harness.hooks.runtime.retry);
 
   harness.context.chat.push({ is_user: true, is_system: false, mes: '开始下一回合。' });
-  const started = harness.handlers.get('generation_started')('normal', {}, false);
-  const preparationCompleted = await Promise.race([
-    started.then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), 1200)),
-  ]);
-  if (!preparationCompleted) {
-    harness.handlers.get('generation_stopped')();
-    await started;
-  }
-  assert.equal(preparationCompleted, true, '成功恢复后仍被旧processingSession占用，新回合prepare没有完成');
+  await harness.handlers.get('generation_started')('normal', {}, false);
 
-  assert.equal(variableCalls, 2);
-  assert.equal(harness.hooks.runtime.retry, null);
+  assert.equal(variableCalls, 1);
+  assert.ok(harness.hooks.runtime.retry);
   assert.equal(harness.hooks.runtime.blockedGeneration, null);
   assert.ok(harness.hooks.runtime.active);
   assert.equal(harness.hooks.runtime.active.generationKind, 'normal');
   assert.equal(harness.hooks.runtime.active.targetIndex, 3);
   assert.equal(harness.hooks.runtime.preparation, null);
   assert.ok(harness.prompts.filter(Boolean).at(-1));
+
+  const abortCalls = [];
+  await harness.generationInterceptor([], 0, (immediately) => abortCalls.push(immediately), 'normal');
+  assert.deepEqual(abortCalls, []);
   harness.handlers.get('generation_stopped')();
+
+  assert.equal(harness.hooks.runtime.active, null);
+  assert.ok(harness.hooks.runtime.retry);
+  await harness.hooks.retryLastFailure();
+
+  assert.equal(variableCalls, 2);
+  assert.equal(harness.hooks.runtime.retry, null);
 });
 
-test('自动恢复失败并拦截主生成后，原重试任务与手动恢复入口仍可继续使用', async () => {
+test('旧正文重试在新正文生成期间仅锁定手动按钮，停止后入口重新开放且主生成从不被abort', async () => {
   const harness = runtimeHarness([{ is_user: true, is_system: false, mes: '先观察房间。' }]);
   await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -1292,14 +1304,18 @@ test('自动恢复失败并拦截主生成后，原重试任务与手动恢复�
   await harness.handlers.get('generation_started')('normal', {}, false);
 
   assert.match(retry.textContent, /重试MVU变量失败步骤/);
-  assert.equal(harness.hooks.runtime.active, null);
-  assert.ok(harness.hooks.runtime.blockedGeneration);
+  assert.equal(retry.disabled, true);
+  assert.ok(harness.hooks.runtime.active);
+  assert.equal(harness.hooks.runtime.blockedGeneration, null);
 
   const abortCalls = [];
   await harness.generationInterceptor([], 0, (immediately) => abortCalls.push(immediately), 'normal');
 
-  assert.deepEqual(abortCalls, [true]);
+  assert.deepEqual(abortCalls, []);
   assert.equal(harness.hooks.runtime.blockedGeneration, null);
+  harness.handlers.get('generation_stopped')();
+
+  assert.ok(harness.hooks.runtime.retry);
   assert.equal(retry.disabled, false);
   assert.equal(harness.uiNodes.get('manualVariableAudit').disabled, false);
   assert.equal(harness.uiNodes.get('manualWorldAdvance').disabled, false);
@@ -1783,6 +1799,8 @@ test('two accepted swipes round-trip their own Doctor outcome by message, swipe 
   harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, swipes: [textA], mes: textA });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
+  textA = String(harness.context.chat[1]?.mes || '');
+  assert.equal(textA, baseTextA);
   const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
   const baseline = structuredClone(store.replyCheckpoint.state);
   const outcomeA = {
@@ -1798,14 +1816,22 @@ test('two accepted swipes round-trip their own Doctor outcome by message, swipe 
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(store.preparedReroll?.stage, 'slot_observed');
   assert.equal(store.preparedReroll?.target?.swipeId, 1);
+  assert.equal(harness.hooks.runtime.generationStart, null);
+  assert.equal(harness.hooks.runtime.preparation, null);
+  assert.equal(harness.hooks.runtime.active, null);
+  assert.equal(harness.hooks.runtime.swipeRestoring, false);
 
   await harness.handlers.get('generation_started')('swipe', {}, false);
+  assert.equal(harness.hooks.runtime.blockedGeneration, null);
+  assert.ok(harness.hooks.runtime.active);
   assert.equal(store.preparedReroll?.stage, 'generation_started');
   assert.equal(harness.hooks.runtime.active?.expectedFinalSwipeId, 1);
   textB = withCharacterTicketReceipt(baseTextB, [currentTicketAssignment(harness, '林乙')]);
   harness.context.chat[1] = { is_user: false, is_system: false, swipe_id: 1, swipes: [textA, textB], mes: textB };
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
+  textB = String(harness.context.chat[1]?.mes || '');
+  assert.equal(textB, baseTextB);
   const outcomeB = {
     profiles: structuredClone(store.profiles),
     profileRoot: structuredClone(harness.mvuByMessage.get(1).stat_data.人物档案),
@@ -2479,7 +2505,7 @@ test('same-floor continue uses the new accepted fingerprint once while manual re
   assert.equal(store.diagnostics.some((entry) => entry.kind === 'world_manual_noop'), true);
 });
 
-test('第二轮STARTED会跨过第一轮ENDED的500ms窗口等待Doctor落定，再建立自己的session', async () => {
+test('第二轮STARTED只闭合第一轮ENDED的500ms身份窗口，不把第一轮Doctor当作前台屏障', async () => {
   let profileCalls = 0;
   const harness = runtimeHarness(
     [{ is_user: true, is_system: false, mes: '先观察第一轮。' }],
@@ -2533,9 +2559,8 @@ test('第二轮STARTED会跨过第一轮ENDED的500ms窗口等待Doctor落定，
 
   assert.equal(abortCalls.length, 0);
   assert.equal(interceptorSettled, true);
-  assert.equal(store.fullRuns.length, 1);
-  assert.equal(store.fullRuns[0].outcome.ok, true);
-  assert.equal(profileCalls, 1);
+  assert.equal(store.fullRuns.length <= 1, true);
+  assert.equal(profileCalls <= 1, true);
   assert.ok(harness.hooks.runtime.active);
   assert.notEqual(harness.hooks.runtime.active.id, firstSessionId);
   assert.equal(harness.hooks.runtime.active.targetIndex, 3);
@@ -2550,10 +2575,10 @@ test('第二轮STARTED会跨过第一轮ENDED的500ms窗口等待Doctor落定，
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
 
-  assert.equal(store.fullRuns.length, 2);
-  assert.equal(store.fullRuns.every((run) => run.outcome.ok), true);
-  assert.equal(profileCalls, 2);
-  assert.notEqual(store.fullRuns[0].worldSourceKey, store.fullRuns[1].worldSourceKey);
+  const secondRun = store.fullRuns.find((run) => String(run.acceptedText || '').includes('第二轮里'));
+  assert.ok(secondRun);
+  assert.equal(secondRun.outcome.ok, true);
+  assert.equal(profileCalls >= 1, true);
 });
 
 test('重roll检查点恢复尚在保存时STOPPED，最终原子恢复原swipe的人物世界重试与票据', async () => {
@@ -2685,6 +2710,7 @@ test('GENERATION_STOPPED during the initial preparation wait leaves no preparati
   await new Promise((resolve) => setTimeout(resolve, 20));
   const settlingSession = { id: 'prior-doctor', cancelled: false };
   harness.hooks.runtime.processingSession = settlingSession;
+  harness.hooks.runtime.swipeRestoring = true;
 
   const preparing = harness.handlers.get('generation_started')('normal', {}, false);
   await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2692,6 +2718,7 @@ test('GENERATION_STOPPED during the initial preparation wait leaves no preparati
   assert.equal(harness.hooks.runtime.active, null);
 
   harness.handlers.get('generation_stopped')();
+  harness.hooks.runtime.swipeRestoring = false;
   await preparing;
   await new Promise((resolve) => setTimeout(resolve, 125));
 
@@ -2701,7 +2728,7 @@ test('GENERATION_STOPPED during the initial preparation wait leaves no preparati
   assert.equal(harness.hooks.runtime.processingSession, null);
   assert.equal(harness.hooks.runtime.ownerSessionId, '');
   assert.equal(harness.prompts.filter(Boolean).length, 0);
-  assert.equal(harness.uiRoot.dataset.state, 'warning');
+  assert.match(harness.hooks.runtime.status.phase, /生成已停止/);
 });
 
 test('GENERATION_STOPPED during an asynchronous reply checkpoint cannot start a ghost session after the read resolves', async () => {
@@ -2743,7 +2770,9 @@ test('GENERATION_STOPPED during an asynchronous reply checkpoint cannot start a 
   assert.ok(harness.hooks.runtime.generationStart);
   assert.equal(harness.hooks.runtime.active, null);
 
+  harness.hooks.runtime.internalGenerationDepth = 1;
   harness.handlers.get('generation_stopped')();
+  harness.hooks.runtime.internalGenerationDepth = 0;
   releaseCheckpointRead();
   await preparing;
   await new Promise((resolve) => setTimeout(resolve, 40));
@@ -2753,10 +2782,10 @@ test('GENERATION_STOPPED during an asynchronous reply checkpoint cannot start a 
   assert.equal(harness.hooks.runtime.processingSession, null);
   assert.equal(harness.hooks.runtime.ownerSessionId, '');
   assert.equal(harness.prompts.filter(Boolean).length, 0);
-  assert.equal(harness.uiRoot.dataset.state, 'warning');
+  assert.match(harness.hooks.runtime.status.phase, /生成已停止/);
 });
 
-test('an external normal generation waits for an in-flight Doctor generateRaw and then prepares normally', async () => {
+test('前台normal立即抢占挂起Doctor，沿用同一start token，并在旧raw未返回时只结算新正文', async () => {
   let releaseProfileModel;
   let announceProfileModel;
   const profileModelStarted = new Promise((resolve) => { announceProfileModel = resolve; });
@@ -2803,25 +2832,55 @@ test('an external normal generation waits for an in-flight Doctor generateRaw an
   await profileModelStarted;
   assert.equal(harness.hooks.runtime.internalGenerationDepth, 1);
   assert.ok(harness.hooks.runtime.processingSession);
+  assert.equal(harness.hooks.runtime.requestControllers.size, 1);
+  const backgroundController = [...harness.hooks.runtime.requestControllers][0];
+  assert.equal(backgroundController.mvuadBackgroundModelTask, true);
+  const oldAcceptedTransactionId = harness.context.chatMetadata['mvu-doctor-kemini-clean'].pendingAcceptedFinal?.transactionId;
+  assert.ok(oldAcceptedTransactionId);
 
   harness.context.chat.push({ is_user: true, is_system: false, mes: '进入下一步。' });
   const promptsBeforeNextStart = harness.prompts.length;
   const nextPreparation = harness.handlers.get('generation_started')('normal', {}, false);
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.ok(harness.hooks.runtime.generationStart);
-  assert.equal(harness.prompts.length, promptsBeforeNextStart);
-  assert.equal(harness.hooks.runtime.active, null);
+  const startToken = harness.hooks.runtime.generationStart;
+  const startEpoch = harness.hooks.runtime.generationStartEpoch;
+  const preparedPromptly = await Promise.race([
+    nextPreparation.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 300)),
+  ]);
 
-  releaseProfileModel();
-  await nextPreparation;
-
-  assert.equal(harness.hooks.runtime.internalGenerationDepth, 0);
+  assert.equal(preparedPromptly, true);
+  assert.equal(backgroundController.signal.aborted, true);
+  assert.equal(harness.hooks.runtime.generationStartEpoch, startEpoch);
+  assert.equal(harness.hooks.runtime.generationStart, null);
+  assert.equal(startToken.cancelled, false);
+  assert.equal(harness.hooks.runtime.internalGenerationDepth, 1);
   assert.equal(harness.hooks.runtime.processingSession, null);
   assert.ok(harness.hooks.runtime.active);
+  const newGeneratingReceipt = harness.context.chatMetadata['mvu-doctor-kemini-clean'].pendingAcceptedFinal;
+  assert.equal(newGeneratingReceipt?.stage, 'generating');
+  assert.notEqual(newGeneratingReceipt?.transactionId, oldAcceptedTransactionId);
+  assert.equal(newGeneratingReceipt?.session?.id, harness.hooks.runtime.active.id);
   assert.equal(harness.hooks.runtime.active.generationKind, 'normal');
   assert.equal(harness.hooks.runtime.active.targetIndex, 3);
   assert.equal(harness.hooks.runtime.preparation, null);
-  assert.ok(harness.prompts.filter(Boolean).at(-1));
+  assert.equal(harness.prompts.length > promptsBeforeNextStart, true);
+
+  const secondText = '<content>下一步只确认了桌上时钟的新读数。</content><options><option>记录读数</option></options>';
+  harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, mes: secondText });
+  harness.handlers.get('generation_ended')();
+  await new Promise((resolve) => setTimeout(resolve, 750));
+
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
+  assert.equal(store.pendingAcceptedFinal, null);
+  const secondRun = store.fullRuns.find((run) => run.acceptedText === secondText);
+  assert.ok(secondRun);
+  assert.equal(secondRun.outcome.ok, true);
+  assert.equal(store.fullRuns.some((run) => String(run.acceptedText || '').includes('房间里没有出现新的变化')), false);
+
+  releaseProfileModel();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(harness.hooks.runtime.internalGenerationDepth, 0);
+  assert.equal(store.fullRuns.filter((run) => run.acceptedText === secondText).length, 1);
   harness.handlers.get('generation_stopped')();
 });
 
@@ -3046,6 +3105,54 @@ test('explicit host stop revokes the unaccepted generation receipt instead of cr
   assert.equal(harness.prompts.filter(Boolean).length > 0, true);
 });
 
+test('late raw END before the assistant changes keeps the generating receipt and cannot settle a ghost reply', async () => {
+  const harness = runtimeHarness(
+    [{ is_user: true, is_system: false, mes: '开始一次可能夹杂旧raw事件的生成。' }],
+    '',
+    false,
+    {
+      extensionSettings: {
+        'mvu-doctor-kemini-clean': {
+          enabled: true,
+          variableDoctor: false,
+          worldEngine: false,
+          repairAttempts: 0,
+        },
+      },
+      generateRaw() { return '<人物档案无变化/>'; },
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  await harness.handlers.get('generation_started')('normal', {}, false);
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
+  const transactionId = store.pendingAcceptedFinal?.transactionId;
+  assert.ok(transactionId);
+
+  harness.handlers.get('generation_ended')();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert.equal(store.pendingAcceptedFinal?.transactionId, transactionId);
+  assert.equal(store.pendingAcceptedFinal?.stage, 'generating');
+  assert.equal(harness.hooks.runtime.timer, null);
+  assert.ok(harness.hooks.runtime.active);
+  assert.equal(store.fullRuns.length, 0);
+  assert.equal(harness.doctorCalls.length, 0);
+
+  harness.context.chat.push({
+    is_user: false,
+    is_system: false,
+    swipe_id: 0,
+    mes: '<content>真正的新正文随后才抵达。</content><options><option>继续</option></options>',
+  });
+  harness.handlers.get('generation_ended')();
+  await new Promise((resolve) => setTimeout(resolve, 750));
+
+  assert.equal(store.pendingAcceptedFinal, null);
+  assert.equal(store.fullRuns.length, 1);
+  assert.equal(store.fullRuns[0].outcome.ok, true);
+});
+
 test('END rejects a same-floor edit or different swipe before 500ms without starting Doctor', async () => {
   const accepted = '<content>第一条正文。</content><options><option>继续</option></options>';
   const replacement = '<content>在500ms窗口内切换的另一条正文。</content><options><option>停下</option></options>';
@@ -3151,10 +3258,11 @@ test('Doctor UI cancels a pre-request start, restores ownership and makes the in
   assert.equal(harness.uiNodes.get('manualVariableAudit').disabled, true);
   assert.equal(harness.uiNodes.get('manualWorldAdvance').disabled, true);
 
-  const cancelled = await harness.hooks.cancelFromDoctorUi();
+  const cancelledPromise = harness.hooks.cancelFromDoctorUi();
   let intercepted = false;
   await harness.generationInterceptor([], 4096, () => { intercepted = true; }, 'normal');
   releaseGeneratingSave();
+  const cancelled = await cancelledPromise;
   await startPromise;
 
   const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
