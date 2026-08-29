@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "name": "Story Oracle",
+  "displayName": "故事神谕 (Story Oracle)",
+  "version": "1.35.4",
+  "upstream": {
+    "repository": "https://github.com/namelessone88/story-oracle.git",
+    "commit": "661f9f89446de473ace70a590897ca5065bc2efe",
+    "localSourceDirectory": "story-oracle-upstream"
+  },
+  "copy": {
+    "mode": "byte-for-byte",
+    "runtimeWired": true,
+    "runtimeAdapter": "../../../index.js + ../../../profile-engine.js (vendor files remain byte-identical)",
+    "verificationScript": "verify-copy.sh"
+  },
+  "files": [
+    {
+      "path": "index.js",
+      "sha256": "54f21b08413247f9d643a7210e4800723299280e59c3a298aad0fc661a9c8b83"
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "c435d60087799299e68a3cb137dddf0f5d06b7b35e0d0c10c720e956514256ac"
+    },
+    {
+      "path": "style.css",
+      "sha256": "fd38097d908c5412a3138be750c94db005202f8848b6a3c10b9e7f83ba774ddb"
+    },
+    {
+      "path": "README.md",
+      "sha256": "ee2b7f7d986fcd0c6833646a2fe55d0025e78c8f2829d9eca05cf054ecaaa010"
+    }
+  ],
+  "authorshipAndLicense": {
+    "manifestAuthor": "built for Edwin",
+    "authorInformationPreservedIn": "manifest.json",
+    "standaloneLicenseFileInUpstreamSnapshot": false,
+    "note": "The pinned upstream snapshot contains no standalone LICENSE file. No license has been inferred or added; all upstream author and notice text remains byte-identical in the copied files."
+  }
+}

@@ -1,0 +1,49 @@
+# Source byte hashes for the exact upstream files copied into this directory.
+# Upstream: https://github.com/DlSNlGHT/World.git
+# Commit: 154de4b590378cd0bd851cfffcefd3d96741cf3f
+# Scope: every regular upstream working-tree file except .git; excludes this generated manifest and SOURCE_CMP_REPORT.txt.
+80d46a401c7e5b066a64ef088ead7bc25a1b134155d2d4519b8c4caca7d9c531  ./.gitignore
+7f429204f1b63ee7aa6c37dc5c2ac5664fc94cd87f72c83205488df310e57e86  ./docs/engine-switch-animation-test.js
+d48e12ffeabb1497f78853b52efacf669158cd4b2e31ad34539ed2fb067e4d79  ./docs/manual-memory-link-test.js
+4ed527368a9dbb151dd33d80657b3e66036121062ba4fa95bd604e8661125956  ./docs/memory-engine-entity-test.js
+fcdf27c91db0f90d7d4e320e5b1c77404233e7a4e69039f5543690067169402f  ./docs/memory-event-summary-test.js
+2db0d7302c3aba60c4869112ac612a3fd2c928221c9eab2e4f253c6c6d4216df  ./docs/memory-reextract-test.js
+18f2f039a1e4d99d5d861996b481d2152bc54b193ee3988f495a02e61fc34783  ./docs/memory-ui-layout-test.js
+540c95261b150d419b42a9431356a65e57bd4aedf4100c21e9c01bec779dbf88  ./docs/memory-world-link-test.js
+71dceabc39778acf2eef8e7dc88240975ef83866a6eb9857b8d6ea67c5c287e9  ./docs/reroll-decouple-fix.md
+49ae8c13aeb7dbeb45f5900b01338342997fea46220123dd3897bf90d53ee381  ./docs/sandbox-engine-isolation-test.js
+6f587062172e9ce3215f03128bc690b564a885230514d8421f3bf474e9655681  ./docs/sandbox-entity-id-test.js
+5daadc805f94354e8127b0544f0534af4ef5e53770ca6d866ccbaeb665a6c92d  ./docs/sandbox-reroll-decouple-test.js
+67aa5d98a89ca18af3bff46d4ca99efdfb5494be6b27364cf0ee0fe0be316835  ./docs/世界书蓝绿灯触发.md
+482ff773045bfd1beb5afd0599d188033210bb5e6ea31dbdc4e1300faa9fb612  ./docs/世界引擎-v3.0.1-发布文案.md
+5fa82b66aea1366f35c9aef0cd6db0431159fcbd3e87d429ff42f7c2ec9f644f  ./docs/世界引擎-v3.0.2-发布文案.md
+c574cb81feffe0ab70d2e38cd8d0f3c1eb99a0144f32607d2243acae3d0c6db1  ./docs/升级内存崩溃修复.md
+869cbc57648b52bcdfd21ad31d541596f0f03c863b3921b61aa6091f926921ea  ./docs/批量重填世界推演.md
+d9fa7f1b4d3fe49fd7925f1a1070b97512c69bfc7d4a48e463548fa30841e519  ./docs/记忆引擎-v1.1.0-发布文案.md
+48fdc834d68513ca103423140d10cca0d80ad6a3e3d797c67ecca24942480933  ./docs/记忆引擎-v1.1.1-发布文案.md
+d91833b8ba429d65dfe3410638cc34bf7549ca02e6307c44179618e1096743a7  ./docs/酒馆缓存与存档.md
+572cdcfbfb5699560b0702b2bcb4f87ed657d81e17b61997576078a3762ee5c5  ./fingerprint-outline-with-magnifying-glass-svgrepo-com.svg
+214a2229f967f0c577f1974ee9e2b5a51d4b8b6cb29f4843f546a35c16066ad5  ./manifest.json
+ecfb9bc3e0bfe397332a9f3f2ed911f173eea80af209166097d737cff8b255a8  ./memory-engine-big-summary-prompt.js
+fae681add0eeea3f418a23b60b0558d6f302963d967dcaa6b360d9b018998b9d  ./memory-engine-data.js
+a2fb326827e70f98f382eaf1ebfe9a314499a1943913db1e9949a01b436ac7a6  ./memory-engine-prompt.js
+907ff865e29c97a8646a55f0217c0ac206ae54852c2c2973b47b45ab876c4033  ./memory-engine-settings.js
+1ea246cb825c755e87738ed8803b39efaf76b179b97f76bffd085a867954c174  ./memory-engine-small-summary-prompt.js
+41dc4e421d0b18074d17d5346183fda1322c0f83e6371a924d547e05e3500cb2  ./memory-engine-timeline.js
+e84b21648f149c1008abe8be3db244e35f4b9117b2b24ccd976836bbf33ac81c  ./memory-engine.js
+747325f03cfadbe27254c2e6294012c6b2569b9b9fb45aa47a5f6fd8a1f2c737  ./style.css
+56ef2ca0ea3487ed9c1752855b3bde094ee8ae3d95b4e3f20eb96b6e9732beb3  ./world-engine-api.js
+ba16d2ea8dea9088fe219ffbfa8320a99fdeb01caef7b8df453e4e997999cd74  ./world-engine-chatcache.js
+a2fa781cb8a58807685d42cce6ade14a0ddb19c6a12a2afd1d4e10ae2f3bb290  ./world-engine-core.js
+efc7e6d64dcd792847e8e2dbfae456b0b6f3a29fe6a08f151108f32187466eaf  ./world-engine-diag.js
+412c369b5d8ae5d16fb3a89cfad37a8e1333837ebb9b7f2a5e7e84cf37956ec3  ./world-engine-evolution.js
+3055b1fb0c3970328f39dc1193c52ef698139bdf71fe8cb5ae17725e06c0ed6c  ./world-engine-inject-inspector.js
+92e57a34683d0191e0d5b588c3e84429763af20c115ec614e35da33752c78d94  ./world-engine-inject.js
+b92870f5699af0eb3f7222c852563edfee3441c9441a8f7cd736073cd9cb6c52  ./world-engine-ledger.js
+1d7c895823549548527165fc3ff4acbfb377adba3e593eba7c75d045c6aaf631  ./world-engine-preset.js
+71c20377566d9d363e4750a98840e8e656f7472209ec1de22f1c52d459d47678  ./world-engine-rules-loader.js
+f30f2761a1163a303162fa4a02475fa090de269667989c7bc7cddc069a4dfb63  ./world-engine-store.js
+1763bce080f69b76128cf710df1c1c3b739d98c93dfc5f6cb268204f9b1a4092  ./world-engine-ui.js
+b7d67465848bb6b306651509fbb52e7ddb504b5ebff27489a929d356f42cd46f  ./world-engine-worldbook.js
+f3d53946da0fb0ce99e71fa196d01247be6b51c5a80306725699ea47f82fcb5d  ./world-engine.js
+014bfeebdd455f89a761b7b3cfcd780172d0daf607c416f722164f0746057f2a  ./worldmap.svg

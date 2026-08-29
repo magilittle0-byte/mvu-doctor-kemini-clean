@@ -1,0 +1,38 @@
+{
+  "formatVersion": 1,
+  "source": {
+    "json": {
+      "fileName": "2-角色生理状态引擎-酒馆助手脚本-ver5.35.json",
+      "byteLength": 1088533,
+      "sha256": "71591e94a4c9b2057bbdcba1f3f0dc3f1e18de70cae87aaf6d19888f64db69f5"
+    },
+    "regex": {
+      "fileName": "3-角色生理状态引擎-双正则-ver5.35.json",
+      "byteLength": 918,
+      "sha256": "88ca1cea247db5f3d7650121b9495cec70d9af44912b6d5b1ba8e399968d8c09"
+    }
+  },
+  "extraction": {
+    "method": "Buffer.from(JSON.parse(fs.readFileSync(sourceJson, 'utf8')).content, 'utf8')",
+    "transformations": [],
+    "newlineAppended": false
+  },
+  "vendored": {
+    "json": {
+      "fileName": "life-state-v5.35.json",
+      "byteLength": 1088533,
+      "sha256": "71591e94a4c9b2057bbdcba1f3f0dc3f1e18de70cae87aaf6d19888f64db69f5"
+    },
+    "regex": {
+      "fileName": "life-state-dual-regex-v5.35.json",
+      "byteLength": 918,
+      "sha256": "88ca1cea247db5f3d7650121b9495cec70d9af44912b6d5b1ba8e399968d8c09"
+    },
+    "extractedJs": {
+      "fileName": "life-state-v5.35.js",
+      "characterLength": 880721,
+      "byteLength": 1067157,
+      "sha256": "c04193d96f4a3279af5f9a1b1011086999a2581904e324620c45b9471fba260c"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+    "display_name": "故事神谕 (Story Oracle)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "built for Edwin",
+    "version": "1.35.4",
+    "homePage": "",
+    "auto_update": false
+}

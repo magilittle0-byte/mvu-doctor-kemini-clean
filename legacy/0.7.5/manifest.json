@@ -1,13 +1,13 @@
 {
-  "display_name": "MVU 人物与世界医生（Kemini Clean 0.8.0 测试版）",
+  "display_name": "MVU 人物与世界医生（Kemini Clean）",
   "loading_order": 110,
   "requires": [],
   "optional": ["MagVarUpdate"],
   "js": "index.js",
   "css": "style.css",
   "generate_interceptor": "mvuDoctorKeminiGenerateInterceptor",
-  "author": "magilittle0-byte & Codex（Story Oracle / Disnight / ver5.35 原作者保留）",
-  "version": "0.8.0",
+  "author": "magilittle0-byte & Codex",
+  "version": "0.7.5",
   "homePage": "https://github.com/magilittle0-byte/mvu-doctor-kemini-clean",
   "auto_update": true
 }

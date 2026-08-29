@@ -1,0 +1,3 @@
+# Frozen source snapshots must retain their exact committed bytes on Windows.
+vendor/** -text
+legacy/** -text

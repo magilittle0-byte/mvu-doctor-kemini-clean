@@ -1,0 +1,51 @@
+# DlSNlGHT/World v3.0.2 byte-for-byte copy verification
+upstream=https://github.com/DlSNlGHT/World.git
+commit=154de4b590378cd0bd851cfffcefd3d96741cf3f
+source_file_count=45
+target_file_count_before_metadata=45
+OK  ./.gitignore
+OK  ./docs/engine-switch-animation-test.js
+OK  ./docs/manual-memory-link-test.js
+OK  ./docs/memory-engine-entity-test.js
+OK  ./docs/memory-event-summary-test.js
+OK  ./docs/memory-reextract-test.js
+OK  ./docs/memory-ui-layout-test.js
+OK  ./docs/memory-world-link-test.js
+OK  ./docs/reroll-decouple-fix.md
+OK  ./docs/sandbox-engine-isolation-test.js
+OK  ./docs/sandbox-entity-id-test.js
+OK  ./docs/sandbox-reroll-decouple-test.js
+OK  ./docs/世界书蓝绿灯触发.md
+OK  ./docs/世界引擎-v3.0.1-发布文案.md
+OK  ./docs/世界引擎-v3.0.2-发布文案.md
+OK  ./docs/升级内存崩溃修复.md
+OK  ./docs/批量重填世界推演.md
+OK  ./docs/记忆引擎-v1.1.0-发布文案.md
+OK  ./docs/记忆引擎-v1.1.1-发布文案.md
+OK  ./docs/酒馆缓存与存档.md
+OK  ./fingerprint-outline-with-magnifying-glass-svgrepo-com.svg
+OK  ./manifest.json
+OK  ./memory-engine-big-summary-prompt.js
+OK  ./memory-engine-data.js
+OK  ./memory-engine-prompt.js
+OK  ./memory-engine-settings.js
+OK  ./memory-engine-small-summary-prompt.js
+OK  ./memory-engine-timeline.js
+OK  ./memory-engine.js
+OK  ./style.css
+OK  ./world-engine-api.js
+OK  ./world-engine-chatcache.js
+OK  ./world-engine-core.js
+OK  ./world-engine-diag.js
+OK  ./world-engine-evolution.js
+OK  ./world-engine-inject-inspector.js
+OK  ./world-engine-inject.js
+OK  ./world-engine-ledger.js
+OK  ./world-engine-preset.js
+OK  ./world-engine-rules-loader.js
+OK  ./world-engine-store.js
+OK  ./world-engine-ui.js
+OK  ./world-engine-worldbook.js
+OK  ./world-engine.js
+OK  ./worldmap.svg
+result=PASS

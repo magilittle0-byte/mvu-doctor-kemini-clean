@@ -1,0 +1,36 @@
+[
+  {
+    "id": "4e99ef29-63db-4c5f-8e1c-3d64ac9d7b3e",
+    "scriptName": "隐藏引擎状态交接块（仅界面）",
+    "findRegex": "/<(life_state|state_handoff)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi",
+    "replaceString": "",
+    "trimStrings": [],
+    "placement": [
+      2
+    ],
+    "disabled": false,
+    "markdownOnly": true,
+    "promptOnly": false,
+    "runOnEdit": true,
+    "substituteRegex": 0,
+    "minDepth": null,
+    "maxDepth": null
+  },
+  {
+    "id": "c01366ad-6624-463a-a3db-efae7159a9bf",
+    "scriptName": "历史交接由脚本仅保留上一份（备用规则）",
+    "findRegex": "/<(life_state|state_handoff)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi",
+    "replaceString": "",
+    "trimStrings": [],
+    "placement": [
+      2
+    ],
+    "disabled": true,
+    "markdownOnly": false,
+    "promptOnly": true,
+    "runOnEdit": false,
+    "substituteRegex": 0,
+    "minDepth": null,
+    "maxDepth": null
+  }
+]
