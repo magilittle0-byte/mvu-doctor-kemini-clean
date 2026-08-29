@@ -72,20 +72,6 @@ function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '
     },
     async generateRaw(request) {
       doctorCalls.push(structuredClone(request));
-      if (String(request?.systemPrompt || '').includes('最终正文的人物发现器')) {
-        if (typeof options.generateDiscovery === 'function') return options.generateDiscovery(request, doctorCalls);
-        return '<人物发现>NONE</人物发现>';
-      }
-      if (/单一世界主体的私密(?:行动|后续)规划器/u.test(String(request?.systemPrompt || ''))) {
-        const system = String(request.systemPrompt || '');
-        const prompt = String(request.prompt || '');
-        const subjectId = prompt.match(/只属于\s+([^】]+)】/u)?.[1]?.trim() || 'subject-unknown';
-        if (system.includes('私密行动规划器')) {
-          const storedNext = prompt.match(/"nextAction"\s*:\s*"([^"]+)"/u)?.[1] || '检查当前锚点与既有条件';
-          return `[ACTOR_PLAN ${subjectId}]\n尝试：${storedNext}\n[/ACTOR_PLAN]`;
-        }
-        return `[ACTOR_PLAN ${subjectId}]\n目标：\n新增已知：\n下一步：根据本轮裁决复核下一项具体条件\n下次检查：99\n[/ACTOR_PLAN]`;
-      }
       if (typeof options.generateRaw === 'function') return options.generateRaw(request, doctorCalls);
       return '';
     },
@@ -195,7 +181,7 @@ function currentTicketAssignment(harness, name, ordinal = 0) {
 }
 
 function worldTicketsFromPrompt(prompt) {
-  const match = String(prompt || '').match(/【本地worldAdvanceTicket；每张只绑定同ID主体】\s*([\s\S]*?)\s*【全局裁决视图/u);
+  const match = String(prompt || '').match(/【已有主体的本地行动与裁决票】\s*([\s\S]*?)\s*【到期主体私密状态与各自历史】/u);
   if (!match) return [];
   try {
     const value = JSON.parse(match[1]);
@@ -350,7 +336,7 @@ test('finalize保存失败后processing可释放，但完整报告仍能从内�
   assert.doesNotMatch(serialized, /finalize-secret-key-5678|finalize-private\.example\.test/);
 });
 
-test('普通中文名由独立发现回执锁定，主档案模型第一次无变化也必须继续生成完整档案', async () => {
+test('普通中文名由一次人物填表调用自行发现，首次漏填后只做一次定向补全并原子保存', async () => {
   let profileCalls = 0;
   let discoveryCalls = 0;
   const profile = completeAuthorityProfile('林页');
@@ -382,7 +368,7 @@ test('普通中文名由独立发现回执锁定，主档案模型第一次无�
     accepted,
     [currentTicketAssignment(activeHarness, '林页')],
   ));
-  assert.equal(discoveryCalls, 1);
+  assert.equal(discoveryCalls, 0);
   assert.equal(profileCalls, 2);
   const saved = Object.values(store.profiles).find((entry) => entry?.name === '林页');
   assert.ok(saved);
@@ -397,7 +383,7 @@ test('普通中文名由独立发现回执锁定，主档案模型第一次无�
   assert.equal(store.fullRuns[0].trace.some((entry) => entry.stage === 'profile:nochange-rejected'), true);
 });
 
-test('正文无需输出人物票据回执，脚本按最终叙事顺序绑定生成前票据并完整填档', async () => {
+test('正文缺少人物票据回执时仍完整填档，但不得事后按叙事顺序伪造票据绑定', async () => {
   const profile = completeAuthorityProfile('林页');
   const harness = runtimeHarness(undefined, '', false, {
     extensionSettings: {
@@ -419,17 +405,16 @@ test('正文无需输出人物票据回执，脚本按最终叙事顺序绑定�
   );
   const saved = Object.values(store.profiles).find((entry) => entry?.name === '林页');
   assert.ok(saved);
-  assert.equal(saved.profileId, saved.ticketId);
+  assert.match(saved.profileId, /^profile-unbound-/);
+  assert.equal(saved.ticketId, undefined);
   assert.deepEqual(structuredClone(saved.ticketBinding), {
-    status: 'bound',
-    source: 'pre-generation-ticket-ledger',
-    ticketId: saved.ticketId,
+    status: 'receipt_missing',
+    source: 'creative-completion',
+    detail: 'receipt_not_present',
   });
-  assert.equal(store.ticketLedger[0].assignmentReceiptStatus, 'complete');
-  assert.equal(store.ticketLedger[0].assignmentMode, 'narrative-order');
-  assert.deepEqual(store.ticketLedger[0].assignments.map(({ name, source, ticketId }) => ({ name, source, ticketId })), [
-    { name: '林页', source: 'ticket', ticketId: saved.ticketId },
-  ]);
+  assert.notEqual(store.ticketLedger[0].assignmentReceiptStatus, 'complete');
+  assert.equal(store.ticketLedger[0].assignmentMode, 'unbound-without-generation-receipt');
+  assert.deepEqual(structuredClone(store.ticketLedger[0].assignments), []);
   assert.equal(store.fullRuns[0].outcome.profiles.ok, true);
   assert.equal(store.fullRuns[0].outcome.profiles.changed, 1);
 });
@@ -455,18 +440,18 @@ test('无人物NONE允许人物档案无变化；幻觉发现失败只重试人�
     assert.deepEqual(store.ticketLedger[0].assignments, []);
   });
 
-  await t.test('幻觉锚点', async () => {
+  await t.test('幻觉人物', async () => {
     let worldCalls = 0;
     const harness = runtimeHarness(undefined, '', false, {
       extensionSettings: {
         'mvu-doctor-kemini-clean': { enabled: true, variableDoctor: false, worldEngine: true, repairAttempts: 0 },
       },
-      generateDiscovery() {
-        return '<人物发现>\n人物：林页\n锚点：林页在码头检修吊灯\n</人物发现>';
-      },
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt || '');
-        if (!system.includes('全局世界裁决器') && !system.includes('世界长期主体发现器')) return '';
+        if (system.includes('MVU人物档案医师')) {
+          return `<人物档案更新>${JSON.stringify([completeAuthorityProfile('林页')])}</人物档案更新>`;
+        }
+        if (!system.includes('主体驱动的世界后台引擎')) return '';
         worldCalls += 1;
         return `世界摘要：石阶积水继续按天气条件变化。\n\n${newProcessWorldBlock({
           name: '石阶积水',
@@ -489,7 +474,7 @@ test('无人物NONE允许人物档案无变化；幻觉发现失败只重试人�
     ));
     assert.equal(Object.keys(store.profiles).length, 0);
     assert.equal(store.pendingRetry?.kind, 'profile');
-    assert.match(store.fullRuns[0].outcome.profiles.error, /不是最终正文逐字出现|锚点不是最终正文连续逐字原文/);
+    assert.match(store.fullRuns[0].outcome.profiles.error, /正文缺少人物档案完成信号|没有最终正文逐字出现的稳定name或alias身份锚点/);
     assert.equal(worldCalls > 0, true);
     assert.equal(store.world.subjects.some((subject) => subject.name === '石阶积水'), true);
   });
@@ -519,14 +504,21 @@ test('人物内容失败不阻塞下一回合，历史补档只合入当前人�
     generateRaw({ systemPrompt, prompt }) {
       const system = String(systemPrompt || '');
       if (system.includes('MVU人物档案医师')) {
-        if (!String(prompt || '').includes('林页在药房门口递出采购清单')) return '<人物档案无变化/>';
+        const profilePrompt = String(prompt || '');
+        if (profilePrompt.includes('【建档证据之后、当前写入点之前的已接受公开正文】')) {
+          historicalProfilePrompt = profilePrompt;
+          return `<人物档案更新>${JSON.stringify([completeProfile])}</人物档案更新>`;
+        }
+        const finalNarrative = profilePrompt.split('【最终接受叙事】')[1] || '';
+        if (!finalNarrative.includes('林页在药房门口递出采购清单')) return '<人物档案无变化/>';
         r1ProfileCalls += 1;
-        if (r1ProfileCalls === 1) return '<人物档案更新>[{"name":"林页"}]</人物档案更新>';
-        historicalProfilePrompt = String(prompt || '');
-        return `<人物档案更新>${JSON.stringify([completeProfile])}</人物档案更新>`;
+        return '<人物档案更新>[{"name":"林页"}]</人物档案更新>';
       }
-      if (system.includes('世界长期主体发现器')) {
+      if (system.includes('主体驱动的世界后台引擎')) {
         worldCalls += 1;
+        if (String(prompt || '').includes('subjectId')) {
+          return `世界摘要：既有石阶积水按本轮票据继续演化。\n\n${scheduledWorldBlocks(prompt, '石阶积水').join('\n\n')}`;
+        }
         return `世界摘要：石阶积水成为独立环境进程。\n\n${newProcessWorldBlock({
           name: '石阶积水',
           sourceAnchor: '雨水沿着空荡的石阶向下流去',
@@ -540,10 +532,6 @@ test('人物内容失败不阻塞下一回合，历史补档只合入当前人�
           thread: '石阶降雨进程',
         })}`;
       }
-      if (system.includes('全局世界裁决器')) {
-        worldCalls += 1;
-        return `世界摘要：既有石阶积水按本轮票据继续演化。\n\n${scheduledWorldBlocks(prompt, '石阶积水').join('\n\n')}`;
-      }
       return '';
     },
   });
@@ -553,10 +541,15 @@ test('人物内容失败不阻塞下一回合，历史补档只合入当前人�
     r1Accepted,
     [currentTicketAssignment(activeHarness, '林页')],
   ));
-  assert.equal(first.store.pendingRetry?.kind, 'profile');
+  assert.equal(first.store.pendingRetry?.kind, 'profile', JSON.stringify(first.store.fullRuns[0].outcome));
   assert.equal(first.store.pendingRetry?.messageId, first.messageId);
   const r1TicketId = first.store.pendingRetry?.session?.tickets?.[0]?.ticketId;
   assert.ok(r1TicketId);
+  assert.deepEqual(
+    structuredClone(first.store.pendingRetry?.session?.ticketAssignments || []),
+    [{ name: '林页', source: 'ticket', ticketId: r1TicketId }],
+    JSON.stringify(first.store.pendingRetry?.session),
+  );
   assert.equal(first.store.world.subjects.some((subject) => subject.name === '石阶积水'), true);
   assert.equal(first.store.fullRuns[0].outcome.world.ok, true);
 
@@ -599,7 +592,15 @@ test('人物内容失败不阻塞下一回合，历史补档只合入当前人�
   const r2MvuAfterCatchup = structuredClone(harness.mvuByMessage.get(second.messageId) || { stat_data: {} });
   const savedProfiles = Object.values(r2MvuAfterCatchup.stat_data?.人物档案?.byActorId || {});
   assert.equal(savedProfiles.some((profile) => profile.name === '林页'), true);
-  assert.equal(savedProfiles.find((profile) => profile.name === '林页')?.ticketId, r1TicketId);
+  assert.equal(
+    savedProfiles.find((profile) => profile.name === '林页')?.ticketId,
+    r1TicketId,
+    JSON.stringify({
+      pending: second.store.pendingRetries,
+      ledger: second.store.ticketLedger,
+      profile: savedProfiles.find((profile) => profile.name === '林页'),
+    }),
+  );
   assert.deepEqual(harness.mvuByMessage.get(first.messageId) || { stat_data: {} }, r1MvuBeforeCatchup);
   const withoutProfiles = (data) => {
     const clone = structuredClone(data || { stat_data: {} });
@@ -1101,7 +1102,7 @@ test('retrying a variable failure reuses the already successful profile result i
           profileCalls += 1;
           return '<人物档案无变化/>';
         }
-        if (system.includes('全局世界裁决器') || system.includes('世界长期主体发现器')) {
+        if (system.includes('主体驱动的世界后台引擎')) {
           return `世界摘要：正文中的持续风声建立了可追踪的天气进程。\n\n${newProcessWorldBlock({
             name: '窗外的风声',
             sourceAnchor: '听见窗外的风声持续了一阵',
@@ -1768,7 +1769,7 @@ test('two accepted swipes round-trip their own Doctor outcome by message, swipe 
           profile.evidence = [branchA ? '最终正文明确林甲在东侧柜台核对账册' : '最终正文明确林乙在西侧门廊检查信件'];
           return `<人物档案更新>${JSON.stringify([profile])}</人物档案更新>`;
         }
-        if (system.includes('全局世界裁决器') || system.includes('世界长期主体发现器')) {
+        if (system.includes('主体驱动的世界后台引擎')) {
           const label = branchA ? '甲分支后台状态' : '乙分支后台状态';
           const sourceAnchor = branchA ? '林甲在东侧柜台查阅并核对了第一本账册' : '林乙在西侧门廊阅读并检查了第二封信';
           const blocks = [
@@ -1990,7 +1991,7 @@ test('Story Oracle式变量医生只在current上纠正错误字段，保留正�
       契约者: {
         当前时间: { 客观时间: '校准前', 地点: '准备室' },
         头部: { 姓名: '旧姓名' },
-        属性: { 基础: { STR: 5, AGI: 5, CON: 5, PER: 5 }, 未分配属性点: 15 },
+        属性: { 基础: { STR: 3, AGI: 3, CON: 3, PER: 3 }, 未分配属性点: 12 },
         装备: { 主武器: { 名称: '无', 效果: {} } },
       },
       其他扩展: { 标记: '上一楼层' },
@@ -2002,7 +2003,7 @@ test('Story Oracle式变量医生只在current上纠正错误字段，保留正�
       契约者: {
         当前时间: { 客观时间: '校准前', 地点: '准备室' },
         头部: { 姓名: '旧姓名' },
-        属性: { 基础: { STR: 5, AGI: 5, CON: 5, PER: 7 }, 未分配属性点: 15 },
+        属性: { 基础: { STR: 3, AGI: 3, CON: 3, PER: 4 }, 未分配属性点: 12 },
         装备: { 主武器: structuredClone(mainWeapon) },
       },
       其他扩展: { 标记: '数据库本回合写入', 嵌套: { 保留: true } },
@@ -2015,11 +2016,11 @@ test('Story Oracle式变量医生只在current上纠正错误字段，保留正�
     { op: 'replace', path: '/契约者/当前时间/客观时间', value: '第1天' },
     { op: 'replace', path: '/契约者/当前时间/地点', value: '校准大厅' },
     { op: 'replace', path: '/契约者/头部/姓名', value: '测试员乙' },
-    { op: 'delta', path: '/契约者/属性/基础/STR', value: 5 },
+    { op: 'delta', path: '/契约者/属性/基础/STR', value: 4 },
     { op: 'delta', path: '/契约者/属性/基础/AGI', value: 3 },
     { op: 'delta', path: '/契约者/属性/基础/CON', value: 2 },
-    { op: 'delta', path: '/契约者/属性/基础/PER', value: 3 },
-    { op: 'delta', path: '/契约者/属性/未分配属性点', value: -15 },
+    { op: 'delta', path: '/契约者/属性/基础/PER', value: 2 },
+    { op: 'delta', path: '/契约者/属性/未分配属性点', value: -12 },
   ];
   const parseTrace = [];
   let sawNarrativeAndOriginalBlock = false;
@@ -2100,7 +2101,7 @@ test('Story Oracle式变量医生只在current上纠正错误字段，保留正�
   assert.equal(readback.stat_data.契约者.当前时间.客观时间, '第1天');
   assert.equal(readback.stat_data.契约者.当前时间.地点, '校准大厅');
   assert.equal(readback.stat_data.契约者.头部.姓名, '测试员乙');
-  assert.deepEqual(readback.stat_data.契约者.属性.基础, { STR: 10, AGI: 8, CON: 7, PER: 10 });
+  assert.deepEqual(readback.stat_data.契约者.属性.基础, { STR: 7, AGI: 6, CON: 5, PER: 6 });
   assert.equal(readback.stat_data.契约者.属性.未分配属性点, 0);
   assert.deepEqual(readback.stat_data.契约者.装备.主武器, mainWeapon);
   assert.equal(Object.hasOwn(readback.stat_data.契约者.装备.主武器.效果, '精密校准'), true);
@@ -2382,7 +2383,7 @@ test('metadata-only profile persistence failure rolls back the profile and preve
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt);
         if (system.includes('MVU人物档案医师')) return `<人物档案更新>${JSON.stringify([profile])}</人物档案更新>`;
-        if (system.includes('全局世界裁决器') || system.includes('世界长期主体发现器')) {
+        if (system.includes('主体驱动的世界后台引擎')) {
           worldCalls += 1;
           return '世界摘要：本回合无新长期主体';
         }
@@ -2494,7 +2495,7 @@ test('same-floor continue uses the new accepted fingerprint once while manual re
       generateRaw({ systemPrompt, prompt }) {
         const system = String(systemPrompt);
         if (system.includes('MVU人物档案医师')) return '<人物档案无变化/>';
-        if (system.includes('全局世界裁决器') || system.includes('世界长期主体发现器')) {
+        if (system.includes('主体驱动的世界后台引擎')) {
           worldCalls += 1;
           const first = worldCalls === 1;
           if (first) {
@@ -2531,7 +2532,7 @@ test('same-floor continue uses the new accepted fingerprint once while manual re
   assert.ok(firstRun.worldSourceKey);
   assert.equal(firstRun.outcome.ok, true);
   assert.equal(store.world.receipts.some((receipt) => receipt.sourceKey === firstRun.worldSourceKey && receipt.status === 'applied'), true);
-  assert.equal(store.world.changes.some((change) => change.source?.sourceKey === firstRun.worldSourceKey), false);
+  assert.equal(store.world.changes.some((change) => change.source?.sourceKey === firstRun.worldSourceKey), true);
 
   await harness.handlers.get('generation_started')('continue', {}, false);
   harness.context.chat[1].mes = continuedText;
@@ -2543,7 +2544,7 @@ test('same-floor continue uses the new accepted fingerprint once while manual re
   assert.equal(continuedRun.outcome.ok, true, JSON.stringify(continuedRun.outcome));
   assert.notEqual(continuedRun.worldSourceKey, firstRun.worldSourceKey);
   assert.equal(store.world.receipts.some((receipt) => receipt.sourceKey === firstRun.worldSourceKey && receipt.status === 'applied'), true);
-  assert.equal(store.world.changes.some((change) => change.source?.sourceKey === firstRun.worldSourceKey), false);
+  assert.equal(store.world.changes.some((change) => change.source?.sourceKey === firstRun.worldSourceKey), true);
   assert.equal(store.world.changes.some((change) => change.source?.sourceKey === continuedRun.worldSourceKey), true);
   const continuedChangesBeforeManual = store.world.changes.filter((change) => change.source?.sourceKey === continuedRun.worldSourceKey).length;
   const worldRevisionBeforeManual = store.world.revision;
@@ -2968,7 +2969,7 @@ test('changing accepted text and swipe while the profile model runs leaves profi
           await profileModelGate;
           return `<人物档案更新>${JSON.stringify([profile])}</人物档案更新>`;
         }
-        if (system.includes('全局世界裁决器') || system.includes('世界长期主体发现器')) {
+        if (system.includes('主体驱动的世界后台引擎')) {
           worldCalls += 1;
           return '世界摘要：本回合无新长期主体';
         }

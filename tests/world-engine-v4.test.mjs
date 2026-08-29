@@ -4,13 +4,13 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {
   WORLD_SCHEMA_VERSION,
+  activeWorldCount,
   applyWorldProposal,
   createWorldAdvanceTickets,
   emptyWorldState,
   formatGenerationInjection,
   markWorldEffectsShown,
   normalizeWorldState,
-  parseActorPlan,
   parseWorldProposal,
   privateProfileDigestFromData,
   profileDigestFromData,
@@ -18,10 +18,7 @@ import {
   seedWorldSubjectsFromProfiles,
   selectDueWorldSubjects,
   selectWorldRecall,
-  sanitizeWorldAdjudication,
-  validateWorldAdjudication,
   worldConsistencyReport,
-  worldAdjudicationDigest,
 } from '../core.mjs';
 
 const sourceAt = '2026-08-29T00:00:00.000Z';
@@ -73,24 +70,6 @@ function ticket(subjectId, overrides = {}) {
     resultEnvelope: 'partial',
     userRelation: 'unrelated',
     publicChannel: 'none',
-    ...overrides,
-  };
-}
-
-function nextPlan(subjectId, boundTicket, overrides = {}, adjudication = {}) {
-  return {
-    planId: `next-plan-${subjectId}`,
-    subjectId,
-    phase: 'next',
-    goal: '',
-    knowledge: [],
-    nextAction: '检查结算后的新条件',
-    nextCheckTurn: 3,
-    basedOnTicketId: boundTicket.ticketId,
-    basedOnAttempt: boundTicket.attemptDirective,
-    basedOnAdjudicationDigest: worldAdjudicationDigest(adjudication),
-    plannedTurn: 2,
-    sourceKey: 'chat-a:message:2',
     ...overrides,
   };
 }
@@ -207,139 +186,29 @@ test('同一seed和主体得到稳定裁决票，主体子集或排列顺序不�
   assert.deepEqual(subset[0], fullLin);
 });
 
-test('隔离主体计划使用自然语言绑定稳定ID，冻结attempt后才生成裁决ticket', () => {
-  const lin = subject({ id: 'person-lin', type: 'person', name: '林澄', nextAction: '旧的未签名行动' });
-  const parsed = parseActorPlan(`[ACTOR_PLAN person-lin]
-尝试：只检查自己保管的原始收据
-[/ACTOR_PLAN]`, {
-    subjectId: 'person-lin',
-    phase: 'bootstrap',
-    turn: 2,
-    sourceKey: 'chat-a:message:2',
-  });
-
-  assert.equal(parsed.ok, true);
-  const [frozen] = createWorldAdvanceTickets([lin], {
-    seed: 'chat-a:message:2',
-    turn: 2,
-    actorPlans: [parsed.plan],
-  });
-  assert.equal(frozen.actorPlanId, parsed.plan.planId);
-  assert.equal(frozen.attemptDirective, '只检查自己保管的原始收据');
-  assert.notEqual(frozen.attemptDirective, lin.nextAction);
-});
-
-test('严格世界提交只接受ticket逐字attempt，规划字段只归绑定主体plan所有且局部失败不拖累其他主体', () => {
-  const baseline = worldWith([
-    subject({ id: 'person-lin', type: 'person', name: '林澄', goal: '旧目标甲', knowledge: ['旧知识甲'], nextAction: '旧行动甲' }),
-    subject({ id: 'faction-port', type: 'faction', name: '北港行会', goal: '旧目标乙', knowledge: ['旧知识乙'], nextAction: '旧行动乙' }),
-  ]);
-  const linTicket = ticket('person-lin', { actorPlanId: 'bootstrap-lin', attemptDirective: '逐字行动甲' });
-  const portTicket = ticket('faction-port', { actorPlanId: 'bootstrap-port', attemptDirective: '逐字行动乙' });
+test('既有主体无需actor plan法庭即可宽容合并，旧字段未返回时保持不变', () => {
+  const original = subject({ id: 'person-lin', name: '林澄', knowledge: ['亲历旧水门关闭'] });
   const proposal = parseWorldProposal(`[SUBJECT person-lin]
-尝试：逐字行动甲
-结果：完成了可核验的小步
-状态变化：甲的客观状态已经改变
-现状：甲正在收好刚取得的凭据
-目标：GLOBAL_GOAL_SENTINEL
-已知：GLOBAL_KNOWLEDGE_SENTINEL
-下一步：GLOBAL_NEXT_SENTINEL
-下次检查：99
-[/SUBJECT]
-
-[SUBJECT faction-port]
-尝试：近义改写后的行动乙
-结果：声称已经完成
-状态变化：乙声称发生变化
-现状：乙声称已推进
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const adjudicationBySubject = new Map(proposal.updates.map((update) => [update.subjectId, update]));
-  const merged = applyWorldProposal(baseline, proposal, {
+尝试：检查旧水门外侧石阶
+结果类型：partial
+结果：发现新的水痕但尚未确认来源
+代价：经过一段观察时间
+状态变化：第二级石阶出现新水痕
+现状：已记录新水痕，来源仍待确认
+下一步：对照上一时段记录
+下次检查：3
+[/SUBJECT]`, { subjects: [original] });
+  const merged = applyWorldProposal(worldWith([original]), proposal, {
     turn: 2,
-    sourceKey: 'chat-a:message:2',
-    tickets: [linTicket, portTicket],
-    actorPlans: [
-      nextPlan('person-lin', linTicket, { goal: '甲自己的新目标', nextAction: '甲根据结果检查下一张凭据', nextCheckTurn: 4 }, adjudicationBySubject.get('person-lin')),
-      nextPlan('faction-port', portTicket, { goal: '乙自己的新目标', nextAction: '乙检查下一批货', nextCheckTurn: 4 }, adjudicationBySubject.get('faction-port')),
-    ],
-    scheduledSubjects: baseline.subjects,
-    requireActorPlans: true,
-  });
-
-  const lin = merged.world.subjects.find((entry) => entry.id === 'person-lin');
-  const port = merged.world.subjects.find((entry) => entry.id === 'faction-port');
-  assert.deepEqual(merged.applied, ['person-lin']);
-  assert.equal(lin.goal, '甲自己的新目标');
-  assert.deepEqual(lin.knowledge, ['旧知识甲']);
-  assert.equal(lin.nextAction, '甲根据结果检查下一张凭据');
-  assert.equal(lin.nextCheckTurn, 4);
-  assert.equal(lin.planReceipt.planId, 'next-plan-person-lin');
-  assert.doesNotMatch(JSON.stringify(lin), /GLOBAL_/u);
-  assert.equal(port.current, '进程仍在运作');
-  assert.equal(merged.skipped.some((entry) => entry.subjectId === 'faction-port' && entry.code === 'attempt_exact_mismatch'), true);
-});
-
-test('缺少绑定后续plan时只拒绝该主体，另一个主体仍能在同一世界revision提交', () => {
-  const baseline = worldWith([
-    subject({ id: 'person-lin', type: 'person', name: '林澄' }),
-    subject({ id: 'faction-port', type: 'faction', name: '北港行会' }),
-  ]);
-  const linTicket = ticket('person-lin', { actorPlanId: 'bootstrap-lin', attemptDirective: '行动甲' });
-  const portTicket = ticket('faction-port', { actorPlanId: 'bootstrap-port', attemptDirective: '行动乙' });
-  const proposal = parseWorldProposal(`[SUBJECT person-lin]
-尝试：行动甲
-结果：取得一项局部进展
-状态变化：甲的状态发生具体变化
-现状：甲完成本轮步骤
-[/SUBJECT]
-[SUBJECT faction-port]
-尝试：行动乙
-结果：取得一项局部进展
-状态变化：乙的状态发生具体变化
-现状：乙完成本轮步骤
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const linAdjudication = proposal.updates.find((update) => update.subjectId === 'person-lin');
-  const merged = applyWorldProposal(baseline, proposal, {
-    turn: 2,
-    sourceKey: 'chat-a:message:2',
-    tickets: [linTicket, portTicket],
-    actorPlans: [nextPlan('person-lin', linTicket, {}, linAdjudication)],
-    scheduledSubjects: baseline.subjects,
-    requireActorPlans: true,
+    sourceKey: 'existing-single-batch',
+    scheduledSubjects: [original],
   });
 
   assert.deepEqual(merged.applied, ['person-lin']);
-  assert.deepEqual(merged.unresolvedSubjectIds, ['faction-port']);
-  assert.equal(merged.world.revision, 1);
-  assert.equal(merged.skipped.some((entry) => entry.subjectId === 'faction-port' && entry.code === 'actor_plan_missing'), true);
-});
-
-test('局部重试的裁决内容变化时不得复用旧next plan，必须按新adjudication重新规划', () => {
-  const baseline = worldWith([subject({ id: 'person-lin', type: 'person', name: '林澄' })]);
-  const boundTicket = ticket('person-lin', { actorPlanId: 'bootstrap-lin', attemptDirective: '检查原始收据' });
-  const staleAdjudication = {
-    subjectId: 'person-lin', attempt: '检查原始收据', outcome: '旧返回声称找到编号', cost: '一个时段',
-    stateChange: '旧返回声称掌握编号', current: '旧返回现状',
-  };
-  const proposal = parseWorldProposal(`[SUBJECT person-lin]
-尝试：检查原始收据
-结果：重试后确认收据已经被水浸毁
-代价：耗费一个时段且失去原件
-状态变化：可用证据从原始收据变成残留编号拓印
-现状：林澄只保留了一份模糊拓印
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const merged = applyWorldProposal(baseline, proposal, {
-    turn: 2,
-    sourceKey: 'chat-a:message:2',
-    tickets: [boundTicket],
-    actorPlans: [nextPlan('person-lin', boundTicket, { nextAction: '依据旧成功结果追查编号' }, staleAdjudication)],
-    scheduledSubjects: baseline.subjects,
-    requireActorPlans: true,
-  });
-
-  assert.deepEqual(merged.applied, []);
-  assert.equal(merged.skipped.some((entry) => entry.code === 'actor_plan_adjudication_mismatch'), true);
-  assert.equal(merged.world.subjects[0].nextAction, '检查下一阶段条件');
+  assert.deepEqual(merged.world.subjects[0].knowledge, original.knowledge);
+  assert.equal(merged.world.changes.length, 1);
+  assert.match(merged.world.subjects[0].current, /新水痕/);
+  assert.match(merged.world.subjects[0].nextAction, /对照/);
 });
 
 test('自然语言回复逐块解析，坏块只跳过自身，其他主体仍局部提交', () => {
@@ -394,44 +263,6 @@ test('自然语言回复逐块解析，坏块只跳过自身，其他主体仍�
   assert.equal(merged.world.failures.some((entry) => entry.code === 'empty_subject_block'), true);
 });
 
-test('到期主体必须执行ticket绑定的attemptDirective，擅自换行动只局部跳过', () => {
-  const baseline = worldWith([
-    subject({ id: 'person-lin', type: 'person', name: '林澄', current: '正在药房核对账册', nextAction: '去仓库核对原始收据' }),
-    subject({ id: 'faction-port', type: 'faction', name: '北港行会', current: '正在清点三号货箱', nextAction: '检查三号货箱封条' }),
-  ]);
-  const proposal = parseWorldProposal(`[SUBJECT person-lin]
-尝试：去仓库核对原始收据
-结果：找到一张编号重复的收据
-状态变化：林澄确认同一批货被重复登记
-现状：正在比对重复编号
-下一步：询问仓库登记员
-下次检查：3
-[/SUBJECT]
-
-[SUBJECT faction-port]
-尝试：召集人手突袭东门商队
-结果：商队被迫停下
-状态变化：东门交通受到干扰
-现状：行会成员控制了东门
-下一步：扣押商队货物
-下次检查：3
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const merged = applyWorldProposal(baseline, proposal, {
-    turn: 2,
-    sourceKey: 'chat-a:message:2',
-    tickets: [
-      ticket('person-lin', { attemptDirective: '去仓库核对原始收据' }),
-      ticket('faction-port', { attemptDirective: '检查三号货箱封条' }),
-    ],
-    scheduledSubjects: baseline.subjects,
-  });
-
-  assert.deepEqual(merged.applied, ['person-lin']);
-  assert.equal(merged.world.subjects.find((entry) => entry.id === 'faction-port').current, '正在清点三号货箱');
-  assert.equal(merged.world.changes.some((entry) => entry.subjectIds.includes('faction-port')), false);
-  assert.equal(merged.skipped.some((entry) => entry.subjectId === 'faction-port' && entry.code === 'attempt_directive_mismatch'), true);
-  assert.deepEqual(merged.unresolvedSubjectIds, ['faction-port']);
-});
 
 test('拼错的主体ID只形成局部错误，绝不会按返回位置串写到另一个主体', () => {
   const baseline = worldWith([
@@ -544,386 +375,57 @@ test('NEW不得用现有主体同名再造第二份权威，也不得借NEW覆�
   assert.equal(merged.skipped.some((entry) => entry.code === 'duplicate_new_subject'), true);
 });
 
-test('NEW可用正文逐字sourceAnchor命名推断过程，名称和锚点都无正文依据时拒绝', () => {
-  const baseline = worldWith([], { turn: 0, summary: '' });
-  const acceptedText = '石阶上的水痕比刚才高了一层，旧水门本身仍然关闭。';
-  const anchoredProposal = parseWorldProposal(`[SUBJECT NEW]
-类型：process
-名称：旧水门水位变化
-正文锚点：石阶上的水痕比刚才高了一层
-稳定锚点：水位随上游来水、闸门流量与地势持续变化
-现状：下游石阶水痕已经升高一层
-目标：按来水与排水条件继续演化
-尝试：记录本时段水痕高度
-结果：确认水痕高于上一时段
-状态变化：旧水门下游水位出现持续上升迹象
-下一步：下一时段复核水痕
-[/SUBJECT]`, { subjects: [] });
-  const anchored = applyWorldProposal(baseline, anchoredProposal, {
-    turn: 1,
-    acceptedText,
-    scheduledSubjects: [],
-  });
-  assert.deepEqual(anchored.applied.length, 1);
-  assert.equal(anchored.world.subjects[0].name, '旧水门水位变化');
-
-  const unsupportedProposal = parseWorldProposal(`[SUBJECT NEW]
-类型：process
-名称：北港秘密金融危机
-稳定锚点：由后台模型自行推断的长期经济过程
-现状：危机正在暗中扩大
-目标：继续扩大
-尝试：计算债务
-结果：债务增加
-状态变化：危机进一步扩大
-下一步：继续计算
-[/SUBJECT]`, { subjects: [] });
-  const unsupported = applyWorldProposal(baseline, unsupportedProposal, {
-    turn: 1,
-    acceptedText,
-    scheduledSubjects: [],
-  });
-  assert.deepEqual(unsupported.applied, []);
-  assert.equal(unsupported.world.subjects.length, 0);
-  assert.equal(unsupported.skipped.some((entry) => entry.code === 'new_subject_missing_accepted_anchor'), true);
-});
-
-test('发现扫描返回的新主体意图不会直接成为可信计划，必须等待单主体隔离bootstrap', () => {
-  const baseline = worldWith([], { turn: 1 });
+test('NEW以世界规则来源建立完整主体并在同轮推进，不要求正文逐字锚点', () => {
   const proposal = parseWorldProposal(`[SUBJECT NEW]
 类型：process
-名称：旧水门水压
-正文锚点：旧水门的铰链正在渗水
-稳定锚点：水压随上游来水与闸门状态变化
-现状：旧水门的铰链正在渗水
-目标：GLOBAL_DISCOVERY_GOAL
-已知：GLOBAL_DISCOVERY_KNOWLEDGE
-下一步：GLOBAL_DISCOVERY_NEXT
-尝试：GLOBAL_DISCOVERY_ATTEMPT
-结果：正文已经证明渗水
-状态变化：铰链处存在稳定渗水
-[/SUBJECT]`, { subjects: [] });
-  const merged = applyWorldProposal(baseline, proposal, {
-    turn: 2,
-    acceptedText: '远处，旧水门的铰链正在渗水。',
-    sourceKey: 'chat-a:message:2',
-    scheduledSubjects: [],
-    requireActorPlans: true,
+名称：城南地下水位
+来源依据：季节降雨与地下排水规则会持续改变水位
+稳定锚点：城南地下水位随降雨和排水持续变化
+现状：地下水位已接近旧排水口
+目标：按降雨和排水条件持续演化
+已知：本季降雨仍在继续
+资源：地下蓄水空间
+约束：旧排水口流量有限
+尝试：结算本时段来水与排水
+结果类型：partial
+结果：水位继续上升
+代价：经过一个世界时段
+状态变化：水位已到达旧排水口下沿
+下一步：下一时段复核排水口压力
+下次检查：2
+状态：active
+支线：城南地下水位
+[/SUBJECT]`);
+  const merged = applyWorldProposal(emptyWorldState('chat-a'), proposal, {
+    turn: 1,
+    sourceKey: 'world-rule-source',
+    acceptedText: '玩家仍在城北，与城南无直接交集。',
   });
-  const discovered = merged.world.subjects[0];
 
   assert.equal(merged.applied.length, 1);
-  assert.equal(discovered.goal, '');
-  assert.deepEqual(discovered.knowledge, []);
-  assert.equal(discovered.nextAction, '');
-  assert.equal(discovered.nextCheckTurn, 3);
-  assert.equal(discovered.planReceipt, null);
-  assert.equal(discovered.status, 'waiting');
-  assert.equal(discovered.current, '旧水门的铰链正在渗水');
-  assert.equal(discovered.anchor, '旧水门的铰链正在渗水');
-  assert.deepEqual(discovered.resources, []);
-  assert.deepEqual(discovered.constraints, []);
-  assert.deepEqual(discovered.threadKeys, []);
-  assert.equal(merged.world.changes.length, 0);
+  assert.equal(merged.world.subjects.length, 1);
+  assert.equal(merged.world.changes.length, 1);
+  assert.equal(merged.world.subjects[0].status, 'active');
+  assert.match(merged.world.subjects[0].anchor, /地下水位/);
 });
 
-test('partial票据拒绝整体完成与纯失败零进展，只接受真实阶段性变化', () => {
-  const baseline = worldWith([
-    subject({ id: 'partial-total', name: '整体完成样本' }),
-    subject({ id: 'partial-none', name: '零进展样本' }),
-    subject({ id: 'partial-staged', name: '阶段进展样本' }),
-  ]);
-  const tickets = baseline.subjects.map((entry) => ticket(entry.id, {
-    actorPlanId: `plan-${entry.id}`,
-    attemptDirective: `执行-${entry.id}`,
-    resultEnvelope: 'partial',
-  }));
-  const proposal = parseWorldProposal(`[SUBJECT partial-total]
-尝试：执行-partial-total
-结果：整个任务已经全部完成
-状态变化：全部阶段彻底完成，整体目标已经达成
-现状：任务完全结束
-下一步：检查记录
-下次检查：3
-[/SUBJECT]
-
-[SUBJECT partial-none]
-尝试：执行-partial-none
-结果：行动完全失败，没有任何进展
-状态变化：完全失败，保持原状且没有变化
-现状：一切仍旧不变
-下一步：更换条件后再试
-下次检查：3
-[/SUBJECT]
-
-[SUBJECT partial-staged]
-尝试：执行-partial-staged
-结果：完成第一阶段，但后续阶段尚未开始
-状态变化：第一批凭据已经核对并封存，余下凭据仍待处理
-现状：核对工作进入第二阶段
-下一步：核对余下凭据
-下次检查：3
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const merged = applyWorldProposal(baseline, proposal, {
-    turn: 2,
-    tickets,
-    scheduledSubjects: baseline.subjects,
-  });
-
-  assert.deepEqual(merged.applied, ['partial-staged']);
-  assert.equal(merged.skipped.some((entry) => entry.subjectId === 'partial-total' && entry.code === 'result_envelope_conflict'), true);
-  assert.equal(merged.skipped.some((entry) => entry.subjectId === 'partial-none' && entry.code === 'result_envelope_conflict'), true);
-  assert.equal(validateWorldAdjudication(proposal.updates[2], tickets[2]).ok, true);
-});
-
-test('全局裁决的跨主体私密片段局部拒绝，既有threadKeys冻结且新键必须有本主体证据', () => {
-  const baseline = worldWith([
-    subject({
-      id: 'subject-a', name: '甲', current: 'A_PRIVATE_CURRENT_SENTINEL',
-      resources: ['A_PRIVATE_RESOURCE_SENTINEL'], constraints: ['A_PRIVATE_CONSTRAINT_SENTINEL'],
-      threadKeys: ['A_PRIVATE_THREAD_SENTINEL'],
-    }),
-    subject({ id: 'subject-b', name: '乙', current: '乙保持自己的旧状态', resources: ['乙方资源'], constraints: ['乙方限制'], threadKeys: ['乙方既有主题'] }),
-  ]);
-  const tickets = [
-    ticket('subject-a', { actorPlanId: 'plan-a', attemptDirective: '甲执行自己的冻结尝试' }),
-    ticket('subject-b', { actorPlanId: 'plan-b', attemptDirective: '乙执行自己的冻结尝试' }),
-  ];
-  const proposal = parseWorldProposal(`[SUBJECT subject-a]
-尝试：甲执行自己的冻结尝试
-结果：甲完成第一阶段并建立A_SELF_PROVEN_THREAD
-状态变化：第一阶段已经推进，A_SELF_PROVEN_THREAD形成可追踪记录
-现状：甲进入下一阶段
-支线：A_PRIVATE_THREAD_SENTINEL；A_SELF_PROVEN_THREAD；A_UNPROVEN_THREAD
-[/SUBJECT]
-
-[SUBJECT subject-b]
-尝试：乙执行自己的冻结尝试
-结果：乙错误取得A_PRIVATE_RESOURCE_SENTINEL
-状态变化：A_PRIVATE_CURRENT_SENTINEL
-现状：A_PRIVATE_CURRENT_SENTINEL
-资源：A_PRIVATE_RESOURCE_SENTINEL
-约束：A_PRIVATE_CONSTRAINT_SENTINEL
-支线：A_PRIVATE_THREAD_SENTINEL
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const cleanA = sanitizeWorldAdjudication(proposal.updates[0], baseline.subjects[0], { subjects: baseline.subjects });
-  const blockedB = sanitizeWorldAdjudication(proposal.updates[1], baseline.subjects[1], { subjects: baseline.subjects });
-  assert.equal(cleanA.ok, true);
-  assert.deepEqual(cleanA.update.threadKeys, ['A_PRIVATE_THREAD_SENTINEL', 'A_SELF_PROVEN_THREAD']);
-  assert.equal(blockedB.ok, false);
-  assert.equal(blockedB.code, 'cross_subject_private_leak');
-
-  const plans = [
-    nextPlan('subject-a', tickets[0], { nextAction: '甲检查第二阶段条件' }, proposal.updates[0]),
-    nextPlan('subject-b', tickets[1], { nextAction: '乙检查自己的条件' }, proposal.updates[1]),
-  ];
-  const merged = applyWorldProposal(baseline, proposal, {
-    turn: 2,
-    sourceKey: 'chat-a:message:2',
-    tickets,
-    scheduledSubjects: baseline.subjects,
-    actorPlans: plans,
-    requireActorPlans: true,
-  });
-  const a = merged.world.subjects.find((entry) => entry.id === 'subject-a');
-  const b = merged.world.subjects.find((entry) => entry.id === 'subject-b');
-  assert.deepEqual(merged.applied, ['subject-a']);
-  assert.deepEqual(merged.unresolvedSubjectIds, ['subject-b']);
-  assert.deepEqual(a.threadKeys, ['A_PRIVATE_THREAD_SENTINEL', 'A_SELF_PROVEN_THREAD']);
-  assert.equal(b.current, '乙保持自己的旧状态');
-  assert.deepEqual(b.resources, ['乙方资源']);
-  assert.deepEqual(b.constraints, ['乙方限制']);
-  assert.deepEqual(b.threadKeys, ['乙方既有主题']);
-  assert.equal(merged.skipped.some((entry) => entry.subjectId === 'subject-b' && entry.code === 'cross_subject_private_leak'), true);
-});
-
-test('跨主体旧裁决私密字段进入禁用片段，本主体自己的历史仍可用于连续结算', () => {
-  const baseline = worldWith([
-    subject({ id: 'subject-a', name: '甲', current: '甲维持自己的当前状态' }),
-    subject({ id: 'subject-b', name: '乙', current: '乙维持自己的当前状态' }),
-  ]);
-  const subjectHistories = {
-    'subject-a': [{
-      attempt: 'A_PRIVATE_HISTORY_ATTEMPT_SENTINEL',
-      outcome: 'A_PRIVATE_HISTORY_OUTCOME_SENTINEL',
-      cost: 'A_PRIVATE_HISTORY_COST_SENTINEL',
-      stateChange: 'A_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL',
-    }],
-    'subject-b': [{
-      attempt: 'B_PRIVATE_HISTORY_ATTEMPT_SENTINEL',
-      outcome: 'B_PRIVATE_HISTORY_OUTCOME_SENTINEL',
-      cost: 'B_PRIVATE_HISTORY_COST_SENTINEL',
-      stateChange: 'B_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL',
-    }, {
-      attempt: 'SHARED_VALID_ATTEMPT_SENTINEL',
-      outcome: '乙过去执行同名动作时留下的私密结果',
-      cost: '乙过去执行同名动作时承担的私密代价',
-      stateChange: '乙过去执行同名动作时形成的私密变化',
-    }],
-  };
-  const leakedIntoA = sanitizeWorldAdjudication({
-    subjectId: 'subject-a',
-    outcome: '甲错误沿用了B_PRIVATE_HISTORY_OUTCOME_SENTINEL',
-    stateChange: 'B_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL',
-  }, baseline.subjects[0], { subjects: baseline.subjects, subjectHistories });
-  assert.equal(leakedIntoA.ok, false);
-  assert.equal(leakedIntoA.code, 'cross_subject_private_leak');
-
-  const sharedAttemptForA = sanitizeWorldAdjudication({
-    subjectId: 'subject-a',
-    attempt: 'SHARED_VALID_ATTEMPT_SENTINEL',
-    outcome: '甲执行SHARED_VALID_ATTEMPT_SENTINEL后取得阶段性进展',
-    stateChange: '甲执行SHARED_VALID_ATTEMPT_SENTINEL后完成自己的第一步',
-  }, baseline.subjects[0], { subjects: baseline.subjects, subjectHistories });
-  assert.equal(sharedAttemptForA.ok, true);
-  assert.equal(validateWorldAdjudication(sharedAttemptForA.update, ticket('subject-a', {
-    attemptDirective: 'SHARED_VALID_ATTEMPT_SENTINEL',
-    resultEnvelope: 'partial',
-  })).ok, true);
-
-  const ownHistoryForB = sanitizeWorldAdjudication({
-    subjectId: 'subject-b',
-    outcome: 'B_PRIVATE_HISTORY_OUTCOME_SENTINEL之后完成本轮核验',
-    cost: '继续承担B_PRIVATE_HISTORY_COST_SENTINEL',
-    stateChange: 'B_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL之后形成新的核验记录',
-  }, baseline.subjects[1], { subjects: baseline.subjects, subjectHistories });
-  assert.equal(ownHistoryForB.ok, true);
-});
-
-test('discovery前缀的既有主体即使产生字段剥离告警，也不会被回执误判成NEW发现失败', () => {
-  const baseline = worldWith([subject({
-    id: 'discovery-existing-actor',
-    name: '既有巡检主体',
-    current: '正在核对旧仓库封条',
-    threadKeys: ['既有巡检主题'],
-  })]);
-  const boundTicket = ticket('discovery-existing-actor', {
-    actorPlanId: 'bootstrap-existing-actor',
-    attemptDirective: '核对旧仓库封条上的划痕',
-    resultEnvelope: 'partial',
-  });
-  const proposal = parseWorldProposal(`[SUBJECT discovery-existing-actor]
-尝试：核对旧仓库封条上的划痕
-结果：部分完成第一阶段并确认一处新划痕
-代价：耗费一个巡检时段
-状态变化：新划痕已经记录，但封条来源仍待后续核验
-现状：主体已经保存本轮划痕记录
-支线：UNPROVEN_ADVISORY_THREAD
-状态：active
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const merged = applyWorldProposal(baseline, proposal, {
-    turn: 2,
-    sourceKey: 'chat-a:message:2',
-    tickets: [boundTicket],
-    scheduledSubjects: baseline.subjects,
-    actorPlans: [nextPlan('discovery-existing-actor', boundTicket, {
-      nextAction: '核对新划痕与既有封条样本',
-    }, proposal.updates[0])],
-    requireActorPlans: true,
-  });
-  const receipt = merged.world.receipts.find((entry) => entry.sourceKey === 'chat-a:message:2');
-
-  assert.deepEqual(merged.applied, ['discovery-existing-actor']);
-  assert.deepEqual(merged.unresolvedSubjectIds, []);
-  assert.deepEqual(merged.unresolvedDiscoveries, []);
-  assert.equal(receipt.status, 'applied');
-  assert.equal(receipt.unresolvedDiscoveries.length, 0);
-  assert.equal(merged.skipped.some((entry) => entry.subjectId === 'discovery-existing-actor'
-    && entry.code === 'unproven_thread_key_removed'), true);
-});
-
-test('NEW发现只建立逐字锚点waiting shell，混合失败用稳定签名局部补齐且成功项幂等', () => {
-  const baseline = worldWith([], { turn: 0, summary: '' });
-  const acceptedText = '旧水门的铰链正在渗水。南岸的临时渡口出现排队。正文也提到了名字命中但无锚点的北塔。';
-  const firstProposal = parseWorldProposal(`[SUBJECT NEW]
+test('不完整NEW整块拒绝且不计活跃世界，完整主体才进入面板计数', () => {
+  const incomplete = applyWorldProposal(emptyWorldState('chat-a'), parseWorldProposal(`[SUBJECT NEW]
 类型：process
-名称：旧水门渗水过程
-正文锚点：旧水门的铰链正在渗水
-稳定锚点：模型编造的稳定条件
-现状：模型编造的隐藏现状
-资源：模型编造的资源
-约束：模型编造的约束
-支线：模型编造的支线
-尝试：模型编造的行动
-结果：模型声称已经推进
-状态变化：模型声称产生变化
-公开影响：模型编造的公开结果
-[/SUBJECT]
-
-[SUBJECT NEW]
-名称：南岸渡口排队过程
-正文锚点：南岸的临时渡口出现排队
-现状：模型试图在缺类型时写入
-[/SUBJECT]`, { subjects: [] });
-  const first = applyWorldProposal(baseline, firstProposal, {
+名称：只有名字的过程
+现状：正文里出现过一次
+[/SUBJECT]`), {
     turn: 1,
-    sourceKey: 'chat-a:message:1',
-    acceptedText,
-    scheduledSubjects: [],
-    requireActorPlans: true,
+    sourceKey: 'incomplete-new',
   });
-  const water = first.world.subjects.find((entry) => entry.name === '旧水门渗水过程');
-  const failed = first.skipped.find((entry) => entry.code === 'new_subject_type_required');
-  const firstReceipt = first.world.receipts.find((entry) => entry.sourceKey === 'chat-a:message:1');
-  assert.equal(water.current, '旧水门的铰链正在渗水');
-  assert.equal(water.anchor, '旧水门的铰链正在渗水');
-  assert.deepEqual(water.resources, []);
-  assert.deepEqual(water.constraints, []);
-  assert.deepEqual(water.threadKeys, []);
-  assert.equal(water.goal, '');
-  assert.equal(water.nextAction, '');
-  assert.equal(water.status, 'waiting');
-  assert.equal(water.publicEffect, '');
-  assert.equal(first.world.changes.length, 0);
-  assert.ok(failed.discoverySignature);
-  assert.equal(Object.hasOwn(failed, 'discoverySignature'), true);
-  assert.equal(firstReceipt.status, 'partial');
-  assert.equal(firstReceipt.unresolvedDiscoveries.includes(failed.discoverySignature), true);
-  assert.equal(first.world.failures.some((entry) => entry.discoverySignature === failed.discoverySignature), true);
+  assert.equal(incomplete.world.subjects.length, 0);
+  assert.equal(incomplete.world.changes.length, 0);
+  assert.equal(activeWorldCount(incomplete.world), 0);
+  assert.equal(incomplete.skipped.some((entry) => entry.code === 'new_subject_incomplete'), true);
 
-  const retryProposal = parseWorldProposal(`[SUBJECT NEW]
-类型：process
-名称：旧水门渗水过程
-正文锚点：旧水门的铰链正在渗水
-[/SUBJECT]
-
-[SUBJECT NEW]
-类型：process
-名称：南岸渡口排队过程
-正文锚点：南岸的临时渡口出现排队
-[/SUBJECT]`, { subjects: first.world.subjects });
-  const retry = applyWorldProposal(first.world, retryProposal, {
-    turn: 1,
-    sameTurn: true,
-    sourceKey: 'chat-a:message:1',
-    acceptedText,
-    scheduledSubjects: [],
-    requireActorPlans: true,
-  });
-  const finalReceipt = retry.world.receipts.find((entry) => entry.sourceKey === 'chat-a:message:1');
-  assert.equal(retry.world.subjects.filter((entry) => entry.name === '旧水门渗水过程').length, 1);
-  assert.equal(retry.world.subjects.filter((entry) => entry.name === '南岸渡口排队过程').length, 1);
-  assert.equal(retry.world.subjects.find((entry) => entry.name === '旧水门渗水过程').id, water.id);
-  assert.equal(retry.world.subjects.find((entry) => entry.name === '南岸渡口排队过程').discoverySignature, failed.discoverySignature);
-  assert.equal(finalReceipt.status, 'applied');
-  assert.deepEqual(finalReceipt.unresolvedDiscoveries, []);
-  assert.equal(retry.world.failures.some((entry) => entry.discoverySignature === failed.discoverySignature), false);
-  assert.equal(retry.world.changes.length, 0);
-
-  const noAnchorProposal = parseWorldProposal(`[SUBJECT NEW]
-类型：process
-名称：北塔
-现状：名称虽在正文但没有逐字正文锚点
-[/SUBJECT]`, { subjects: [] });
-  const noAnchor = applyWorldProposal(baseline, noAnchorProposal, {
-    turn: 1,
-    sourceKey: 'chat-a:message:no-anchor',
-    acceptedText,
-    scheduledSubjects: [],
-    requireActorPlans: true,
-  });
-  assert.equal(noAnchor.skipped.some((entry) => entry.code === 'new_subject_missing_accepted_anchor'), true);
-  assert.equal(noAnchor.world.subjects.length, 0);
+  const legacyShell = subject({ status: 'waiting', goal: '', nextAction: '' });
+  const ready = subject({ id: 'ready-process', name: '完整过程' });
+  assert.equal(activeWorldCount(worldWith([legacyShell, ready])), 1);
 });
 
 test('局部提交明确返回未解决主体，sameTurn重试只修失败主体且不重放已成功变化', () => {
@@ -1018,49 +520,6 @@ test('模型省略的旧字段与未提到的主体都会保留，不会被空�
   assert.equal(merged.world.subjects.some((entry) => entry.id === 'faction-port'), true);
 });
 
-test('局部准备与否定句不得把主体提前结案，只有明确完成总目标才能done', () => {
-  const baseline = worldWith([
-    subject({
-      id: 'process-bridge',
-      type: 'process',
-      name: '旧桥修复工程',
-      current: '工人正在清理桥面',
-      goal: '完成整座旧桥修复并恢复通行',
-      nextCheckTurn: 2,
-    }),
-  ]);
-  const incompleteProposal = parseWorldProposal(`[SUBJECT process-bridge]
-尝试：清点木料并搭设施工围栏
-结果：任务尚未完成，只完成准备
-状态变化：围栏已经搭好，但桥面修复尚未开始
-现状：工程仍处于施工准备阶段
-下一步：更换断裂的桥面木板
-下次检查：3
-状态：done
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const incomplete = applyWorldProposal(baseline, incompleteProposal, {
-    turn: 2,
-    tickets: [ticket('process-bridge', { resultEnvelope: 'success', attemptDirective: '清点木料并搭设施工围栏' })],
-    scheduledSubjects: baseline.subjects,
-  });
-  assert.deepEqual(incomplete.applied, ['process-bridge']);
-  assert.equal(incomplete.world.subjects[0].status, 'active');
-
-  const completedProposal = parseWorldProposal(`[SUBJECT process-bridge]
-尝试：完成最后一段桥面并通过承重检查
-结果：整座旧桥修复任务已经全部完成
-状态变化：旧桥恢复双向通行，施工围栏已经撤除
-现状：总目标已经达成，桥梁正式恢复使用
-下一步：无需继续推进
-状态：done
-[/SUBJECT]`, { subjects: baseline.subjects });
-  const completed = applyWorldProposal(baseline, completedProposal, {
-    turn: 2,
-    tickets: [ticket('process-bridge', { resultEnvelope: 'success', attemptDirective: '完成最后一段桥面并通过承重检查' })],
-    scheduledSubjects: baseline.subjects,
-  });
-  assert.equal(completed.world.subjects[0].status, 'done');
-});
 
 test('具体的等待与受阻是合法世界结果，并安排下一次检查而非把整轮判失败', () => {
   const baseline = worldWith([
@@ -1068,6 +527,7 @@ test('具体的等待与受阻是合法世界结果，并安排下一次检查�
   ]);
   const proposal = parseWorldProposal(`[SUBJECT faction-gate]
 尝试：派人核验新的通行令是否已经送达
+结果类型：delayed
 结果：信使因外城道路封锁尚未抵达，守备队只能维持旧流程
 状态变化：通行令核验仍受道路封锁阻碍，已确认信使没有失踪
 现状：守备队继续执行旧通行规则
@@ -1511,7 +971,7 @@ function runtimeHarness(worldResponse, actorResponse = null) {
           ? `[ACTOR_PLAN ${subjectId}]\n尝试：${oldNext}\n[/ACTOR_PLAN]`
           : `[ACTOR_PLAN ${subjectId}]\n目标：\n新增已知：\n下一步：根据本轮裁决复核后续条件\n下次检查：99\n[/ACTOR_PLAN]`;
       }
-      if (system.includes('全局世界裁决器') || system.includes('世界长期主体发现器')) {
+      if (system.includes('主体驱动的世界后台引擎')) {
         worldRequests.push(`${systemPrompt}\n${prompt || ''}`);
         return typeof worldResponse === 'function'
           ? worldResponse(worldRequests.length, systemPrompt, String(prompt || ''))
@@ -1595,520 +1055,28 @@ test('运行时每个接受回合只请求一次世界模型，并只产生一�
   const world = harness.context.chatMetadata['mvu-doctor-kemini-clean'].world;
 
   assert.equal(harness.worldRequests.length, 1);
+  assert.equal(harness.actorRequests.length, 0);
   assert.equal(world.revision, 1);
+  assert.equal(world.changes.length, 1);
+  assert.equal(world.subjects[0].status, 'active');
+  assert.equal(world.subjects[0].current, '水门仍关闭，但下游承压正在增加');
+  assert.ok(world.subjects[0].goal);
+  assert.ok(world.subjects[0].nextAction);
+  assert.equal(harness.worldSaveTransitions.filter((entry) => entry.revision === 1).length, 1);
+});
+
+test('世界批次不可解析时只请求一次且零写入，不造主体、变化或空壳', async () => {
+  const harness = runtimeHarness('这不是可解析的世界主体批次。');
+
+  await finishOneRuntimeReply(harness);
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
+  const world = store.world;
+
+  assert.equal(harness.worldRequests.length, 1);
+  assert.equal(harness.actorRequests.length, 0);
+  assert.equal(world.revision, 0);
+  assert.equal(world.subjects.length, 0);
   assert.equal(world.changes.length, 0);
-  assert.equal(world.subjects[0].status, 'waiting');
-  assert.equal(world.subjects[0].current, '远处的旧水门仍旧关闭');
-  assert.equal(harness.worldSaveTransitions.filter((entry) => entry.revision === 1).length, 1);
-});
-
-test('运行时既有discovery前缀主体的剥离告警不冒充NEW失败，成功回执后手动复检零模型调用', async () => {
-  const harness = runtimeHarness((requestNumber, systemPrompt, prompt) => {
-    assert.equal(requestNumber, 1);
-    assert.match(systemPrompt, /全局世界裁决器/u);
-    const attempt = prompt.match(/"attemptDirective"\s*:\s*"([^"]+)"/u)?.[1] || '';
-    const envelope = prompt.match(/"resultEnvelope"\s*:\s*"([^"]+)"/u)?.[1] || 'partial';
-    const settlement = {
-      success: ['行动成功并完成预定步骤', '预定步骤已经完成'],
-      partial: ['行动部分完成并取得阶段性进展', '第一阶段结果已经记录，后续仍待核验'],
-      blocked: ['行动受阻，尚未完成预定步骤', '已有阻碍已经确认，主体需要等待条件变化'],
-      delayed: ['行动延后，等待条件成熟', '延后原因已经记录，主体暂时等待'],
-      failure: ['行动失败且没有完成预定步骤', '失败结果已经记录，主体需要更换条件'],
-    }[envelope] || ['行动部分完成并取得阶段性进展', '第一阶段结果已经记录，后续仍待核验'];
-    return `世界摘要：既有巡检主体完成本轮裁决。
-
-[SUBJECT discovery-existing-actor]
-尝试：${attempt}
-结果：${settlement[0]}
-代价：耗费一个巡检时段
-状态变化：${settlement[1]}
-现状：主体已经保存本轮巡检记录
-支线：UNPROVEN_ADVISORY_THREAD
-状态：active
-[/SUBJECT]`;
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  store.world = worldWith([subject({
-    id: 'discovery-existing-actor',
-    name: '既有巡检主体',
-    current: '正在核对旧仓库封条',
-    nextAction: '核对旧仓库封条上的划痕',
-    nextCheckTurn: 2,
-    threadKeys: ['既有巡检主题'],
-  })], { chatId: harness.context.chatId, turn: 1, revision: 0 });
-
-  await finishOneRuntimeReply(harness);
-  const receipt = store.world.receipts.find((entry) => entry.subjectIds.includes('discovery-existing-actor'));
-  assert.equal(receipt.status, 'applied');
-  assert.equal(receipt.unresolvedDiscoveries.length, 0);
-  assert.equal(store.world.failures.some((entry) => entry.subjectId === 'discovery-existing-actor'
-    && entry.code === 'unproven_thread_key_removed'), true);
-
-  const modelCallsBefore = harness.worldRequests.length + harness.actorRequests.length;
-  const manual = await harness.hooks.manualWorldRecheck();
-  assert.equal(manual.alreadyCommitted, true);
-  assert.equal(harness.worldRequests.length + harness.actorRequests.length, modelCallsBefore);
-});
-
-test('运行时物理隔离主体私密规划，全局请求只看冻结attempt且最终仍一次commit', async () => {
-  let actorInFlight = 0;
-  let maxActorInFlight = 0;
-  const harness = runtimeHarness(`世界摘要：两个主体的冻结尝试分别完成裁决。
-
-[SUBJECT person-a]
-尝试：ATTEMPT_A_SENTINEL
-结果：甲取得一项可核验的局部进展
-代价：经过一个时段
-状态变化：甲的客观状态已经更新
-现状：甲完成本轮步骤
-状态：active
-[/SUBJECT]
-
-[SUBJECT faction-b]
-尝试：ATTEMPT_B_SENTINEL
-结果：乙受到既有条件限制但仍完成准备
-代价：消耗一个时段
-状态变化：乙完成下一阶段所需的准备
-现状：乙正在等待条件成熟
-状态：active
-[/SUBJECT]`, async ({ phase, subjectId }) => {
-    assert.equal(phase, 'next');
-    actorInFlight += 1;
-    maxActorInFlight = Math.max(maxActorInFlight, actorInFlight);
-    await new Promise((resolve) => setTimeout(resolve, 15));
-    actorInFlight -= 1;
-    return `[ACTOR_PLAN ${subjectId}]
-目标：${subjectId === 'person-a' ? 'PLAN_GOAL_A' : 'PLAN_GOAL_B'}
-新增已知：
-下一步：${subjectId === 'person-a' ? '甲检查新取得的凭据' : '乙核对准备条件'}
-下次检查：4
-[/ACTOR_PLAN]`;
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  store.world = worldWith([
-    subject({
-      id: 'person-a', type: 'person', name: '甲', goal: 'PRIVATE_GOAL_A_SENTINEL', knowledge: ['PRIVATE_KNOWLEDGE_A_SENTINEL'],
-      nextAction: 'ATTEMPT_A_SENTINEL', nextCheckTurn: 2, threadKeys: ['remote-thread'],
-      planReceipt: { planId: 'stored-plan-a', subjectId: 'person-a', phase: 'next', nextAction: 'ATTEMPT_A_SENTINEL', nextCheckTurn: 2, plannedTurn: 1 },
-    }),
-    subject({
-      id: 'faction-b', type: 'faction', name: '乙', goal: 'PRIVATE_GOAL_B_SENTINEL', knowledge: ['PRIVATE_KNOWLEDGE_B_SENTINEL'],
-      current: '乙驻扎在远港码头', nextAction: 'ATTEMPT_B_SENTINEL', nextCheckTurn: 2, threadKeys: ['remote-thread'],
-      planReceipt: { planId: 'stored-plan-b', subjectId: 'faction-b', phase: 'next', nextAction: 'ATTEMPT_B_SENTINEL', nextCheckTurn: 2, plannedTurn: 1 },
-    }),
-    subject({
-      id: 'process-remote', type: 'process', name: '远港潮位', status: 'done', threadKeys: ['remote-thread'],
-      current: '远港码头水位标尺已经留下新水痕', nextCheckTurn: 99,
-    }),
-  ], {
-    chatId: harness.context.chatId,
-    turn: 1,
-    revision: 0,
-    changes: [{
-      id: 'change-remote-public', subjectIds: ['process-remote'], threadKeys: ['remote-thread'], turn: 1,
-      attempt: '远处过程自行变化', outcome: '远处留下公开痕迹', stateChange: '远处表面已改变',
-      publicEffect: '远港码头的水位标尺留下新水痕（REMOTE_PUBLIC_SURFACE_SENTINEL）。', publicChannel: 'environment_trace',
-    }],
-  });
-
-  await finishOneRuntimeReply(harness);
-
-  assert.equal(harness.worldRequests.length, 1);
-  assert.equal(harness.actorRequests.length, 2);
-  assert.equal(maxActorInFlight, 2);
-  const globalRequest = harness.worldRequests[0];
-  assert.match(globalRequest, /ATTEMPT_A_SENTINEL/u);
-  assert.match(globalRequest, /ATTEMPT_B_SENTINEL/u);
-  assert.doesNotMatch(globalRequest, /PRIVATE_GOAL_[AB]_SENTINEL|PRIVATE_KNOWLEDGE_[AB]_SENTINEL/u);
-  assert.match(globalRequest, /REMOTE_PUBLIC_SURFACE_SENTINEL/u);
-  const actorA = harness.actorRequests.find((entry) => entry.subjectId === 'person-a');
-  const actorB = harness.actorRequests.find((entry) => entry.subjectId === 'faction-b');
-  assert.match(actorA.prompt, /PRIVATE_GOAL_A_SENTINEL|PRIVATE_KNOWLEDGE_A_SENTINEL/u);
-  assert.doesNotMatch(actorA.prompt, /PRIVATE_GOAL_B_SENTINEL|PRIVATE_KNOWLEDGE_B_SENTINEL/u);
-  assert.doesNotMatch(actorA.prompt, /REMOTE_PUBLIC_SURFACE_SENTINEL/u);
-  assert.match(actorB.prompt, /PRIVATE_GOAL_B_SENTINEL|PRIVATE_KNOWLEDGE_B_SENTINEL/u);
-  assert.doesNotMatch(actorB.prompt, /PRIVATE_GOAL_A_SENTINEL|PRIVATE_KNOWLEDGE_A_SENTINEL/u);
-  assert.match(actorB.prompt, /REMOTE_PUBLIC_SURFACE_SENTINEL/u);
-  assert.equal(store.world.revision, 1);
-  assert.equal(store.world.subjects.find((entry) => entry.id === 'person-a').goal, 'PLAN_GOAL_A');
-  assert.equal(store.world.subjects.find((entry) => entry.id === 'faction-b').goal, 'PLAN_GOAL_B');
-  assert.equal(harness.worldSaveTransitions.filter((entry) => entry.revision === 1).length, 1);
-});
-
-test('有效裁决冻结后next planner技术失败只重跑失败主体，不增加全局裁决调用', async () => {
-  const actorCalls = new Map();
-  const harness = runtimeHarness(`世界摘要：两个冻结尝试均形成有效裁决。
-
-[SUBJECT person-a]
-尝试：ATTEMPT_A_SENTINEL
-结果：A_FROZEN_OUTCOME_SENTINEL
-代价：经过一个时段
-状态变化：甲完成第一阶段并取得凭据
-现状：甲进入下一阶段
-状态：active
-[/SUBJECT]
-
-[SUBJECT faction-b]
-尝试：ATTEMPT_B_SENTINEL
-结果：B_FROZEN_OUTCOME_SENTINEL
-代价：经过一个时段
-状态变化：乙完成第一阶段并整理好材料
-现状：乙进入下一阶段
-状态：active
-[/SUBJECT]`, ({ phase, subjectId }) => {
-    assert.equal(phase, 'next');
-    const count = (actorCalls.get(subjectId) || 0) + 1;
-    actorCalls.set(subjectId, count);
-    if (subjectId === 'faction-b' && count === 1) throw new Error('B_NEXT_TECHNICAL_FAILURE');
-    return `[ACTOR_PLAN ${subjectId}]
-目标：
-新增已知：
-下一步：${subjectId === 'person-a' ? '甲核验取得的凭据' : '乙核验整理好的材料'}
-下次检查：4
-[/ACTOR_PLAN]`;
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  store.world = worldWith([
-    subject({
-      id: 'person-a', type: 'person', name: '甲', nextAction: 'ATTEMPT_A_SENTINEL', nextCheckTurn: 2,
-      planReceipt: { planId: 'stored-plan-a', subjectId: 'person-a', phase: 'next', nextAction: 'ATTEMPT_A_SENTINEL', nextCheckTurn: 2, plannedTurn: 1 },
-    }),
-    subject({
-      id: 'faction-b', type: 'faction', name: '乙', nextAction: 'ATTEMPT_B_SENTINEL', nextCheckTurn: 2,
-      planReceipt: { planId: 'stored-plan-b', subjectId: 'faction-b', phase: 'next', nextAction: 'ATTEMPT_B_SENTINEL', nextCheckTurn: 2, plannedTurn: 1 },
-    }),
-  ], { chatId: harness.context.chatId, turn: 1, revision: 0 });
-
-  await finishOneRuntimeReply(harness);
-  assert.equal(harness.worldRequests.length, 1);
-  assert.equal(actorCalls.get('person-a'), 1);
-  assert.equal(actorCalls.get('faction-b'), 1);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('person-a')).length, 1);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('faction-b')).length, 0);
-
-  await harness.hooks.retryLastFailure();
-  assert.equal(harness.worldRequests.length, 1);
-  assert.equal(actorCalls.get('person-a'), 1);
-  assert.equal(actorCalls.get('faction-b'), 2);
-  const secondB = harness.actorRequests.filter((entry) => entry.subjectId === 'faction-b')[1];
-  assert.match(secondB.prompt, /B_FROZEN_OUTCOME_SENTINEL/u);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('person-a')).length, 1);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('faction-b')).length, 1);
-});
-
-test('污染裁决不进入主体next planner；有效A提交后只重裁失败B且不重提A', async () => {
-  const harness = runtimeHarness((requestNumber) => requestNumber === 1
-    ? `世界摘要：甲有效，乙块错误串入甲私密状态。
-
-[SUBJECT person-a]
-尝试：ATTEMPT_A_SENTINEL
-结果：甲完成第一阶段
-代价：经过一个时段
-状态变化：甲完成第一阶段并取得自己的凭据
-现状：甲进入下一阶段
-状态：active
-[/SUBJECT]
-
-[SUBJECT faction-b]
-尝试：ATTEMPT_B_SENTINEL
-结果：乙错误获得A_PRIVATE_CURRENT_SENTINEL
-代价：经过一个时段
-状态变化：A_PRIVATE_CURRENT_SENTINEL
-现状：A_PRIVATE_CURRENT_SENTINEL
-状态：active
-[/SUBJECT]`
-    : `世界摘要：只修正乙的裁决。
-
-[SUBJECT faction-b]
-尝试：ATTEMPT_B_SENTINEL
-结果：乙完成自己的第一阶段
-代价：经过一个时段
-状态变化：乙整理好自己的核验材料
-现状：乙进入下一阶段
-状态：active
-[/SUBJECT]`, ({ phase, subjectId }) => {
-    assert.equal(phase, 'next');
-    return `[ACTOR_PLAN ${subjectId}]
-目标：
-新增已知：
-下一步：${subjectId === 'person-a' ? '甲检查自己的凭据' : '乙检查自己的材料'}
-下次检查：4
-[/ACTOR_PLAN]`;
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  store.world = worldWith([
-    subject({
-      id: 'person-a', type: 'person', name: '甲', current: 'A_PRIVATE_CURRENT_SENTINEL', nextAction: 'ATTEMPT_A_SENTINEL', nextCheckTurn: 2,
-      planReceipt: { planId: 'stored-plan-a', subjectId: 'person-a', phase: 'next', nextAction: 'ATTEMPT_A_SENTINEL', nextCheckTurn: 2, plannedTurn: 1 },
-    }),
-    subject({
-      id: 'faction-b', type: 'faction', name: '乙', current: '乙保持自己的状态', nextAction: 'ATTEMPT_B_SENTINEL', nextCheckTurn: 2,
-      planReceipt: { planId: 'stored-plan-b', subjectId: 'faction-b', phase: 'next', nextAction: 'ATTEMPT_B_SENTINEL', nextCheckTurn: 2, plannedTurn: 1 },
-    }),
-  ], { chatId: harness.context.chatId, turn: 1, revision: 0 });
-
-  await finishOneRuntimeReply(harness);
-  assert.equal(harness.worldRequests.length, 1);
-  assert.equal(harness.actorRequests.filter((entry) => entry.subjectId === 'person-a').length, 1);
-  assert.equal(harness.actorRequests.filter((entry) => entry.subjectId === 'faction-b').length, 0);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('person-a')).length, 1);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('faction-b')).length, 0);
-
-  await harness.hooks.retryLastFailure();
-  assert.equal(harness.worldRequests.length, 2);
-  assert.match(harness.worldRequests[1], /ATTEMPT_B_SENTINEL/u);
-  assert.doesNotMatch(harness.worldRequests[1], /ATTEMPT_A_SENTINEL|A_PRIVATE_CURRENT_SENTINEL/u);
-  assert.equal(harness.actorRequests.filter((entry) => entry.subjectId === 'person-a').length, 1);
-  assert.equal(harness.actorRequests.filter((entry) => entry.subjectId === 'faction-b').length, 1);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('person-a')).length, 1);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('faction-b')).length, 1);
-});
-
-test('B的私密旧裁决复制进A会在next planner前拒绝，B仍可沿自己的历史独立推进', async () => {
-  const harness = runtimeHarness(`世界摘要：甲的裁决串入乙的私密历史，乙自己的裁决保持连续。
-
-[SUBJECT person-a]
-尝试：ATTEMPT_A_SENTINEL
-结果：甲错误沿用了B_PRIVATE_HISTORY_OUTCOME_SENTINEL
-代价：经过一个时段
-状态变化：B_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL
-现状：甲错误吸收了乙的旧结果
-状态：active
-[/SUBJECT]
-
-[SUBJECT faction-b]
-尝试：ATTEMPT_B_SENTINEL
-结果：B_PRIVATE_HISTORY_OUTCOME_SENTINEL之后完成本轮核验
-代价：继续承担B_PRIVATE_HISTORY_COST_SENTINEL
-状态变化：B_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL之后形成新的核验记录
-现状：乙已经保存自己的新核验记录
-状态：active
-[/SUBJECT]`, ({ phase, subjectId, prompt }) => {
-    assert.equal(phase, 'next');
-    assert.equal(subjectId, 'faction-b');
-    assert.match(prompt, /B_PRIVATE_HISTORY_OUTCOME_SENTINEL/u);
-    assert.match(prompt, /B_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL/u);
-    return `[ACTOR_PLAN ${subjectId}]
-目标：
-新增已知：
-下一步：乙检查自己的新核验记录
-下次检查：4
-[/ACTOR_PLAN]`;
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  store.world = worldWith([
-    subject({
-      id: 'person-a', type: 'person', name: '甲', current: '甲保持自己的状态', nextAction: 'ATTEMPT_A_SENTINEL', nextCheckTurn: 2,
-      planReceipt: { planId: 'stored-plan-a', subjectId: 'person-a', phase: 'next', nextAction: 'ATTEMPT_A_SENTINEL', nextCheckTurn: 2, plannedTurn: 1 },
-    }),
-    subject({
-      id: 'faction-b', type: 'faction', name: '乙', current: '乙保持自己的状态', nextAction: 'ATTEMPT_B_SENTINEL', nextCheckTurn: 2,
-      planReceipt: { planId: 'stored-plan-b', subjectId: 'faction-b', phase: 'next', nextAction: 'ATTEMPT_B_SENTINEL', nextCheckTurn: 2, plannedTurn: 1 },
-    }),
-  ], {
-    chatId: harness.context.chatId,
-    turn: 1,
-    revision: 0,
-    changes: [
-      {
-        id: 'change-a-private-history', subjectIds: ['person-a'], threadKeys: [], turn: 1,
-        attempt: 'A_PRIVATE_HISTORY_ATTEMPT_SENTINEL', outcome: 'A_PRIVATE_HISTORY_OUTCOME_SENTINEL',
-        cost: 'A_PRIVATE_HISTORY_COST_SENTINEL', stateChange: 'A_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL',
-        publicEffect: '', publicChannel: 'none',
-      },
-      {
-        id: 'change-b-private-history', subjectIds: ['faction-b'], threadKeys: [], turn: 1,
-        attempt: 'B_PRIVATE_HISTORY_ATTEMPT_SENTINEL', outcome: 'B_PRIVATE_HISTORY_OUTCOME_SENTINEL',
-        cost: 'B_PRIVATE_HISTORY_COST_SENTINEL', stateChange: 'B_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL',
-        publicEffect: '', publicChannel: 'none',
-      },
-    ],
-  });
-
-  await finishOneRuntimeReply(harness);
-
-  assert.equal(harness.worldRequests.length, 1);
-  assert.match(harness.worldRequests[0], /B_PRIVATE_HISTORY_OUTCOME_SENTINEL/u);
-  assert.match(harness.worldRequests[0], /B_PRIVATE_HISTORY_STATE_CHANGE_SENTINEL/u);
-  assert.equal(harness.actorRequests.some((entry) => entry.subjectId === 'person-a'), false);
-  assert.equal(harness.actorRequests.filter((entry) => entry.subjectId === 'faction-b').length, 1);
-  assert.equal(store.world.failures.some((entry) => entry.subjectId === 'person-a' && entry.code === 'cross_subject_private_leak'), true);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('person-a')).length, 1);
-  assert.equal(store.world.changes.filter((entry) => entry.subjectIds.includes('faction-b')).length, 2);
-  assert.equal(store.world.subjects.find((entry) => entry.id === 'faction-b').nextAction, '乙检查自己的新核验记录');
-});
-
-test('发现扫描无新主体仍提交一次幂等world tick，使下一回合主体能按nextCheckTurn到期', async () => {
-  const harness = runtimeHarness((requestNumber) => requestNumber === 1
-    ? '世界摘要：本回合没有发现新的长期主体。'
-    : `世界摘要：北港潮汐完成一次到期复核。
-
-[SUBJECT process-water]
-尝试：复核北港码头潮位标尺
-结果：潮位标尺维持在上一时段的高度
-代价：经过一个观察时段
-状态变化：确认本时段潮位没有继续上涨
-现状：北港潮位暂时稳定
-下一步：下一时段再次复核潮位标尺
-下次检查：3
-状态：active
-[/SUBJECT]`);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  store.world = normalizeWorldState({
-    schemaVersion: WORLD_SCHEMA_VERSION,
-    chatId: harness.context.chatId,
-    turn: 0,
-    revision: 0,
-    summary: '北港潮汐尚待下一回合检查。',
-    subjects: [{
-      id: 'process-water',
-      type: 'process',
-      name: '北港潮汐',
-      anchor: '潮位随天文周期、风向和港湾地形变化',
-      current: '潮位暂时稳定',
-      goal: '按潮汐条件持续演化',
-      nextAction: '复核北港码头潮位标尺',
-      nextCheckTurn: 2,
-      status: 'active',
-    }],
-    changes: [],
-  }, { chatId: harness.context.chatId });
-
-  await finishOneRuntimeReply(harness);
-  assert.equal(store.world.turn, 1);
-  assert.equal(store.world.revision, 1);
-  assert.equal(store.world.changes.length, 0);
-  assert.equal(harness.worldSaveTransitions.filter((entry) => entry.revision === 1).length, 1);
-
-  harness.handlers.get('generation_ended')();
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  assert.equal(store.world.turn, 1);
-  assert.equal(store.world.revision, 1);
-  assert.equal(harness.worldSaveTransitions.filter((entry) => entry.revision === 1).length, 1);
-
-  harness.context.chat.push({ is_user: true, is_system: false, mes: '继续整理自己的记录。' });
-  await finishOneRuntimeReply(harness);
-  assert.match(harness.worldRequests[1], /process-water|复核北港码头潮位标尺/u);
-  assert.equal(store.world.turn, 2);
-  assert.equal(store.world.revision, 2);
-  assert.equal(store.world.changes.some((entry) => entry.subjectIds.includes('process-water')), true);
-});
-
-test('世界模型返回不可解析文本时只保存一次可重试失败票据，不造主体、变化或自动二次请求', async () => {
-  const harness = runtimeHarness('我无法按要求返回主体分块。');
-
-  await finishOneRuntimeReply(harness);
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-
-  assert.equal(harness.worldRequests.length, 1);
-  assert.equal(store.world.revision, 1);
-  assert.equal(store.world.turn, 1);
-  assert.equal(store.world.subjects.length, 0);
-  assert.equal(store.world.changes.length, 0);
-  assert.equal(store.world.failures.some((entry) => entry.code === 'no_subject_blocks'), true);
-  assert.equal(store.world.receipts[0].status, 'partial');
-  assert.equal(harness.worldSaveTransitions.filter((entry) => entry.revision === 1).length, 1);
-  assert.equal(store.fullRuns[0].outcome.stage, 'world');
-});
-
-test('运行时混合NEW持久化失败签名，重试只补失败项且成功发现不重复创建', async () => {
-  const harness = runtimeHarness((requestNumber) => requestNumber === 1
-    ? `世界摘要：发现两个长期过程，其中一项缺少类型。
-
-[SUBJECT NEW]
-类型：process
-名称：旧水门渗水过程
-正文锚点：旧水门的铰链正在渗水
-资源：不应进入waiting shell的资源
-尝试：不应在发现阶段执行
-结果：不应在发现阶段裁决
-状态变化：不应产生change
-[/SUBJECT]
-
-[SUBJECT NEW]
-名称：南岸渡口排队过程
-正文锚点：南岸的临时渡口出现排队
-[/SUBJECT]`
-    : `世界摘要：只补正缺少类型的发现。
-
-[SUBJECT NEW]
-类型：process
-名称：旧水门渗水过程
-正文锚点：旧水门的铰链正在渗水
-[/SUBJECT]
-
-[SUBJECT NEW]
-类型：process
-名称：南岸渡口排队过程
-正文锚点：南岸的临时渡口出现排队
-[/SUBJECT]`);
-  const narrative = '<content>旧水门的铰链正在渗水。南岸的临时渡口出现排队。</content><options><option>继续观察</option></options>';
-  await finishOneRuntimeReply(harness, narrative);
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  const firstReceipt = store.world.receipts[0];
-  const firstA = store.world.subjects.find((entry) => entry.name === '旧水门渗水过程');
-  assert.equal(harness.worldRequests.length, 1);
-  assert.equal(store.world.subjects.length, 1);
-  assert.equal(store.world.changes.length, 0);
-  assert.equal(firstA.status, 'waiting');
-  assert.equal(firstA.current, '旧水门的铰链正在渗水');
-  assert.equal(firstReceipt.status, 'partial');
-  assert.equal(firstReceipt.unresolvedDiscoveries.length, 1);
-  const failedSignature = firstReceipt.unresolvedDiscoveries[0];
-  assert.equal(store.world.failures.some((entry) => entry.discoverySignature === failedSignature), true);
-
-  await harness.hooks.retryLastFailure();
-  const finalReceipt = store.world.receipts[0];
-  assert.equal(harness.worldRequests.length, 2);
-  assert.match(harness.worldRequests[1], new RegExp(`${failedSignature}|南岸的临时渡口出现排队`, 'u'));
-  assert.equal(store.world.subjects.filter((entry) => entry.name === '旧水门渗水过程').length, 1);
-  assert.equal(store.world.subjects.filter((entry) => entry.name === '南岸渡口排队过程').length, 1);
-  assert.equal(store.world.subjects.find((entry) => entry.name === '旧水门渗水过程').id, firstA.id);
-  assert.equal(store.world.subjects.find((entry) => entry.name === '南岸渡口排队过程').discoverySignature, failedSignature);
-  assert.equal(finalReceipt.unresolvedDiscoveries.length, 0);
-  assert.equal(finalReceipt.status, 'applied');
-  assert.equal(store.world.failures.some((entry) => entry.discoverySignature === failedSignature), false);
-  assert.equal(store.world.changes.length, 0);
-});
-
-test('正文传闻已保存时发现扫描解析失败仍保持同源可重试，不把观察材料误判为推进完成', async () => {
-  const harness = runtimeHarness((requestNumber) => requestNumber === 1
-    ? '有人说后台也许没有任何变化。'
-    : '世界摘要：本轮没有发现新的长期主体。');
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  store.world = worldWith([subject({
-    id: 'faction-tower', type: 'faction', name: '黑塔', current: '黑塔仍在内部运作',
-    nextAction: '复核成员动向', nextCheckTurn: 9, publicEffect: '', publicChannel: 'none',
-  })], { chatId: harness.context.chatId, turn: 1, revision: 0 });
-
-  await harness.handlers.get('generation_started')('normal', {}, false);
-  harness.context.chat.push({
-    is_user: false,
-    is_system: false,
-    swipe_id: 0,
-    mes: '<content>有人说黑塔已解散，但无人证实。</content><options><option>继续观察</option></options>',
-  });
-  harness.handlers.get('generation_ended')();
-  const deadline = Date.now() + 2500;
-  while (Date.now() < deadline && !(store.fullRuns?.length)) await new Promise((resolve) => setTimeout(resolve, 25));
-
-  assert.equal(harness.worldRequests.length, 1);
-  assert.equal(store.fullRuns[0].outcome.stage, 'world');
-  assert.equal(store.world.subjects[0].observations[0].epistemic, 'unverified');
-  assert.equal(store.world.subjects[0].observedFacts.length, 0);
-  assert.equal(store.world.changes.length, 0);
-
-  await harness.hooks.retryLastFailure();
-
-  assert.equal(harness.worldRequests.length, 2);
-  assert.equal(store.fullRuns[0].outcome.ok, true);
-  assert.equal(store.world.subjects[0].observations.length, 1);
-  assert.equal(store.world.changes.length, 0);
+  assert.equal(harness.worldSaveTransitions.some((entry) => entry.revision > 0), false);
+  assert.equal((store.pendingRetries || []).some((entry) => entry.stage === 'world' || entry.kind === 'world'), true);
 });

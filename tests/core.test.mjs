@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   WORLD_SCHEMA_VERSION,
-  assignCharacterTicketsByNarrativeOrder,
   buildUpdateVariableBlock,
   buildProfilePatch,
   capturePathSnapshot,
@@ -18,7 +17,6 @@ import {
   mergeProfileCandidates,
   normalizeProfileCandidates,
   parseCharacterTicketReceipt,
-  parseProfileDiscoveryReceipt,
   parseProfileReceipt,
   parseUpdateVariableBlock,
   applyAcceptedWorldObservations,
@@ -96,30 +94,6 @@ test('人物票据消费回执在正文生成前固定人物到票据或权威�
     { name: '引导者', source: 'authority', ticketId: '' },
   ]);
   assert.equal(parseCharacterTicketReceipt('<CharacterTicketReceipt>[{"name":"林澄","source":"ticket","ticketId":"fake"}]</CharacterTicketReceipt>', [ticket]).kind, 'invalid');
-});
-
-test('叙事顺序分配票据时既有人物与权威人物跳过且不消费候选票', () => {
-  const tickets = [
-    { ticketId: 'ticket-first' },
-    { ticketId: 'ticket-second' },
-    { ticketId: 'ticket-unused' },
-  ];
-  const assignments = assignCharacterTicketsByNarrativeOrder([
-    { label: '药房姑娘', names: ['药房姑娘'] },
-    { label: '原创甲', names: ['原创甲'] },
-    { label: '新人引导者', names: ['新人引导者'] },
-    { label: '原创乙', names: ['原创乙'] },
-  ], tickets, {
-    'profile-lin': { name: '林澄', aliases: ['药房姑娘'] },
-  }, ['新人引导者']);
-
-  assert.deepEqual(assignments, [
-    { name: '药房姑娘', source: 'existing', ticketId: '' },
-    { name: '原创甲', source: 'ticket', ticketId: 'ticket-first' },
-    { name: '新人引导者', source: 'authority', ticketId: '' },
-    { name: '原创乙', source: 'ticket', ticketId: 'ticket-second' },
-  ]);
-  assert.equal(assignments.some((assignment) => assignment.ticketId === 'ticket-unused'), false);
 });
 
 test('合法JSON中的中文引号不会被修复器反向破坏', () => {
@@ -254,48 +228,6 @@ test('人物观察保留普通可见叙事容器，但不把冒号前文本机�
 test('人物发现器只把显式结构ID作为机械锚点，不把英文标签、统计缩写或散文主语当人物', () => {
   const subjects = discoverProfileSubjects('Alice: Wait here.\nNPC-7点头回应。\n林页微笑着收起纸笔。\nHP: 12\nSTR说道：这不该成为人物。');
   assert.deepEqual(subjects.map((subject) => subject.label), ['NPC-7']);
-});
-
-test('独立人物发现回执只接受最终正文逐字姓名与包含该姓名的逐字锚点', () => {
-  const narrative = '林页在药房门口递出采购清单，并向值班药剂师询问到货日期。';
-  const parsed = parseProfileDiscoveryReceipt('<人物发现>\n人物：林页\n锚点：林页在药房门口递出采购清单\n</人物发现>', narrative);
-  assert.equal(parsed.ok, true);
-  assert.equal(parsed.kind, 'subjects');
-  assert.equal(parsed.subjects.length, 1);
-  assert.equal(parsed.subjects[0].label, '林页');
-  assert.equal(parsed.subjects[0].sourceAnchor, '林页在药房门口递出采购清单');
-  assert.deepEqual(parsed.subjects[0].names, ['林页']);
-});
-
-test('独立人物发现明确NONE正常闭合，幻觉姓名或改写锚点整批拒绝且不落空壳', () => {
-  const narrative = '雨水沿着空荡的石阶向下流去。';
-  assert.deepEqual(parseProfileDiscoveryReceipt('<人物发现>NONE</人物发现>', narrative), {
-    ok: true, kind: 'none', subjects: [], error: '',
-  });
-  const hallucinated = parseProfileDiscoveryReceipt('<人物发现>\n人物：林页\n锚点：林页在码头检修吊灯\n</人物发现>', narrative);
-  assert.equal(hallucinated.ok, false);
-  assert.deepEqual(hallucinated.subjects, []);
-  assert.match(hallucinated.error, /不是最终正文逐字出现/);
-
-  const rewrittenAnchor = parseProfileDiscoveryReceipt('<人物发现>\n人物：林澄\n锚点：林澄正在整理药材\n</人物发现>', '林澄在柜台后把新送来的药材逐一归档。');
-  assert.equal(rewrittenAnchor.ok, false);
-  assert.deepEqual(rewrittenAnchor.subjects, []);
-  assert.match(rewrittenAnchor.error, /锚点不是最终正文连续逐字原文/);
-});
-
-test('独立人物发现过滤已有完整权威身份，不把再次出现变成原创随机人物', () => {
-  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
-  const existing = completeProfile(ticket);
-  existing.name = '林页';
-  existing.profileId = 'authority-linye';
-  delete existing.ticketId;
-  const parsed = parseProfileDiscoveryReceipt(
-    '<人物发现>\n人物：林页\n锚点：林页在药房门口递出采购清单\n</人物发现>',
-    '林页在药房门口递出采购清单。',
-    { existingProfiles: { existing } },
-  );
-  assert.equal(parsed.ok, true);
-  assert.deepEqual(parsed.subjects, []);
 });
 
 test('人物观察剥离Izumi的htmlcontent与隐藏摘要，但保留其后的真实正文', () => {
@@ -878,142 +810,38 @@ test('正文对白和未证实传闻只进入带可信度的观察材料，不�
   assert.equal(repeated.world.subjects[0].observations.length, 2);
 });
 
-test('人物知识以人物可达来源为边界：无来源内容降为可修订推断而不否决完整档案', () => {
+test('完整档案的knowledge由填表模型负责，脚本只校验结构且不二次裁剪', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
-  const fresh = completeProfile(ticket);
-  fresh.knowledge = ['通过职业训练掌握：常见药材辨识', '仓库门锁昨晚被换过'];
-  const normalizedFresh = prepareProfileBatch([fresh], [ticket], { stat_data: {} });
-  assert.equal(normalizedFresh.ok, true, normalizedFresh.errors.join('\n'));
-  assert.deepEqual(normalizedFresh.profiles[0].knowledge, ['通过职业训练掌握：常见药材辨识']);
-  assert.match(normalizedFresh.profiles[0].inferences.join('；'), /仓库门锁昨晚被换过/);
-  assert.equal(normalizedFresh.normalizationRepairs.some((repair) => repair.code === 'unreachable_knowledge_moved_to_inferences'), true);
-
-  fresh.knowledge = ['经亲眼查看得知：仓库门锁昨晚被换过'];
-  const acceptedFresh = prepareProfileBatch(
-    [fresh],
-    [ticket],
-    { stat_data: {} },
-    '林澄亲眼查看了仓库门锁，确认门锁昨晚被换过。',
-  );
-  assert.equal(acceptedFresh.ok, true, acceptedFresh.errors.join('\n'));
-
-  const systemGuide = completeProfile(ticket);
-  systemGuide.name = '资料终端';
-  systemGuide.aliases = ['测试终端'];
-  systemGuide.identity = { species: '系统单元', gender: '不适用', age: '启用后持续运行', occupation: '资料服务程序', affiliation: '测试设施', socialPosition: '经授权提供公开登记资料的服务终端' };
-  systemGuide.capabilities = ['能够通过系统权限读取测试主体已公开的登记档案'];
-  systemGuide.resources = ['可调用公开资料接口与基础资料库'];
-  systemGuide.knowledge = ['通过系统数据库分析得知：测试主体已登记的公开字段A'];
-  systemGuide.evidence = ['正文明确资料终端是拥有公开资料读取权限的系统单元'];
-  const systemAccepted = prepareProfileBatch(
-    [systemGuide],
-    [ticket],
-    { stat_data: {} },
-    '资料终端通过公开资料权限读取了测试主体已经登记的字段A，并开始说明使用规则。',
-  );
-  assert.equal(systemAccepted.ok, true, systemAccepted.errors.join('\n'));
-
-  const selfProvedSystem = prepareProfileBatch(
-    [systemGuide],
-    [ticket],
-    { stat_data: {} },
-    '资料终端开始说明一般使用规则，正文没有交代其数据来源。',
-  );
-  assert.equal(selfProvedSystem.ok, false);
-  assert.match(selfProvedSystem.rejected[0].candidate.inferences.join('；'), /测试主体已登记的公开字段A/);
-
-  const authoritySystem = prepareProfileBatch(
-    [systemGuide],
-    [ticket],
-    { stat_data: {} },
-    '资料终端开始说明使用规则。',
-    null,
-    {
-      authorityProtectedNames: ['资料终端'],
-      authorityKnowledgeEvidence: {
-        资料终端: '角色卡明确资料终端是系统单元，可通过数据库权限读取测试主体已登记的公开字段A。',
-      },
-    },
-  );
-  assert.equal(authoritySystem.ok, true, authoritySystem.errors.join('\n'));
-  assert.deepEqual(authoritySystem.profiles[0].knowledge, systemGuide.knowledge);
-
-  const unverifiedAuthorityEvidence = prepareProfileBatch(
-    [systemGuide],
-    [ticket],
-    { stat_data: {} },
-    '资料终端开始说明使用规则。',
-    null,
-    {
-      authorityKnowledgeEvidence: {
-        资料终端: '候选自行声称自己是系统单元并拥有数据库读取权限。',
-      },
-    },
-  );
-  assert.equal(unverifiedAuthorityEvidence.ok, false);
-
-  const aliasBorrower = completeProfile(ticket);
-  aliasBorrower.name = '林页';
-  aliasBorrower.aliases = ['资料终端'];
-  aliasBorrower.knowledge = [
-    '通过职业训练掌握：常见药材辨识',
-    '经系统授权读取：敌对势力尚未公开的密令内容',
+  const profile = completeProfile(ticket);
+  profile.name = '测试导航员';
+  profile.aliases = ['导航端'];
+  profile.personality.temperament = '模型结合上下文补全的温和谨慎';
+  profile.knowledge = [
+    '经系统授权读取：公开登记字段',
+    '通过职业训练掌握：基础导航常识',
   ];
-  const aliasBorrowRejected = prepareProfileBatch(
-    [aliasBorrower],
+  const originalInferences = structuredClone(profile.inferences);
+
+  const prepared = prepareProfileBatch(
+    [profile],
     [ticket],
     { stat_data: {} },
-    '资料终端通过数据库权限读取了敌对势力尚未公开的密令内容。林页在旁整理纸页。',
+    '测试导航员（导航端）正在说明登记流程。',
+    null,
+    {
+      ticketAssignments: [],
+      ticketReceiptStatus: 'missing',
+      ticketReceiptError: '生成正文没有消费回执',
+    },
   );
-  assert.equal(aliasBorrowRejected.ok, true, aliasBorrowRejected.errors.join('\n'));
-  assert.deepEqual(aliasBorrowRejected.profiles[0].aliases, ['资料终端']);
-  assert.deepEqual(aliasBorrowRejected.profiles[0].knowledge, ['通过职业训练掌握：常见药材辨识']);
-  assert.match(aliasBorrowRejected.profiles[0].inferences.join('；'), /敌对势力尚未公开的密令内容/);
 
-  const explicitlyBoundAlias = prepareProfileBatch(
-    [aliasBorrower],
-    [ticket],
-    { stat_data: {} },
-    '林页（资料终端）通过数据库权限读取了敌对势力尚未公开的密令内容。',
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.deepEqual(prepared.profiles[0].knowledge, profile.knowledge);
+  assert.deepEqual(prepared.profiles[0].inferences, originalInferences);
+  assert.equal(
+    prepared.normalizationRepairs.some((entry) => entry.code === 'unreachable_knowledge_moved_to_inferences'),
+    false,
   );
-  assert.equal(explicitlyBoundAlias.ok, true, explicitlyBoundAlias.errors.join('\n'));
-  assert.deepEqual(explicitlyBoundAlias.profiles[0].knowledge, aliasBorrower.knowledge);
-
-  const ordinaryImpostor = completeProfile(ticket);
-  ordinaryImpostor.knowledge = ['经系统授权读取：敌对势力的未公开密令'];
-  const systemRejected = prepareProfileBatch([ordinaryImpostor], [ticket], { stat_data: {} }, '林澄继续整理药材。');
-  assert.equal(systemRejected.ok, false);
-  assert.match(systemRejected.errors.join('；'), /knowledge|知识|来源|可达/u);
-
-  const librarian = completeProfile(ticket);
-  librarian.identity.occupation = '图书管理员';
-  librarian.capabilities = ['能够读取书籍并通过接口沟通'];
-  librarian.knowledge = ['经系统授权读取：未公开的测试记录'];
-  const librarianRejected = prepareProfileBatch([librarian], [ticket], { stat_data: {} }, '林澄继续整理公开目录。');
-  assert.equal(librarianRejected.ok, false);
-
-  const existing = completeProfile(ticket);
-  existing.profileId = 'actor-existing-knowledge';
-  existing.knowledge = ['旧版档案遗留的知识快照'];
-  const current = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: { [existing.profileId]: existing } } } };
-  const inherited = prepareProfileBatch([
-    { profileId: existing.profileId, name: existing.name, currentState: { goal: '继续整理药材' } },
-  ], [], current, '林澄继续整理药材。');
-  assert.equal(inherited.ok, true, inherited.errors.join('\n'));
-  assert.deepEqual(inherited.profiles[0].knowledge, ['旧版档案遗留的知识快照']);
-
-  const leaked = prepareProfileBatch([
-    { profileId: existing.profileId, name: existing.name, knowledge: [...existing.knowledge, '敌对势力尚未公开的密令内容'] },
-  ], [], current, '林澄继续整理药材。');
-  assert.equal(leaked.ok, true, leaked.errors.join('\n'));
-  assert.deepEqual(leaked.profiles[0].knowledge, existing.knowledge);
-  assert.match(leaked.profiles[0].inferences.join('；'), /敌对势力尚未公开的密令内容/);
-
-  const reachable = prepareProfileBatch([
-    { profileId: existing.profileId, name: existing.name, knowledge: [...existing.knowledge, '经同伴当面告知得知：北门将在日落后关闭'] },
-  ], [], current, '同伴把北门关闭的消息当面告诉林澄。');
-  assert.equal(reachable.ok, true, reachable.errors.join('\n'));
-  assert.deepEqual(reachable.profiles[0].knowledge, [...existing.knowledge, '经同伴当面告知得知：北门将在日落后关闭']);
 });
 
 test('人物证据只取最终叙事，不把规划和选项冒充已发生事实', () => {
@@ -1334,47 +1162,61 @@ test('无主体世界只进行临时发现扫描，不持久化伪造的世界�
   assert.equal(ensured.changed, 0);
 });
 
-test('世界发现分块只以逐字锚点建立waiting shell，不把发现器意图或公开影响当成已发生变化', () => {
-  const proposal = parseWorldProposal(`世界摘要：南街药材供应出现了持续变化。
+test('完整NEW势力或过程在一次批次中原子生成主体与真实变化，缺项不留空壳', () => {
+  const proposal = parseWorldProposal(`世界摘要：测试水道继续自行变化。
 
 [SUBJECT NEW]
 类型：process
-名称：南街药材供应
-正文锚点：两种常用药材的到货量连续下降
-稳定锚点：药材供应受上游运输、库存和药房需求共同影响
-现状：两种常用药材的到货量连续下降
-目标：在库存与运输条件变化时继续演化供需状态
-尝试：核对本日到货与剩余库存
-结果：药房开始限制两种短缺药材的出售数量
-状态变化：南街药房已经执行新的限购规则
-下一步：检查上游运输是否恢复
+名称：测试水道水位
+来源依据：世界规则中的持续来水与旧闸门
+稳定锚点：测试水道的水位随来水与排水持续变化
+现状：水位已升到第二级石阶
+目标：根据来水量持续演化水位
+已知：上游仍在持续来水
+资源：现有河道蓄水空间
+约束：旧闸门限制排水速度
+尝试：根据来水量与闸门状态结算本时段水位
+结果类型：partial
+结果：水位继续上升
+代价：经过一个观察时段
+状态变化：水位升到第二级石阶
+下一步：下一时段复核新水线
 下次检查：2
-支线：药材短缺
-公开影响：南街药房门口贴出了新的限购告示。
-公开渠道：environment_trace
-[/SUBJECT]`);
+状态：active
+支线：测试水道水位
+[/SUBJECT]`, { subjects: [] });
   const merged = applyWorldProposal({}, proposal, {
     chatId: 'chat-world',
     turn: 1,
-    acceptedText: '两种常用药材的到货量连续下降。',
+    sourceKey: 'synthetic-reply-1',
+    acceptedText: '远处，测试水道的石阶出现一条新水线。',
+    scheduledSubjects: [],
   });
-  const recalled = selectWorldRecall(merged.world, '我留在旅店整理背包', {}, 1);
 
   assert.equal(proposal.errors.length, 0);
   assert.equal(merged.applied.length, 1);
-  assert.equal(merged.world.subjects[0].name, '南街药材供应');
-  assert.equal(merged.world.subjects[0].anchor, '两种常用药材的到货量连续下降');
-  assert.equal(merged.world.subjects[0].current, '两种常用药材的到货量连续下降');
-  assert.equal(merged.world.subjects[0].status, 'waiting');
-  assert.equal(merged.world.subjects[0].goal, '');
-  assert.deepEqual(merged.world.subjects[0].resources, []);
-  assert.deepEqual(merged.world.subjects[0].threadKeys, []);
-  assert.equal(merged.world.subjects[0].publicEffect, '');
-  assert.equal(merged.world.changes.length, 0);
-  assert.equal(recalled.length, 0);
+  assert.equal(merged.world.subjects.length, 1);
+  assert.equal(merged.world.changes.length, 1);
+  assert.equal(merged.world.subjects[0].status, 'active');
+  assert.ok(merged.world.subjects[0].goal);
+  assert.ok(merged.world.subjects[0].nextAction);
+  assert.equal(merged.world.subjects[0].lastAdvancedTurn, 1);
+
+  const incomplete = applyWorldProposal({}, parseWorldProposal(`[SUBJECT NEW]
+类型：process
+名称：不完整过程
+现状：只有一个名字和现状
+[/SUBJECT]`), {
+    chatId: 'chat-world',
+    turn: 1,
+    sourceKey: 'synthetic-incomplete',
+  });
+  assert.equal(incomplete.world.subjects.length, 0);
+  assert.equal(incomplete.world.changes.length, 0);
+  assert.equal(incomplete.skipped.some((entry) => entry.code === 'new_subject_incomplete'), true);
 });
 
-test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不会伪造公开影响', () => {
+test('既有主体私密泄漏只剥离公开字段，混合NEW仍同轮真实推进', () => {
   const baseline = {
     schemaVersion: 7,
     chatId: 'chat-world',
@@ -1383,7 +1225,7 @@ test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不�
       id: 'person-linye', type: 'person', name: '林页',
       anchor: '在钟表铺做学徒，同时自行核对库存差异',
       current: '私下核对的货运编号尚未公开', goal: '找出库存差异的来源',
-      nextCheckTurn: 1, status: 'active',
+      nextAction: '关门后核对三张旧收据', nextCheckTurn: 1, status: 'active',
     }],
     changes: [],
   };
@@ -1400,10 +1242,12 @@ test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不�
 [SUBJECT NEW]
 类型：process
 名称：旧水门水位
-正文锚点：下游石阶开始积水
+来源依据：上游来水与闸门流量会持续改变水位
 稳定锚点：水位随上游降雨和闸门流量变化
-现状：下游石阶开始积水
+现状：下游水位已升至第二级石阶
 目标：按水压与流量继续演化
+资源：上游持续来水
+约束：旧闸门排水速度有限
 尝试：累积上游来水
 结果：第二级石阶出现新的水痕
 状态变化：旧水门下游水位升至第二级石阶
@@ -1414,9 +1258,9 @@ test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不�
   const merged = applyWorldProposal(baseline, proposal, {
     chatId: 'chat-world',
     turn: 1,
+    sourceKey: 'synthetic-mixed',
     acceptedText: '林页在柜台后核对旧收据；下游石阶开始积水。',
   });
-  const recalled = selectWorldRecall(merged.world, '继续自己的行程', {}, 8);
   const linye = merged.world.subjects.find((entry) => entry.name === '林页');
   const water = merged.world.subjects.find((entry) => entry.name === '旧水门水位');
 
@@ -1424,13 +1268,11 @@ test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不�
   assert.match(linye.current, /尚未公开/);
   assert.equal(linye.publicEffect, '');
   assert.equal(merged.skipped.some((entry) => entry.code === 'private_leak_removed'), true);
-  assert.equal(water.anchor, '下游石阶开始积水');
-  assert.equal(water.current, '下游石阶开始积水');
-  assert.equal(water.status, 'waiting');
-  assert.equal(water.publicEffect, '');
-  assert.equal(merged.world.changes.length, 1);
-  assert.equal(recalled.length, 0);
-  assert.doesNotMatch(JSON.stringify(recalled), /调查店主|偷走账本|重复登记/);
+  assert.equal(water.status, 'active');
+  assert.ok(water.goal);
+  assert.ok(water.nextAction);
+  assert.equal(merged.world.changes.length, 2);
+  assert.doesNotMatch(JSON.stringify(selectWorldRecall(merged.world, '继续自己的行程', {}, 8)), /调查店主|偷走账本/);
 });
 
 test('完整报告只移除API字段和实际凭据，保留正文与变量', () => {

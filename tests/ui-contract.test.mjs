@@ -19,16 +19,16 @@ test('控制台包含变量、连接、人物、世界、诊断与两个互不�
   assert.match(source, /retryLastFailure/);
   assert.match(source, /auditVariables/);
   assert.match(source, /removeApiFromExport/);
-  assert.match(source, /正文只负责确认谁实际出场以及哪些事实不能违背，不是档案信息上限/);
-  assert.match(source, /本轮候选自己写出的identity、capabilities、resources或evidence不能给自己授权/);
-  assert.match(source, /若因此移空knowledge，必须另补至少一条不涉及秘密/);
+  assert.match(source, /正文只确定谁实际出场以及哪些事实不能违背，不是档案信息上限/);
+  assert.match(source, /脚本只校验结构、身份、票据映射和原子提交/);
+  assert.match(source, /不会再用第二套散文规则删除你已填好的knowledge/);
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
-  assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
+  assert.match(source, /const attempts = 2/);
   assert.doesNotMatch(source, /<AuditReceipt>/);
   assert.match(source, /一次聚焦模型诊断/);
   assert.match(source, /当前post-update非人物stat_data/);
-  assert.match(source, /补丁直接应用在当前stat_data上，不是从上一楼层重建整回合/);
+  assert.match(source, /补丁直接应用在当前post-update stat_data上，不从上一楼层重建整回合/);
   assert.match(source, /appendVariableBlockIfMissing/);
   assert.doesNotMatch(source, /prepareReplacement|本回合完整正确的替换块|只修复上次输出的机械错误/);
   assert.doesNotMatch(source, /parseVariableDoctorOutput|replaceUpdateVariableBlock/);
@@ -40,7 +40,7 @@ test('控制台包含变量、连接、人物、世界、诊断与两个互不�
   assert.match(source, /本次只处理变量；人物档案与世界引擎未运行/);
   assert.match(source, /store\.fullRuns = store\.fullRuns\.slice\(0, 24\)/);
   assert.match(source, /discoverProfileSubjects/);
-  assert.match(source, /高置信标签和编号作为必须覆盖的下限/);
+  assert.match(source, /高置信人物锚点只是必须覆盖的下限/);
   assert.match(source, /没有最终正文逐字出现的稳定name或alias身份锚点/);
   assert.doesNotMatch(source, /const PROFILE_ACTION_VERB/);
   assert.match(source, /stripNarrativeHtmlWidgets/);
@@ -130,19 +130,28 @@ test('运行中的修复详情可以列出缺项但不会冒充红色终态失�
   assert.match(presentation, /test\(text\)[\s\S]*severity: 'error'/);
 });
 
-test('变量医生等价改写故事神谕：一次判断、当前状态最小补丁并只交官方MVU解析', () => {
+test('变量医生等价改写故事神谕：一次独立推导整组变化，再用官方MVU应用最小补丁', () => {
   const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
   assert.match(audit, /buildVariableAuditEvidence/);
   assert.match(audit, /evidence\.triggeringUser/);
   assert.match(audit, /evidence\.transcript/);
   assert.match(audit, /collectMvuReference/);
   assert.match(audit, /当前post-update非人物stat_data/);
+  assert.match(audit, /本回复生成前最近可用的非人物stat_data/);
+  assert.match(audit, /当前回合适用的初始化或字段配套规则/);
   assert.match(audit, /本楼层原UpdateVariable区块/);
   assert.match(audit, /本楼层最终接受正文/);
-  assert.match(audit, /补丁直接应用在当前stat_data上，不是从上一楼层重建整回合/);
+  assert.match(audit, /先独立列出本回合每一组明确发生的状态变化/);
+  assert.match(audit, /逐项核对每组变化的目标字段与配套字段/);
+  assert.match(audit, /原UpdateVariable完全漏写了配套字段也必须检查/);
+  assert.match(audit, /未分配点数或余额也必须相应减少/);
+  assert.match(audit, /当前值若已经正确扣减或更新，不得重复操作/);
+  assert.match(audit, /补丁直接应用在当前post-update stat_data上，不从上一楼层重建整回合/);
   assert.match(audit, /raw = await generateDoctorRaw/);
+  assert.equal((audit.match(/await generateDoctorRaw\(/g) || []).length, 1);
   assert.match(audit, /returnedBlocks/);
   assert.match(audit, /candidate = await Mvu\.parseMessage\(block, runtime\.core\.deepClone\(freshData\)\)/);
+  assert.equal((audit.match(/Mvu\.parseMessage\(/g) || []).length, 1);
   assert.match(audit, /messageMode = originalBlock \? 'preserve-existing' : 'append-missing'/);
   assert.match(audit, /appendVariableBlockIfMissing/);
   assert.doesNotMatch(audit, /previousMvuData|prepareReplacement|verifyVariablePreservation|normalizeVariableOperations|validatePatchOperations/);
@@ -154,6 +163,7 @@ test('变量医生等价改写故事神谕：一次判断、当前状态最小�
   assert.match(audit, /不得把派生字段当来源字段直接改写/);
   assert.match(audit, /assertVariableTarget\(session, messageId, target\)[\s\S]*generateDoctorRaw[\s\S]*assertVariableTarget\(session, messageId, target\)/);
   assert.doesNotMatch(audit, /assessVariableBaseline|buildVariableAuditChecklist|extractExplicitVariableClaims|partial-repair|authority-rejected/);
+  assert.doesNotMatch(audit, /二次语义审核|第二次模型复检|配套字段门禁/);
 });
 
 test('正文只接收公开影响，主体锚点、私密现状和有限知识只供Doctor后台推进', () => {
@@ -165,22 +175,20 @@ test('正文只接收公开影响，主体锚点、私密现状和有限知识�
   assert.doesNotMatch(injection, /entry\.(?:anchor|current|goal|knowledge|resources|constraints|nextAction)|consumptionAnchors|required_once/);
 
   const worldAdvance = source.slice(source.indexOf('async function advanceWorld'), source.indexOf('async function acceptFinal'));
-  const actorPlanner = source.slice(source.indexOf('async function generateIsolatedActorPlan'), source.indexOf('async function advanceWorld'));
-  assert.match(actorPlanner, /anchor: subject\.anchor/);
-  assert.match(actorPlanner, /current: subject\.current/);
-  assert.match(actorPlanner, /knowledge: subject\.knowledge/);
-  assert.match(actorPlanner, /resources: subject\.resources/);
-  assert.match(actorPlanner, /constraints: subject\.constraints/);
-  assert.match(actorPlanner, /该主体私密actorView/);
+  assert.match(worldAdvance, /const privateSubjectViews/);
+  assert.match(worldAdvance, /anchor: subject\.anchor/);
+  assert.match(worldAdvance, /current: subject\.current/);
+  assert.match(worldAdvance, /knowledge: subject\.knowledge/);
+  assert.match(worldAdvance, /resources: subject\.resources/);
+  assert.match(worldAdvance, /constraints: subject\.constraints/);
   assert.match(worldAdvance, /subjectHistories/);
   assert.match(worldAdvance, /publicWorldSurface/);
-  assert.match(worldAdvance, /knowledgeEvidence/);
-  assert.match(worldAdvance, /全局裁决视图；刻意不含任何主体goal、knowledge、nextAction、nextCheckTurn/);
   assert.doesNotMatch(worldAdvance, /privateProfileDigestFromData\(/);
-  assert.match(worldAdvance, /私密结果只留在结果\/状态变化\/现状/);
-  assert.match(worldAdvance, /不得泄露隐藏行动者、目的或完整真相/);
+  assert.match(worldAdvance, /私密行动、隐藏状态和完整真相只写入主体私密字段/);
+  assert.match(worldAdvance, /只有存在目击、环境痕迹或真实传播链时才写公开影响/);
+  assert.doesNotMatch(worldAdvance, /generateIsolatedActorPlan|bootstrapPlans|nextPlans/);
   assert.match(source, /private_leak_removed/);
-  assert.match(source, /只清空公开字段，私密推进仍已保留/);
+  assert.match(source, /只忽略公开字段，私密推进仍保留/);
 });
 
 test('accepted-final并行生成变量与人物候选，只有变量或人物持久化事务未闭合才阻断世界', () => {
@@ -209,25 +217,26 @@ test('accepted-final并行生成变量与人物候选，只有变量或人物持
   assert.match(source, /internalGenerationDepth/);
   const profileContentFailure = profiles.slice(profiles.indexOf('if (!prepared.ok && !prepared.profiles?.length)'), profiles.indexOf('if (!hasMvu)'));
   assert.match(profileContentFailure, /blocksWorld: false/);
-  const discoveryFailure = profiles.slice(profiles.indexOf('if (!discovery.ok)'), profiles.indexOf('const forcedSubjects'));
-  assert.match(discoveryFailure, /blocksWorld: false/);
+  assert.doesNotMatch(profiles, /discoverAcceptedProfileSubjects|if \(!discovery\.ok\)/);
+  assert.match(profiles, /profile:single-pass-started/);
 });
 
-test('世界按主体调度并局部合并，取消会话不写入迟到结果', () => {
+test('世界在一次主体批次中完成发现、裁决与局部合并，取消会话不写入迟到结果', () => {
   const worldAdvance = source.slice(source.indexOf('async function advanceWorld'), source.indexOf('async function acceptFinal'));
   assert.match(worldAdvance, /selectDueWorldSubjects/);
   assert.match(worldAdvance, /createWorldAdvanceTickets/);
-  assert.match(worldAdvance, /parseWorldProposal\(raw, \{ subjects: globalAdjudicationSubjects \}\)/);
+  assert.match(worldAdvance, /parseWorldProposal\(raw, \{ subjects: dueSubjects \}\)/);
   assert.match(worldAdvance, /applyWorldProposal\(workingWorld, proposalForMerge/);
-  assert.match(worldAdvance, /const adjudicationErrors = \[\]/);
-  assert.match(worldAdvance, /sanitizeWorldAdjudication\(update, subject/);
-  assert.match(worldAdvance, /adjudicationErrors\.push\(\{ subjectId: subject\.id/);
+  assert.equal((worldAdvance.match(/await generateDoctorRaw\(/g) || []).length, 1);
+  assert.match(worldAdvance, /一次主体批次/);
+  assert.match(worldAdvance, /NEW必须在创建本回合立即完成第一次尝试、裁决、状态变化和下一步/);
+  assert.doesNotMatch(worldAdvance, /generateIsolatedActorPlan|bootstrapPlans|nextPlans|sanitizeWorldAdjudication/);
   assert.match(worldAdvance, /if \(isSessionCancellation\(error, session\)\)/);
   assert.match(worldAdvance, /cancelled: true/);
   assert.doesNotMatch(worldAdvance, /repairAttempts|retryable-failure|restoreCancelledWorldAttempt/);
   assert.match(worldAdvance, /const sourceKey = String\(session\.worldSourceKey \|\| acceptedReplySourceKey\(context, messageId, acceptedText\)\)/);
   assert.match(worldAdvance, /world:idempotent-skip/);
-  assert.match(worldAdvance, /session\.worldAdvancePlan\.unresolvedSubjectIds/);
+  assert.match(worldAdvance, /session\.worldAdvancePlan = \{/);
   assert.match(worldAdvance, /sameTurn: targetTurn <= baseline\.turn/);
 
   const sourceKeyBuilder = source.slice(source.indexOf('function acceptedReplySourceKey'), source.indexOf('async function captureSwipeOutcome'));
@@ -337,13 +346,15 @@ test('人物票据谱系按message、swipe和叙事指纹持久化，手动入�
   assert.match(manualWorld, /worldSourceKey: String\(ticketEntry\?\.sourceKey \|\| acceptedReplySourceKey/);
 });
 
-test('人物补档提示只使用脚本叙事映射，不再追加旧票据回执容错层', () => {
+test('人物补档只使用正文生成时真实消费映射，缺回执仍补全但不事后绑票', () => {
   const profilePrompt = source.slice(
     source.indexOf('async function repairProfileReceipt'),
     source.indexOf('async function commitProfiles'),
   );
-  assert.match(profilePrompt, /脚本按最终叙事首次出场顺序建立的人物票据映射/u);
-  assert.match(profilePrompt, /映射未覆盖的人物仍须被发现并完整补档/u);
+  assert.match(profilePrompt, /正文生成时实际返回的人物票据消费映射/u);
+  assert.match(profilePrompt, /没有生成时消费回执或映射未覆盖的人物仍须被发现并完整补档/u);
+  assert.match(profilePrompt, /不得绑定任何剩余票据/u);
+  assert.doesNotMatch(profilePrompt, /按最终叙事首次出场顺序绑定|narrative-order/u);
   assert.doesNotMatch(profilePrompt, /receiptSafetyAppendix|票据回执的容错边界|回执缺失、损坏/u);
   assert.match(profilePrompt, /prompt: `\$\{prompt\}\$\{followupAppendix\}`/u);
 });
