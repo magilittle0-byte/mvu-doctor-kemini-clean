@@ -16,15 +16,11 @@ import {
   openAiModelsEndpoint,
   mergeProfileRootDirect,
   mergeProfileCandidates,
-  normalizeVariableOperations,
   normalizeProfileCandidates,
   parseCharacterTicketReceipt,
   parseProfileDiscoveryReceipt,
   parseProfileReceipt,
   parseUpdateVariableBlock,
-  parseVariableDoctorOutput,
-  protectedVariablePathsFromReference,
-  filterProtectedVariableOperations,
   applyAcceptedWorldObservations,
   applyWorldProposal,
   authorityProtectedProfileNamesFromEntries,
@@ -37,85 +33,18 @@ import {
   restorePathSnapshot,
   restoreTouchedData,
   removeApiFromExport,
-  replaceUpdateVariableBlock,
   refreshHostMessageSurface,
   repairAcceptedNarrativeEnvelope,
   seedWorldSubjectsFromProfiles,
   selectWorldRecall,
   semanticJsonEqual,
   statDataOf,
-  validatePatchOperations,
   validateProfileSubjectCoverage,
   verifyCommittedProfiles,
-  verifyPatchOperations,
-  verifyPatchApplication,
   verifyPathSnapshot,
   variableStateOf,
   variableChangePaths,
-  verifyVariablePreservation,
 } from '../core.mjs';
-
-test('显式只读模板只过滤派生字段，保留合法天赋来源字段', () => {
-  const protectedPaths = protectedVariablePathsFromReference({
-    schema: [
-      '  测试主体.派生加成.${A|B|C|D}:',
-      '    rules:',
-      '',
-      '      - 【禁止修改】由测试前端计算。',
-    ].join('\n'),
-    rules: '/测试主体/展示值/readback [禁止修改]',
-  });
-  assert.deepEqual(protectedPaths, [
-    '/测试主体/派生加成/A',
-    '/测试主体/派生加成/B',
-    '/测试主体/派生加成/C',
-    '/测试主体/派生加成/D',
-    '/测试主体/展示值/readback',
-  ]);
-
-  const sourceTalent = { op: 'insert', path: '/测试主体/天赋/来源', value: { D: 2 } };
-  const filtered = filterProtectedVariableOperations([
-    { op: 'replace', path: '/测试主体/派生加成/D', value: 2 },
-    { op: 'replace', path: '/测试主体/派生加成/D/临时', value: 1 },
-    sourceTalent,
-  ], protectedPaths);
-
-  assert.deepEqual(filtered.operations, [sourceTalent]);
-  assert.equal(filtered.repairs.length, 2);
-  assert.equal(filtered.repairs.every((repair) => repair.code === 'explicit_reference_protected_operation_removed'), true);
-  assert.deepEqual(filtered.repairs.map((repair) => repair.protectedPaths), [
-    ['/测试主体/派生加成/D'],
-    ['/测试主体/派生加成/D'],
-  ]);
-});
-
-test('显式只读标记不会跨过普通正文或同级结构误绑更早路径', () => {
-  const protectedPaths = protectedVariablePathsFromReference([
-    [
-      '  测试主体.派生加成.${A|B|C|D}:',
-      '    rules:',
-      '    这段普通正文另行说明显示方式。',
-      '      - 【禁止修改】由前端计算。',
-    ].join('\n'),
-    [
-      '  /测试主体/展示值/readback:',
-      '  unrelated:',
-      '    - 【禁止修改】由前端计算。',
-    ].join('\n'),
-  ]);
-  assert.deepEqual(protectedPaths, []);
-});
-
-test('普通自由文本没有明确只读标记时不建立变量路径拦截', () => {
-  const reference = '测试主体.派生加成.${A|B|C|D} 由测试前端计算。\n/测试主体/派生加成/D 是当前显示值。';
-  const protectedPaths = protectedVariablePathsFromReference(reference);
-  assert.deepEqual(protectedPaths, []);
-  const operations = [
-    { op: 'replace', path: '/测试主体/派生加成/D', value: 2 },
-    { op: 'insert', path: '/测试主体/天赋/来源', value: { D: 2 } },
-  ];
-  assert.deepEqual(filterProtectedVariableOperations(operations, protectedPaths), { operations, repairs: [] });
-});
 
 function completeProfile(ticket) {
   return {
@@ -422,59 +351,6 @@ test('同名半档案不是可用既有人物，再次出场仍必须进入补�
   assert.deepEqual(excluded, []);
 });
 
-test('变量医生以本回合完整块替换原块，不再把旧delta和纠错叠加', () => {
-  const original = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/契约者/经济/UP","value":10}]</JSONPatch></UpdateVariable>';
-  const replacement = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/契约者/经济/UP","value":10},{"op":"replace","path":"/当前时间/地点","value":"大厅"}]</JSONPatch></UpdateVariable>';
-  assert.equal(parseUpdateVariableBlock(original).ok, true);
-  const replaced = replaceUpdateVariableBlock(`正文\n${original}`, replacement);
-  assert.equal(replaced.ok, true);
-  assert.equal(replaced.mode, 'replace-valid');
-  assert.deepEqual(parseUpdateVariableBlock(replaced.message).operations, parseUpdateVariableBlock(replacement).operations);
-  assert.equal((replaced.message.match(/<UpdateVariable/g) || []).length, 1);
-});
-
-test('变量医生完整替换唯一有界的坏JSON区块，边界缺失或多义时失败关闭', () => {
-  const broken = '<UpdateVariable><Analysis>旧区块不可解析</Analysis><JSONPatch>[{"op":"delta","path":"/玩家/金钱","value":???}]</JSONPatch></UpdateVariable>';
-  const correction = '<UpdateVariable><Analysis>只保留经医生验证的新操作。</Analysis><JSONPatch>[{"op":"replace","path":"/玩家/金钱","value":7}]</JSONPatch></UpdateVariable>';
-  assert.equal(parseUpdateVariableBlock(broken).ok, false);
-
-  const replaced = replaceUpdateVariableBlock(`正文\n${broken}\n尾声`, correction);
-  assert.equal(replaced.ok, true, replaced.error);
-  assert.equal(replaced.mode, 'replace-invalid-bounded');
-  assert.deepEqual(replaced.operations, [{ op: 'replace', path: '/玩家/金钱', value: 7 }]);
-  assert.equal((replaced.message.match(/<UpdateVariable\b/g) || []).length, 1);
-  assert.equal((replaced.message.match(/<\/UpdateVariable\s*>/g) || []).length, 1);
-  assert.doesNotMatch(replaced.message, /旧区块不可解析|\?\?\?/);
-
-  const missingClose = replaceUpdateVariableBlock(
-    '正文\n<UpdateVariable><JSONPatch>[{"op":"delta","path":"/玩家/金钱","value":-3}]</JSONPatch>',
-    correction,
-  );
-  assert.equal(missingClose.ok, true, missingClose.error);
-  assert.equal(missingClose.mode, 'replace-recovered-envelope');
-  assert.deepEqual(parseUpdateVariableBlock(missingClose.message).operations, parseUpdateVariableBlock(correction).operations);
-
-  const multiple = replaceUpdateVariableBlock(`${broken}\n${broken}`, correction);
-  assert.equal(multiple.ok, false);
-  assert.equal(multiple.code, 'ambiguous-original-envelope');
-  assert.deepEqual(multiple.operations, []);
-});
-
-test('变量模型输出宽容恢复唯一JSONPatch数组，但多候选仍失败关闭', () => {
-  const tagged = parseVariableDoctorOutput('<Analysis>核对完成</Analysis>\n<JSONPatch>[{"op":"replace","path":"/测试主体/数值","value":4}]</JSONPatch>');
-  assert.equal(tagged.ok, true, tagged.error);
-  assert.equal(tagged.recovery, 'jsonpatch-without-envelope');
-  assert.deepEqual(tagged.operations, [{ op: 'replace', path: '/测试主体/数值', value: 4 }]);
-
-  const arrayOnly = parseVariableDoctorOutput('修复如下：\n```json\n[{"op":"delta","path":"/测试主体/数值","value":1}]\n```');
-  assert.equal(arrayOnly.ok, true, arrayOnly.error);
-  assert.equal(arrayOnly.recovery, 'balanced-json-array');
-
-  const ambiguous = parseVariableDoctorOutput('[{"op":"delta","path":"/a","value":1}]\n[{"op":"delta","path":"/b","value":1}]');
-  assert.equal(ambiguous.ok, false);
-  assert.match(ambiguous.error, /找到2个/);
-});
-
 test('消息刷新严格先重绘再发送MESSAGE_UPDATED，并把缺失或失败接口显式返回', async () => {
   const order = [];
   const host = {
@@ -517,38 +393,6 @@ test('变量区块按无限回廊真实MVU的分行结构输出', () => {
   assert.equal(parseUpdateVariableBlock(block).ok, true);
 });
 
-test('变量操作在脚本侧确定性修复常见MVU写法而不猜不存在路径', () => {
-  const currentData = { stat_data: { 契约者: { 经济: { UP: [10, '通用点数'] }, 背包: { 旧物: '钥匙' } } } };
-  const normalized = normalizeVariableOperations(currentData, [
-    { op: 'set', path: '/stat_data/契约者/经济/UP/', value: [12, '通用点数'] },
-    { op: 'delta', path: '/契约者/经济/UP', value: '3' },
-    { op: 'move', from: '/契约者/背包/旧物', to: '/契约者/背包/钥匙' },
-  ]);
-  assert.equal(normalized.ok, true);
-  assert.deepEqual(normalized.operations, [
-    { op: 'replace', path: '/契约者/经济/UP', value: [12, '通用点数'] },
-    { op: 'delta', path: '/契约者/经济/UP', value: 3 },
-    { op: 'insert', path: '/契约者/背包/钥匙', value: '钥匙' },
-    { op: 'remove', path: '/契约者/背包/旧物' },
-  ]);
-  assert.equal(normalizeVariableOperations(currentData, [{ op: 'replace', path: '/完全不存在', value: 1 }]).operations[0].path, '/完全不存在');
-});
-
-test('变量操作归一化与最终校验都拒绝人物档案根路径的两种写法', () => {
-  const currentData = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: {} } } };
-  for (const path of ['/人物档案', '/stat_data/人物档案']) {
-    const operation = { op: 'replace', path, value: { schemaVersion: 1, byActorId: {} } };
-    const normalized = normalizeVariableOperations(currentData, [operation]);
-    assert.equal(normalized.ok, false, `${path}不应通过归一化`);
-    assert.equal(normalized.code, 'profile-root-owned-by-profile-doctor');
-    assert.deepEqual(normalized.operations, []);
-
-    const validated = validatePatchOperations(currentData, [operation]);
-    assert.equal(validated.ok, false, `${path}不应通过最终校验`);
-    assert.equal(validated.code, 'profile-root-owned-by-profile-doctor');
-  }
-});
-
 test('变量事务差异覆盖官方派生路径，并把人物档案根完全隔离', () => {
   const previous = { stat_data: { 测试主体: { 数值: 10, 派生: 20 }, 人物档案: { byActorId: {} } } };
   const final = { stat_data: { 测试主体: { 数值: 7, 派生: 14 }, 人物档案: { byActorId: { npc: { name: '测试人物' } } } } };
@@ -556,106 +400,27 @@ test('变量事务差异覆盖官方派生路径，并把人物档案根完全�
   assert.equal(changed.ok, true);
   assert.deepEqual(changed.paths.sort(), ['/测试主体/数值', '/测试主体/派生'].sort());
   assert.deepEqual(variableStateOf(final), { 测试主体: { 数值: 7, 派生: 14 } });
-
-  assert.equal(verifyVariablePreservation(final, { stat_data: { 测试主体: { 数值: 6, 派生: 14 } } }, ['/测试主体/数值']).ok, true);
-  const rejected = verifyVariablePreservation(final, { stat_data: { 测试主体: { 数值: 6, 派生: 99 } } }, ['/测试主体/数值']);
-  assert.equal(rejected.ok, false);
-  assert.deepEqual(rejected.unexpected.map((item) => item.path), ['/测试主体/派生']);
 });
 
-test('变量纠错在交给MVU前拒绝不存在路径，但动态对象和数组Schema交由官方MVU裁决', () => {
-  const state = { stat_data: { 契约者: { 经济: { UP: 10 }, 背包: {} } } };
-  const valid = validatePatchOperations(state, [{ op: 'delta', path: '/契约者/经济/UP', value: 5 }]);
-  assert.equal(valid.ok, true);
-  assert.equal(valid.expected.契约者.经济.UP, 15);
-  assert.equal(verifyPatchOperations({ stat_data: valid.expected }, valid), true);
-  assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/不存在', value: 1 }]).ok, false);
-  assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/经济', value: { UP: 12 } }]).ok, true);
-  const dynamic = { stat_data: { 任务: { 临时条目: { 进度: 1 } }, 列表: ['甲', '乙'] }, schema: { type: 'object', properties: {} } };
-  assert.equal(validatePatchOperations(dynamic, [{ op: 'replace', path: '/任务/临时条目/进度', value: 2 }]).ok, true);
-  const arrayReplacement = validatePatchOperations(dynamic, [{ op: 'replace', path: '/列表', value: ['甲', '丙'] }]);
-  assert.equal(arrayReplacement.ok, true, arrayReplacement.error);
-  assert.deepEqual(arrayReplacement.expected.列表, ['甲', '丙']);
-  const move = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"move","from":"/契约者/经济/UP","to":"/契约者/经济/余额"}]</JSONPatch></UpdateVariable>');
-  assert.equal(move.ok, true);
-  const described = { stat_data: { 契约者: { 经济: { UP: [10, '通用点数'] } } } };
-  const vwd = validatePatchOperations(described, [{ op: 'delta', path: '/契约者/经济/UP', value: 2 }]);
-  assert.equal(vwd.ok, true);
-  assert.deepEqual(vwd.expected.契约者.经济.UP, [12, '通用点数']);
-});
-
-test('变量补丁必须拒绝目标外旁路变化，回滚只恢复本事务触碰路径', () => {
+test('变量事务回滚只恢复本事务触碰路径', () => {
   const state = { stat_data: { 玩家: { 生命: 10, 金钱: 5 }, 世界时钟: 7 } };
-  const validation = validatePatchOperations(state, [{ op: 'delta', path: '/玩家/生命', value: -2 }]);
-  assert.equal(validation.ok, true);
-  const contaminated = structuredClone(validation.expected);
-  contaminated.世界时钟 = 99;
-  const application = verifyPatchApplication({ stat_data: contaminated }, validation);
-  assert.equal(application.ok, false);
-  assert.match(application.errors.join('；'), /补丁外路径/);
+  const rollbackPaths = ['/玩家/生命'];
   const liveAfterOtherWork = { stat_data: { 玩家: { 生命: 8, 金钱: 12 }, 世界时钟: 8 } };
-  const restored = restoreTouchedData(liveAfterOtherWork, state, validation.rollbackPaths);
+  const restored = restoreTouchedData(liveAfterOtherWork, state, rollbackPaths);
   assert.equal(restored.ok, true);
   assert.equal(restored.data.stat_data.玩家.生命, 10);
   assert.equal(restored.data.stat_data.玩家.金钱, 12);
   assert.equal(restored.data.stat_data.世界时钟, 8);
-  const snapshot = capturePathSnapshot(state, validation.rollbackPaths);
+  const snapshot = capturePathSnapshot(state, rollbackPaths);
   const restoredAgain = restorePathSnapshot(liveAfterOtherWork, snapshot);
   assert.equal(verifyPathSnapshot(restoredAgain.data, snapshot), true);
 });
 
-test('MVU只调整对象键顺序时仍视为同一结构，数组顺序仍必须一致', () => {
-  const state = { stat_data: { 契约者: { 背包: {} } } };
-  const operation = {
-    op: 'insert',
-    path: '/契约者/背包/测试物品',
-    value: { 名称: '测试物品', 类型: '武器', 数量: 1, 效果: { 被动: '无', 主动: '无' } },
-  };
-  const validation = validatePatchOperations(state, [operation]);
-  assert.equal(validation.ok, true);
-  const hostNormalized = {
-    stat_data: {
-      契约者: {
-        背包: {
-          测试物品: { 效果: { 主动: '无', 被动: '无' }, 数量: 1, 类型: '武器', 名称: '测试物品' },
-        },
-      },
-    },
-  };
-  assert.equal(semanticJsonEqual(operation.value, hostNormalized.stat_data.契约者.背包.测试物品), true);
-  assert.equal(verifyPatchOperations(hostNormalized, validation), true);
-  assert.equal(verifyPatchApplication(hostNormalized, validation).ok, true);
+test('对象键顺序不影响语义相等，数组顺序仍必须一致', () => {
+  const expected = { 名称: '测试物品', 类型: '武器', 数量: 1, 效果: { 被动: '无', 主动: '无' } };
+  const hostNormalized = { 效果: { 主动: '无', 被动: '无' }, 数量: 1, 类型: '武器', 名称: '测试物品' };
+  assert.equal(semanticJsonEqual(expected, hostNormalized), true);
   assert.equal(semanticJsonEqual([1, 2], [2, 1]), false);
-});
-
-test('本地安全壳不冒充角色卡Schema裁决，动态insert交由官方MVU干运行', () => {
-  const state = {
-    stat_data: { 契约者: { 事件簿: {} } },
-    schema: {
-      type: 'object', extensible: false, properties: {
-        契约者: { type: 'object', extensible: false, properties: {} },
-      },
-    },
-  };
-  const validation = validatePatchOperations(state, [{ op: 'insert', path: '/契约者/事件簿/新记录', value: { 结果: '已发生' } }]);
-  assert.equal(validation.ok, true, validation.error);
-  assert.deepEqual(validation.expected.契约者.事件簿.新记录, { 结果: '已发生' });
-});
-
-test('Schema明确允许扩展的对象仍可执行insert并通过目标读回', () => {
-  const state = {
-    stat_data: { 契约者: { 事件簿: {} } },
-    schema: {
-      type: 'object', extensible: false, properties: {
-        契约者: { type: 'object', extensible: false, properties: {
-          事件簿: { type: 'object', extensible: true, properties: {} },
-        } },
-      },
-    },
-  };
-  const validation = validatePatchOperations(state, [{ op: 'insert', path: '/契约者/事件簿/新记录', value: { 结果: '已发生' } }]);
-  assert.equal(validation.ok, true, validation.error);
-  assert.equal(verifyPatchOperations({ stat_data: validation.expected }, validation), true);
 });
 
 test('独立API端点归一化、响应提取与诊断脱敏', () => {

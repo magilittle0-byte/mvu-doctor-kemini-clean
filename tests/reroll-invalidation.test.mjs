@@ -1092,7 +1092,7 @@ test('retrying a variable failure reuses the already successful profile result i
       mvuByMessage: [[1, { stat_data: { 状态: { 场景: '室内' } } }]],
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) {
+        if (system.includes('MVU变量')) {
           variableCalls += 1;
           if (variableCalls === 1) return '第一次变量回复无法解析';
           return '<UpdateVariable><Analysis>最终正文没有改变场景；当前 /状态/场景 仍为室内，与正文事实一致。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>';
@@ -1169,7 +1169,7 @@ test('GENERATION_STARTED保留旧正文失败重试但不自动调用Doctor、�
       mvuByMessage: [[1, { stat_data: { 状态: { 场景: '室内' } } }]],
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) {
+        if (system.includes('MVU变量')) {
           variableCalls += 1;
           return `第${variableCalls}次变量回复仍无法解析`;
         }
@@ -1234,7 +1234,7 @@ test('下一轮START立即准备正文且停止后才由手动入口恢复旧正
       mvuByMessage: [[1, { stat_data: { 状态: { 场景: '室内' } } }]],
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) {
+        if (system.includes('MVU变量')) {
           variableCalls += 1;
           if (variableCalls === 1) return '首次变量回复无法解析';
           return '<UpdateVariable><Analysis>最终正文没有改变场景；当前 /状态/场景 仍为室内，与正文事实一致。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>';
@@ -1970,12 +1970,59 @@ test('a swipe-outcome capture failure is reported without leaving the accepted r
   assert.equal(harness.uiNodes.get('manualWorldAdvance').disabled, false);
 });
 
-test('坏变量块的完整替换不得吸收或覆盖其他扩展同回合写入', async () => {
-  const previous = { stat_data: { 状态: { 数值: 0 }, 其他扩展: { 标记: '上一楼层' } } };
-  const current = { stat_data: { 状态: { 数值: 1 }, 其他扩展: { 标记: '数据库本回合写入' } } };
-  const invalidBlock = '<UpdateVariable><Analysis>原回复格式损坏</Analysis><JSONPatch>[{"op":"replace","path":"/状态/数值","value":???}]</JSONPatch></UpdateVariable>';
-  const originalMessage = `<content>仪表读数从0变成了1。</content><options><option>记录读数</option></options>${invalidBlock}`;
+test('Story Oracle式变量医生只在current上纠正错误字段，保留正确武器、扩展、档案与正文原块', async () => {
+  const mainWeapon = {
+    名称: '校准短刃',
+    类型: '短剑',
+    品质: '白色',
+    效果: {
+      精密校准: '消耗2点能量，使下一次测量结果获得修正。',
+    },
+  };
+  const latestProfiles = {
+    schemaVersion: 1,
+    byActorId: {
+      guide: { profileId: 'guide', name: '引导者', currentState: { location: '系统后台' } },
+    },
+  };
+  const previous = {
+    stat_data: {
+      契约者: {
+        当前时间: { 客观时间: '校准前', 地点: '准备室' },
+        头部: { 姓名: '旧姓名' },
+        属性: { 基础: { STR: 5, AGI: 5, CON: 5, PER: 5 }, 未分配属性点: 15 },
+        装备: { 主武器: { 名称: '无', 效果: {} } },
+      },
+      其他扩展: { 标记: '上一楼层' },
+      人物档案: { schemaVersion: 1, byActorId: { old: { profileId: 'old', name: '旧档案' } } },
+    },
+  };
+  const current = {
+    stat_data: {
+      契约者: {
+        当前时间: { 客观时间: '校准前', 地点: '准备室' },
+        头部: { 姓名: '旧姓名' },
+        属性: { 基础: { STR: 5, AGI: 5, CON: 5, PER: 7 }, 未分配属性点: 15 },
+        装备: { 主武器: structuredClone(mainWeapon) },
+      },
+      其他扩展: { 标记: '数据库本回合写入', 嵌套: { 保留: true } },
+      人物档案: structuredClone(latestProfiles),
+    },
+  };
+  const originalBlock = '<UpdateVariable><Analysis>正文原块已经写入主武器，但漏了角色创建字段。</Analysis><JSONPatch>[{"op":"replace","path":"/契约者/装备/主武器","value":{"名称":"校准短刃","类型":"短剑","品质":"白色","效果":{"精密校准":"消耗2点能量，使下一次测量结果获得修正。"}}}]</JSONPatch></UpdateVariable>';
+  const originalMessage = `<content>测试员乙完成属性分配并抵达校准大厅。</content><options><option>查看面板</option></options>${originalBlock}`;
+  const correctionOperations = [
+    { op: 'replace', path: '/契约者/当前时间/客观时间', value: '第1天' },
+    { op: 'replace', path: '/契约者/当前时间/地点', value: '校准大厅' },
+    { op: 'replace', path: '/契约者/头部/姓名', value: '测试员乙' },
+    { op: 'delta', path: '/契约者/属性/基础/STR', value: 5 },
+    { op: 'delta', path: '/契约者/属性/基础/AGI', value: 3 },
+    { op: 'delta', path: '/契约者/属性/基础/CON', value: 2 },
+    { op: 'delta', path: '/契约者/属性/基础/PER', value: 3 },
+    { op: 'delta', path: '/契约者/属性/未分配属性点', value: -15 },
+  ];
   const parseTrace = [];
+  let sawNarrativeAndOriginalBlock = false;
   const harness = runtimeHarness(
     [
       { is_user: true, is_system: false, mes: '先读取上一轮仪表。' },
@@ -1997,14 +2044,26 @@ test('坏变量块的完整替换不得吸收或覆盖其他扩展同回合写�
       mvuByMessage: [[1, previous], [3, current]],
       parseMessage({ block, data }) {
         const next = structuredClone(data);
-        if (String(block).includes('/状态/数值')) next.stat_data.状态.数值 = 1;
-        parseTrace.push({ block: String(block), before: structuredClone(data), after: structuredClone(next) });
+        const patchText = String(block).match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/u)?.[1] || '[]';
+        const operations = JSON.parse(patchText);
+        for (const operation of operations) {
+          const path = String(operation.path || '').split('/').slice(1);
+          let parent = next.stat_data;
+          for (const segment of path.slice(0, -1)) parent = parent[segment];
+          const key = path.at(-1);
+          if (operation.op === 'delta') parent[key] += Number(operation.value || 0);
+          else if (operation.op === 'replace') parent[key] = structuredClone(operation.value);
+        }
+        parseTrace.push({ block: String(block), operations, before: structuredClone(data), after: structuredClone(next) });
         return next;
       },
-      generateRaw({ systemPrompt }) {
+      generateRaw({ systemPrompt, prompt }) {
         const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) {
-          return '<UpdateVariable><Analysis>本回合完整块只包含正文确认的仪表变化，不吸收其他扩展字段。</Analysis><JSONPatch>[{"op":"replace","path":"/状态/数值","value":1}]</JSONPatch></UpdateVariable>';
+        if (system.includes('MVU变量')) {
+          assert.match(String(prompt), /【本楼层原UpdateVariable区块】[\s\S]*校准短刃/u);
+          assert.match(String(prompt), /【本楼层最终接受正文】[\s\S]*测试员乙完成属性分配并抵达校准大厅/u);
+          sawNarrativeAndOriginalBlock = true;
+          return `<UpdateVariable><Analysis>当前状态已正确保存武器、扩展和人物档案；只纠正姓名、分配点数、时间与地点。</Analysis><JSONPatch>${JSON.stringify(correctionOperations)}</JSONPatch></UpdateVariable>`;
         }
         if (system.includes('MVU人物档案医师')) return '<人物档案无变化/>';
         return '';
@@ -2019,22 +2078,88 @@ test('坏变量块的完整替换不得吸收或覆盖其他扩展同回合写�
   await new Promise((resolve) => setTimeout(resolve, 800));
 
   const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  assert.equal(parseTrace.length, 2);
-  const authoritativeReplay = parseTrace.find((entry) => String(entry.block).includes('/状态/数值'));
-  const redundantOperationProbe = parseTrace.find((entry) => !String(entry.block).includes('/状态/数值'));
-  assert.ok(authoritativeReplay);
-  assert.ok(redundantOperationProbe);
-  assert.notEqual(authoritativeReplay.block, invalidBlock);
-  const replayPatchText = authoritativeReplay.block.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/u)?.[1] || '';
-  assert.deepEqual(JSON.parse(replayPatchText), [{ op: 'replace', path: '/状态/数值', value: 1 }]);
-  assert.deepEqual(authoritativeReplay.before, previous);
-  assert.deepEqual(authoritativeReplay.after, { stat_data: { 状态: { 数值: 1 }, 其他扩展: { 标记: '上一楼层' } } });
-  assert.deepEqual(redundantOperationProbe.before, previous);
-  assert.deepEqual(redundantOperationProbe.after, previous);
-  assert.equal(store.fullRuns[0].outcome.ok, false);
-  assert.equal(store.fullRuns[0].outcome.stage, 'variable');
-  assert.match(store.fullRuns[0].outcome.variable.error, /未声明路径|遗漏了本楼层已有变化/);
-  assert.ok(harness.hooks.runtime.retry);
+  const outcome = store.fullRuns[0].outcome;
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(outcome.variable.ok, true, JSON.stringify(outcome.variable));
+  assert.equal(outcome.variable.changed, true);
+  assert.equal(outcome.variable.stateChanged, true);
+  assert.equal(sawNarrativeAndOriginalBlock, true);
+  assert.notEqual(outcome.stage, 'variable');
+  assert.ok(parseTrace.length >= 1);
+  const officialCorrection = parseTrace.find((entry) => entry.operations.some((operation) => operation.path === '/契约者/头部/姓名'));
+  assert.ok(officialCorrection);
+  assert.deepEqual(officialCorrection.before, current);
+  assert.deepEqual(officialCorrection.operations, correctionOperations);
+  assert.equal(officialCorrection.operations.some((operation) => /装备|其他扩展|人物档案/u.test(operation.path)), false);
+  assert.equal(harness.hooks.runtime.retry, null);
+  assert.equal(harness.context.chat[3].mes, originalMessage);
+  assert.equal(harness.counters.saveChat, 0);
+  assert.ok(harness.counters.mvuReplace >= 1);
+  assert.ok(harness.mvuWrites.length >= 1);
+  const readback = harness.mvuByMessage.get(3);
+  assert.equal(readback.stat_data.契约者.当前时间.客观时间, '第1天');
+  assert.equal(readback.stat_data.契约者.当前时间.地点, '校准大厅');
+  assert.equal(readback.stat_data.契约者.头部.姓名, '测试员乙');
+  assert.deepEqual(readback.stat_data.契约者.属性.基础, { STR: 10, AGI: 8, CON: 7, PER: 10 });
+  assert.equal(readback.stat_data.契约者.属性.未分配属性点, 0);
+  assert.deepEqual(readback.stat_data.契约者.装备.主武器, mainWeapon);
+  assert.equal(Object.hasOwn(readback.stat_data.契约者.装备.主武器.效果, '精密校准'), true);
+  assert.equal(Object.hasOwn(readback.stat_data.契约者.装备.主武器.效果, '1. 精密校准'), false);
+  assert.deepEqual(readback.stat_data.其他扩展, current.stat_data.其他扩展);
+  assert.deepEqual(readback.stat_data.人物档案, latestProfiles);
+  assert.equal(store.variableRepairs[0].status, 'applied');
+});
+
+test('当前MVU已经正确时模型返回空纠正，正文原变量块保持不变且不重复写MVU', async () => {
+  const previous = { stat_data: { 状态: { 数值: 0 }, 其他扩展: { 标记: '保持不变' } } };
+  const current = { stat_data: { 状态: { 数值: 1 }, 其他扩展: { 标记: '保持不变' } } };
+  const originalBlock = '<UpdateVariable><Analysis>原正文已把仪表从0更新为1。</Analysis><JSONPatch>[{"op":"replace","path":"/状态/数值","value":1}]</JSONPatch></UpdateVariable>';
+  const originalMessage = `<content>仪表读数从0变成了1。</content><options><option>记录读数</option></options>${originalBlock}`;
+  const harness = runtimeHarness(
+    [
+      { is_user: true, is_system: false, mes: '先读取上一轮仪表。' },
+      { is_user: false, is_system: false, swipe_id: 0, mes: '<content>仪表读数是0。</content><options><option>再次读取</option></options>' },
+      { is_user: true, is_system: false, mes: '再次读取仪表。' },
+    ],
+    '',
+    false,
+    {
+      extensionSettings: {
+        'mvu-doctor-kemini-clean': {
+          enabled: true,
+          variableDoctor: true,
+          worldEngine: false,
+          repairAttempts: 0,
+        },
+      },
+      completeMvu: true,
+      mvuByMessage: [[1, previous], [3, current]],
+      parseMessage({ data }) {
+        return structuredClone(data);
+      },
+      generateRaw({ systemPrompt }) {
+        const system = String(systemPrompt);
+        if (system.includes('MVU变量')) {
+          return '<UpdateVariable><Analysis>当前状态已经与正文一致，不需要追加纠正。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>';
+        }
+        if (system.includes('MVU人物档案医师')) return '<人物档案无变化/>';
+        return '';
+      },
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  await harness.handlers.get('generation_started')('normal', {}, false);
+  harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, mes: originalMessage });
+  harness.handlers.get('generation_ended')();
+  await new Promise((resolve) => setTimeout(resolve, 800));
+
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
+  assert.equal(store.fullRuns[0].outcome.ok, true, JSON.stringify(store.fullRuns[0].outcome));
+  assert.equal(store.fullRuns[0].outcome.variable.changed, false);
+  assert.equal(store.fullRuns[0].outcome.variable.stateChanged, false);
+  assert.equal(store.variableRepairs[0].status, 'model_reported_nochange');
+  assert.equal(harness.hooks.runtime.retry, null);
   assert.equal(harness.context.chat[3].mes, originalMessage);
   assert.equal(harness.counters.saveChat, 0);
   assert.equal(harness.counters.mvuReplace, 0);
@@ -2042,91 +2167,11 @@ test('坏变量块的完整替换不得吸收或覆盖其他扩展同回合写�
   assert.deepEqual(harness.mvuByMessage.get(3), current);
 });
 
-test('坏变量块由模型给出完整替换块并经官方复放等于当前状态时，只规范正文且不重复写MVU', async () => {
-  const previous = { stat_data: { 状态: { 数值: 0 }, 其他扩展: { 标记: '保持不变' } } };
-  const current = { stat_data: { 状态: { 数值: 1 }, 其他扩展: { 标记: '保持不变' } } };
-  const invalidBlock = '<UpdateVariable><Analysis>原回复格式损坏</Analysis><JSONPatch>[{"op":"replace","path":"/状态/数值","value":???}]</JSONPatch></UpdateVariable>';
-  const originalMessage = `<content>仪表读数从0变成了1。</content><options><option>记录读数</option></options>${invalidBlock}`;
-  const parseTrace = [];
-  const harness = runtimeHarness(
-    [
-      { is_user: true, is_system: false, mes: '先读取上一轮仪表。' },
-      { is_user: false, is_system: false, swipe_id: 0, mes: '<content>仪表读数是0。</content><options><option>再次读取</option></options>' },
-      { is_user: true, is_system: false, mes: '再次读取仪表。' },
-    ],
-    '',
-    false,
-    {
-      extensionSettings: {
-        'mvu-doctor-kemini-clean': {
-          enabled: true,
-          variableDoctor: true,
-          worldEngine: false,
-          repairAttempts: 0,
-        },
-      },
-      completeMvu: true,
-      mvuByMessage: [[1, previous], [3, current]],
-      parseMessage({ block, data }) {
-        const next = structuredClone(data);
-        if (String(block).includes('/状态/数值')) next.stat_data.状态.数值 = 1;
-        parseTrace.push({ block: String(block), before: structuredClone(data), after: structuredClone(next) });
-        return next;
-      },
-      generateRaw({ systemPrompt }) {
-        const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) {
-          return '<UpdateVariable><Analysis>本回合完整块记录仪表从0变为1。</Analysis><JSONPatch>[{"op":"replace","path":"/状态/数值","value":1}]</JSONPatch></UpdateVariable>';
-        }
-        if (system.includes('MVU人物档案医师')) return '<人物档案无变化/>';
-        return '';
-      },
-    },
-  );
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  await harness.handlers.get('generation_started')('normal', {}, false);
-  harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, mes: originalMessage });
-  harness.handlers.get('generation_ended')();
-  await new Promise((resolve) => setTimeout(resolve, 800));
-
-  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  const repairedMessage = harness.context.chat[3].mes;
-
-  assert.equal(store.fullRuns[0].outcome.ok, true, JSON.stringify(store.fullRuns[0].outcome));
-  assert.equal(store.fullRuns[0].outcome.variable.changed, true);
-  assert.equal(store.fullRuns[0].outcome.variable.stateChanged, false);
-  assert.equal(store.variableRepairs[0].status, 'replacement_block_normalized');
-  const repairedBlock = repairedMessage.match(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/u)?.[0] || '';
-  const patchText = repairedBlock.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/u)?.[1] || '';
-  const operations = JSON.parse(patchText);
-
-  assert.equal(harness.hooks.runtime.retry, null);
-  assert.notEqual(repairedMessage, originalMessage);
-  assert.equal(repairedMessage.includes(invalidBlock), false);
-  assert.deepEqual(operations, [{ op: 'replace', path: '/状态/数值', value: 1 }]);
-  assert.equal(parseTrace.length, 2);
-  const authoritativeReplay = parseTrace.find((entry) => String(entry.block).includes('/状态/数值'));
-  const redundantOperationProbe = parseTrace.find((entry) => !String(entry.block).includes('/状态/数值'));
-  assert.ok(authoritativeReplay);
-  assert.ok(redundantOperationProbe);
-  assert.notEqual(authoritativeReplay.block, invalidBlock);
-  const replayPatchText = authoritativeReplay.block.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/u)?.[1] || '';
-  assert.deepEqual(JSON.parse(replayPatchText), operations);
-  assert.deepEqual(authoritativeReplay.before, previous);
-  assert.deepEqual(authoritativeReplay.after, current);
-  assert.deepEqual(redundantOperationProbe.before, previous);
-  assert.deepEqual(redundantOperationProbe.after, previous);
-  assert.equal(harness.counters.saveChat, 1);
-  assert.equal(harness.counters.mvuReplace, 0);
-  assert.equal(harness.mvuWrites.length, 0);
-  assert.deepEqual(harness.mvuByMessage.get(3), current);
-  assert.equal(store.diagnostics.some((entry) => entry.kind === 'surface_refresh_failed'), true);
-});
-
 test('变量模型返回期间人物档案根更新，提交必须基于最新整份状态并原样保留新档案', async () => {
   const previous = { stat_data: { 测试主体: { 数值: 0 }, 人物档案: { byActorId: { old: { name: '旧档案' } } } } };
   const current = structuredClone(previous);
+  const acceptedMessage = '<content>数值从0变成了1。</content><options><option>记录</option></options><UpdateVariable><Analysis>正文原块没有记录变化。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>';
+  const parseInputs = [];
   let harness;
   harness = runtimeHarness(
     [
@@ -2144,16 +2189,17 @@ test('变量模型返回期间人物档案根更新，提交必须基于最新�
       mvuByMessage: [[1, previous], [3, current]],
       parseMessage({ block, data }) {
         const next = structuredClone(data);
+        parseInputs.push(structuredClone(data));
         if (String(block).includes('/测试主体/数值')) next.stat_data.测试主体.数值 = 1;
         return next;
       },
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) {
+        if (system.includes('MVU变量')) {
           const live = structuredClone(harness.mvuByMessage.get(3));
           live.stat_data.人物档案 = { byActorId: { latest: { name: '最新档案' } } };
           harness.mvuByMessage.set(3, live);
-          return '<UpdateVariable><Analysis>本回合完整块把测试数值从0改为1。</Analysis><JSONPatch>[{"op":"replace","path":"/测试主体/数值","value":1}]</JSONPatch></UpdateVariable>';
+          return '<UpdateVariable><Analysis>当前状态的测试数值仍为0，只纠正为1。</Analysis><JSONPatch>[{"op":"replace","path":"/测试主体/数值","value":1}]</JSONPatch></UpdateVariable>';
         }
         if (system.includes('MVU人物档案医师')) return '<人物档案无变化/>';
         return '';
@@ -2167,7 +2213,7 @@ test('变量模型返回期间人物档案根更新，提交必须基于最新�
     is_user: false,
     is_system: false,
     swipe_id: 0,
-    mes: '<content>数值从0变成了1。</content><options><option>记录</option></options>',
+    mes: acceptedMessage,
   });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 800));
@@ -2176,12 +2222,17 @@ test('变量模型返回期间人物档案根更新，提交必须基于最新�
   assert.equal(finalData.stat_data.测试主体.数值, 1);
   assert.deepEqual(finalData.stat_data.人物档案, { byActorId: { latest: { name: '最新档案' } } });
   assert.equal(harness.mvuWrites.some((entry) => entry.data?.stat_data?.人物档案?.byActorId?.latest?.name === '最新档案'), true);
+  assert.equal(parseInputs.some((data) => data?.stat_data?.人物档案?.byActorId?.latest?.name === '最新档案'), true);
+  assert.equal(harness.context.chat[3].mes, acceptedMessage);
+  assert.equal(harness.counters.saveChat, 0);
   const outcome = harness.context.chatMetadata['mvu-doctor-kemini-clean'].fullRuns[0].outcome;
   assert.equal(outcome.variable.ok, true, JSON.stringify(outcome.variable));
 });
 
 test('变量模型返回后目标swipe已变化时，空块也不得写诊断成功或旧事务元数据', async () => {
   const previous = { stat_data: { 测试主体: { 数值: 0 } } };
+  const originalMessage = '<content>数值保持0。</content><options><option>继续</option></options><UpdateVariable><Analysis>原正文变量块无需调整。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>';
+  const switchedMessage = '<content>新的swipe。</content>';
   let harness;
   harness = runtimeHarness(
     [
@@ -2199,8 +2250,8 @@ test('变量模型返回后目标swipe已变化时，空块也不得写诊断成
       mvuByMessage: [[1, previous], [3, previous]],
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) {
-          harness.context.chat[3].swipes = [harness.context.chat[3].mes, '<content>新的swipe。</content>'];
+        if (system.includes('MVU变量')) {
+          harness.context.chat[3].swipes = [harness.context.chat[3].mes, switchedMessage];
           harness.context.chat[3].swipe_id = 1;
           harness.context.chat[3].mes = harness.context.chat[3].swipes[1];
           return '<UpdateVariable><Analysis>本回合没有变量变化。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>';
@@ -2213,7 +2264,7 @@ test('变量模型返回后目标swipe已变化时，空块也不得写诊断成
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   await harness.handlers.get('generation_started')('normal', {}, false);
-  harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, mes: '<content>数值保持0。</content><options><option>继续</option></options>' });
+  harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, swipes: [originalMessage], mes: originalMessage });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 800));
 
@@ -2221,6 +2272,8 @@ test('变量模型返回后目标swipe已变化时，空块也不得写诊断成
   assert.equal(store.variableRepairs.length, 0);
   assert.equal(harness.counters.mvuReplace, 0);
   assert.equal(harness.counters.saveChat, 0);
+  assert.equal(harness.context.chat[3].swipes[0], originalMessage);
+  assert.equal(harness.context.chat[3].mes, switchedMessage);
   assert.equal(store.fullRuns[0].outcome.ok, false);
   assert.match(store.fullRuns[0].outcome.variable.error, /swipe|正文已经变化|旧结果已作废/u);
 });
@@ -2229,6 +2282,7 @@ test('metadata confirmation failure after variable commit preserves accepted tex
   let failedAppliedSave = false;
   let durableBeforeFailure = null;
   const successfulMetadataSnapshots = [];
+  const originalMessage = '<content>仪表的数值从0跳到了1，随后稳定下来。</content><options><option>记下读数</option></options><UpdateVariable><Analysis>正文原块漏写了仪表变化。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>';
   const harness = runtimeHarness(
     [{ is_user: true, is_system: false, mes: '读取仪表。' }],
     '',
@@ -2264,7 +2318,7 @@ test('metadata confirmation failure after variable commit preserves accepted tex
       },
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) {
+        if (system.includes('MVU变量')) {
           return '<UpdateVariable><Analysis>最终正文明确 /状态/数值 应从0变为1，但当前值仍为0，因此只补这一处。</Analysis><JSONPatch>[{"op":"replace","path":"/状态/数值","value":1}]</JSONPatch></UpdateVariable>';
         }
         if (system.includes('MVU人物档案医师')) return '<人物档案无变化/>';
@@ -2279,7 +2333,7 @@ test('metadata confirmation failure after variable commit preserves accepted tex
     is_user: false,
     is_system: false,
     swipe_id: 0,
-    mes: '<content>仪表的数值从0跳到了1，随后稳定下来。</content><options><option>记下读数</option></options>',
+    mes: originalMessage,
   });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
@@ -2288,9 +2342,8 @@ test('metadata confirmation failure after variable commit preserves accepted tex
   assert.equal(failedAppliedSave, true);
   assert.equal(durableBeforeFailure['mvu-doctor-kemini-clean'].variableRepairs[0].status, 'prepared');
   assert.equal(harness.mvuByMessage.get(1).stat_data.状态.数值, 1);
-  assert.match(harness.context.chat[1].mes, /"path"\s*:\s*"\/状态\/数值"/);
-  assert.match(harness.context.chat[1].mes, /"value"\s*:\s*1/);
-  assert.equal(harness.counters.saveChat, 1);
+  assert.equal(harness.context.chat[1].mes, originalMessage);
+  assert.equal(harness.counters.saveChat, 0);
   assert.equal(harness.mvuWrites.some((entry) => entry.data?.stat_data?.状态?.数值 === 1), true);
   const firstCommittedWrite = harness.mvuWrites.findIndex((entry) => entry.data?.stat_data?.状态?.数值 === 1);
   assert.equal(harness.mvuWrites.slice(firstCommittedWrite + 1).some((entry) => entry.data?.stat_data?.状态?.数值 === 0), false);
@@ -2618,7 +2671,7 @@ test('重roll检查点恢复尚在保存时STOPPED，最终原子恢复原swipe�
       },
       generateRaw({ systemPrompt }) {
         const system = String(systemPrompt);
-        if (system.includes('MVU变量核验与修复器')) return '本次变量回复故意无法解析';
+        if (system.includes('MVU变量')) return '本次变量回复故意无法解析';
         if (system.includes('MVU人物档案医师')) return '<人物档案无变化/>';
         return '';
       },

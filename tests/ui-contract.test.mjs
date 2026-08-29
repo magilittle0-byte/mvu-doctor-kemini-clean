@@ -25,14 +25,13 @@ test('控制台包含变量、连接、人物、世界、诊断与两个互不�
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
-  assert.match(source, /normalizeVariableOperations/);
   assert.doesNotMatch(source, /<AuditReceipt>/);
-  assert.match(source, /一次聚焦核验/);
-  assert.match(source, /prepareReplacement/);
-  assert.match(source, /本回合完整正确的替换块/);
-  assert.match(source, /只修复上次输出的机械错误/);
-  assert.match(source, /parseVariableDoctorOutput/);
-  assert.match(source, /replaceUpdateVariableBlock/);
+  assert.match(source, /一次聚焦模型诊断/);
+  assert.match(source, /当前post-update非人物stat_data/);
+  assert.match(source, /补丁直接应用在当前stat_data上，不是从上一楼层重建整回合/);
+  assert.match(source, /appendVariableBlockIfMissing/);
+  assert.doesNotMatch(source, /prepareReplacement|本回合完整正确的替换块|只修复上次输出的机械错误/);
+  assert.doesNotMatch(source, /parseVariableDoctorOutput|replaceUpdateVariableBlock/);
   assert.doesNotMatch(source, /mergeUpdateVariableBlocks|buildReplayVariableOperations/);
   assert.doesNotMatch(source, /assessVariableBaseline|buildVariableAuditChecklist|extractExplicitVariableClaims/);
   assert.match(source, /MVU事务未闭合；世界不会消费未确认状态/);
@@ -131,29 +130,29 @@ test('运行中的修复详情可以列出缺项但不会冒充红色终态失�
   assert.match(presentation, /test\(text\)[\s\S]*severity: 'error'/);
 });
 
-test('变量医生只做一次聚焦语义判断，尊重用户硬事实并用官方重放移除冗余派生操作', () => {
+test('变量医生等价改写故事神谕：一次判断、当前状态最小补丁并只交官方MVU解析', () => {
   const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
   assert.match(audit, /buildVariableAuditEvidence/);
   assert.match(audit, /evidence\.triggeringUser/);
   assert.match(audit, /evidence\.transcript/);
   assert.match(audit, /collectMvuReference/);
-  assert.match(audit, /本回合完整正确的替换块/);
-  assert.match(audit, /重放基线非人物stat_data/);
-  assert.match(audit, /本楼层当前非人物stat_data/);
-  assert.match(audit, /const maxAttempts = Math\.min\(2/);
-  assert.match(audit, /prepareReplacement/);
-  assert.match(audit, /初次核验已经完成/);
-  assert.match(audit, /不得重新审剧情/);
-  assert.doesNotMatch(audit, /buildReplayCompleteBlock|mergeUpdateVariableBlocks/);
+  assert.match(audit, /当前post-update非人物stat_data/);
+  assert.match(audit, /本楼层原UpdateVariable区块/);
+  assert.match(audit, /本楼层最终接受正文/);
+  assert.match(audit, /补丁直接应用在当前stat_data上，不是从上一楼层重建整回合/);
+  assert.match(audit, /raw = await generateDoctorRaw/);
+  assert.match(audit, /returnedBlocks/);
+  assert.match(audit, /candidate = await Mvu\.parseMessage\(block, runtime\.core\.deepClone\(freshData\)\)/);
+  assert.match(audit, /messageMode = originalBlock \? 'preserve-existing' : 'append-missing'/);
+  assert.match(audit, /appendVariableBlockIfMissing/);
+  assert.doesNotMatch(audit, /previousMvuData|prepareReplacement|verifyVariablePreservation|normalizeVariableOperations|validatePatchOperations/);
+  assert.doesNotMatch(audit, /buildReplayCompleteBlock|mergeUpdateVariableBlocks|完整替换块/);
   assert.match(audit, /model_reported_nochange/);
-  assert.match(audit, /这仍不等于脚本能替代语义判断/);
-  assert.match(audit, /触发用户输入里明确填写的姓名、身份、点数和资源分配/);
-  assert.match(audit, /NPC的“引导、指引、邀请、要求”只证明NPC提出了行动，不证明玩家已经照做/);
-  assert.match(audit, /自动计算的派生字段/);
-  assert.match(audit, /protectedVariablePathsFromReference\(reference\)/);
-  assert.match(audit, /filterProtectedVariableOperations\(normalized\.operations, explicitlyProtectedPaths\)/);
-  assert.match(audit, /official_replay_redundant_operation_removed/);
-  assert.match(audit, /assertVariableTarget\(session, messageId, target\)[\s\S]*prepareReplacement\(raw\)[\s\S]*assertVariableTarget\(session, messageId, target\)/);
+  assert.match(audit, /不把它冒充语义证明/);
+  assert.match(audit, /用户明确填写的姓名、身份、点数和资源分配优先/);
+  assert.match(audit, /NPC的引导、邀请或要求不等于玩家已经照做/);
+  assert.match(audit, /不得把派生字段当来源字段直接改写/);
+  assert.match(audit, /assertVariableTarget\(session, messageId, target\)[\s\S]*generateDoctorRaw[\s\S]*assertVariableTarget\(session, messageId, target\)/);
   assert.doesNotMatch(audit, /assessVariableBaseline|buildVariableAuditChecklist|extractExplicitVariableClaims|partial-repair|authority-rejected/);
 });
 
@@ -576,7 +575,7 @@ test('完整报告在用户点击阶段先取得文件句柄且MVU读取失败�
   assert.match(finalizer, /trace:\s*session\.trace/);
 });
 
-test('手动变量复检不串行触发人物或世界，变量提交按准备、写入、读回、正文保存排序', () => {
+test('手动变量复检不串行触发人物或世界，最小纠正按准备、写入、读回、必要补块排序', () => {
   const manual = source.slice(source.indexOf('async function manualVariableRecheck'), source.indexOf('async function manualWorldRecheck'));
   assert.match(manual, /auditVariables/);
   assert.match(manual, /mode:\s*'manual'/);
@@ -591,10 +590,10 @@ test('手动变量复检不串行触发人物或世界，变量提交按准备�
   const prepared = audit.indexOf("status: 'prepared'");
   const write = audit.indexOf('await Mvu.replaceMvuData(candidate');
   const readback = audit.indexOf('const readback = await mvuDataAt', write);
-  const saveMessage = audit.indexOf('await saveReplacementVariableBlock', readback);
+  const saveMessage = audit.indexOf('await appendVariableBlockIfMissing', readback);
   assert.ok(prepared >= 0 && prepared < write);
   assert.ok(write < readback && readback < saveMessage);
-  assert.match(audit, /官方MVU\/Schema拒绝完整替换块|补丁基本结构校验失败/);
+  assert.match(audit, /官方MVU无法解析模型纠正块/);
   assert.match(audit, /actualChanges\.paths/);
   assert.match(audit, /人物档案根不变/);
   assert.match(audit, /refreshMessageSurface/);

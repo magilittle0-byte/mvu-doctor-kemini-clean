@@ -1,5 +1,7 @@
 # Story Oracle 1.71 adaptation source map
 
+> 历史说明：本文记录的是 0.7.1/0.7.3 已废弃实现，其中“上一楼层完整替换块”并非 Story Oracle 成熟诊断链的等价复用。0.7.4 已按 Story Oracle v1.35.4 当前状态最小纠正语义重新改写；现行来源边界以 `0.7.4-STORY-ORACLE-EQUIVALENT-VARIABLE-SOURCE-MAP.md` 为准。
+
 Reference snapshot: `story-oracle-upstream` commit `661f9f89446de473ace70a590897ca5065bc2efe`.
 
 This document records mechanism provenance. It does not claim that the Doctor UI or runtime was copied from Story Oracle. The Doctor keeps ownership of MVU repair, complete actor profiles, private world continuity, recall projection, transactions, diagnostics and per-chat persistence.
