@@ -17,10 +17,13 @@ import {
   mergeProfileCandidates,
   normalizeVariableOperations,
   normalizeProfileCandidates,
+  parseCharacterTicketReceipt,
   parseProfileDiscoveryReceipt,
   parseProfileReceipt,
   parseUpdateVariableBlock,
   parseVariableDoctorOutput,
+  protectedVariablePathsFromReference,
+  filterProtectedVariableOperations,
   applyAcceptedWorldObservations,
   applyWorldProposal,
   authorityProtectedProfileNamesFromEntries,
@@ -50,6 +53,68 @@ import {
   variableChangePaths,
   verifyVariablePreservation,
 } from '../core.mjs';
+
+test('显式只读模板只过滤派生字段，保留合法天赋来源字段', () => {
+  const protectedPaths = protectedVariablePathsFromReference({
+    schema: [
+      '  测试主体.派生加成.${A|B|C|D}:',
+      '    rules:',
+      '',
+      '      - 【禁止修改】由测试前端计算。',
+    ].join('\n'),
+    rules: '/测试主体/展示值/readback [禁止修改]',
+  });
+  assert.deepEqual(protectedPaths, [
+    '/测试主体/派生加成/A',
+    '/测试主体/派生加成/B',
+    '/测试主体/派生加成/C',
+    '/测试主体/派生加成/D',
+    '/测试主体/展示值/readback',
+  ]);
+
+  const sourceTalent = { op: 'insert', path: '/测试主体/天赋/来源', value: { D: 2 } };
+  const filtered = filterProtectedVariableOperations([
+    { op: 'replace', path: '/测试主体/派生加成/D', value: 2 },
+    { op: 'replace', path: '/测试主体/派生加成/D/临时', value: 1 },
+    sourceTalent,
+  ], protectedPaths);
+
+  assert.deepEqual(filtered.operations, [sourceTalent]);
+  assert.equal(filtered.repairs.length, 2);
+  assert.equal(filtered.repairs.every((repair) => repair.code === 'explicit_reference_protected_operation_removed'), true);
+  assert.deepEqual(filtered.repairs.map((repair) => repair.protectedPaths), [
+    ['/测试主体/派生加成/D'],
+    ['/测试主体/派生加成/D'],
+  ]);
+});
+
+test('显式只读标记不会跨过普通正文或同级结构误绑更早路径', () => {
+  const protectedPaths = protectedVariablePathsFromReference([
+    [
+      '  测试主体.派生加成.${A|B|C|D}:',
+      '    rules:',
+      '    这段普通正文另行说明显示方式。',
+      '      - 【禁止修改】由前端计算。',
+    ].join('\n'),
+    [
+      '  /测试主体/展示值/readback:',
+      '  unrelated:',
+      '    - 【禁止修改】由前端计算。',
+    ].join('\n'),
+  ]);
+  assert.deepEqual(protectedPaths, []);
+});
+
+test('普通自由文本没有明确只读标记时不建立变量路径拦截', () => {
+  const reference = '测试主体.派生加成.${A|B|C|D} 由测试前端计算。\n/测试主体/派生加成/D 是当前显示值。';
+  const protectedPaths = protectedVariablePathsFromReference(reference);
+  assert.deepEqual(protectedPaths, []);
+  const operations = [
+    { op: 'replace', path: '/测试主体/派生加成/D', value: 2 },
+    { op: 'insert', path: '/测试主体/天赋/来源', value: { D: 2 } },
+  ];
+  assert.deepEqual(filterProtectedVariableOperations(operations, protectedPaths), { operations, repairs: [] });
+});
 
 function completeProfile(ticket) {
   return {
@@ -89,6 +154,20 @@ test('人物档案JSON可保守修复缺逗号的数组项和对象字段', () =
   assert.deepEqual(object.profiles[0].aliases, []);
 });
 
+test('人物票据消费回执在正文生成前固定人物到票据或权威来源', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const parsed = parseCharacterTicketReceipt(
+    `<CharacterTicketReceipt>[{"name":"林澄","source":"ticket","ticketId":"${ticket.ticketId}"},{"name":"引导者","source":"authority","ticketId":""}]</CharacterTicketReceipt>`,
+    [ticket],
+  );
+  assert.equal(parsed.kind, 'complete');
+  assert.deepEqual(parsed.assignments, [
+    { name: '林澄', source: 'ticket', ticketId: ticket.ticketId },
+    { name: '引导者', source: 'authority', ticketId: '' },
+  ]);
+  assert.equal(parseCharacterTicketReceipt('<CharacterTicketReceipt>[{"name":"林澄","source":"ticket","ticketId":"fake"}]</CharacterTicketReceipt>', [ticket]).kind, 'invalid');
+});
+
 test('合法JSON中的中文引号不会被修复器反向破坏', () => {
   const receipt = parseProfileReceipt('<人物档案更新>[{"name":"林澄","inferences":["她把‘草稿’收好，并说明这是‘暂定’记录。"]}]</人物档案更新>');
   assert.equal(receipt.kind, 'update');
@@ -111,6 +190,9 @@ test('人物档案只把最终叙事当作已发生事实', () => {
   const narrative = profileNarrativeText('<gm_chain>计划让甲登场</gm_chain><content>乙正在柜台后说话。</content><options>去找甲</options><UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>');
   assert.doesNotMatch(narrative, /计划让甲登场|去找甲|JSONPatch/);
   assert.match(narrative, /乙正在柜台后说话/);
+  const izumiNarrative = profileNarrativeText('<konatan_planning~>计划让丙担任引导者</konatan_planning~><content>丁正在柜台后说明登记流程。</content><options>询问丙</options>');
+  assert.doesNotMatch(izumiNarrative, /计划让丙|询问丙/);
+  assert.equal(izumiNarrative, '丁正在柜台后说明登记流程。');
 });
 
 test('最终正文缺少唯一content闭合时只在明确结构边界前补回', () => {
@@ -167,9 +249,9 @@ test('正文content结构不唯一或缺少可证明边界时拒绝猜测', () =
 
 test('脚本不把中文说话标签冒充人物识别，完整正文发现由人物模型负责', () => {
   const subjects = discoverProfileSubjects(
-    '<gm_chain>让黑衣人下回合登场</gm_chain><content>白露低声说道：“先等等。”\n独眼守卫：谁在那里？\n当前环境：雨势渐大。少女点头后退。</content><options>询问黑衣人</options>',
+    '<gm_chain>让黑衣人下回合登场</gm_chain><content>林页低声说道：“先等等。”\n独眼守卫：谁在那里？\n当前环境：雨势渐大。少女点头后退。</content><options>询问黑衣人</options>',
     {
-      excludedNames: ['白露'],
+      excludedNames: ['林页'],
       existingProfiles: { existing: { name: '药房老板', aliases: ['老周'] } },
     },
   );
@@ -188,25 +270,25 @@ test('人物发现器丢弃正文内嵌面板字段、全大写属性和语法�
 });
 
 test('人物观察保留普通可见叙事容器，但不把冒号前文本机械升级为人物', () => {
-  const narrative = profileNarrativeText('<div class="narrative">白露：记录先放在这里。</div>');
-  assert.match(narrative, /白露：记录先放在这里/);
+  const narrative = profileNarrativeText('<div class="narrative">林页：记录先放在这里。</div>');
+  assert.match(narrative, /林页：记录先放在这里/);
   assert.deepEqual(discoverProfileSubjects(narrative), []);
 });
 
 test('人物发现器只把显式结构ID作为机械锚点，不把英文标签、统计缩写或散文主语当人物', () => {
-  const subjects = discoverProfileSubjects('Alice: Wait here.\nNPC-7点头回应。\n白露微笑着收起纸笔。\nHP: 12\nSTR说道：这不该成为人物。');
+  const subjects = discoverProfileSubjects('Alice: Wait here.\nNPC-7点头回应。\n林页微笑着收起纸笔。\nHP: 12\nSTR说道：这不该成为人物。');
   assert.deepEqual(subjects.map((subject) => subject.label), ['NPC-7']);
 });
 
 test('独立人物发现回执只接受最终正文逐字姓名与包含该姓名的逐字锚点', () => {
-  const narrative = '白露把纸页压在掌下，又若无其事地向柜台后的店员笑了笑。';
-  const parsed = parseProfileDiscoveryReceipt('<人物发现>\n人物：白露\n锚点：白露把纸页压在掌下\n</人物发现>', narrative);
+  const narrative = '林页在药房门口递出采购清单，并向值班药剂师询问到货日期。';
+  const parsed = parseProfileDiscoveryReceipt('<人物发现>\n人物：林页\n锚点：林页在药房门口递出采购清单\n</人物发现>', narrative);
   assert.equal(parsed.ok, true);
   assert.equal(parsed.kind, 'subjects');
   assert.equal(parsed.subjects.length, 1);
-  assert.equal(parsed.subjects[0].label, '白露');
-  assert.equal(parsed.subjects[0].sourceAnchor, '白露把纸页压在掌下');
-  assert.deepEqual(parsed.subjects[0].names, ['白露']);
+  assert.equal(parsed.subjects[0].label, '林页');
+  assert.equal(parsed.subjects[0].sourceAnchor, '林页在药房门口递出采购清单');
+  assert.deepEqual(parsed.subjects[0].names, ['林页']);
 });
 
 test('独立人物发现明确NONE正常闭合，幻觉姓名或改写锚点整批拒绝且不落空壳', () => {
@@ -214,7 +296,7 @@ test('独立人物发现明确NONE正常闭合，幻觉姓名或改写锚点整�
   assert.deepEqual(parseProfileDiscoveryReceipt('<人物发现>NONE</人物发现>', narrative), {
     ok: true, kind: 'none', subjects: [], error: '',
   });
-  const hallucinated = parseProfileDiscoveryReceipt('<人物发现>\n人物：白露\n锚点：白露站在石阶上\n</人物发现>', narrative);
+  const hallucinated = parseProfileDiscoveryReceipt('<人物发现>\n人物：林页\n锚点：林页在码头检修吊灯\n</人物发现>', narrative);
   assert.equal(hallucinated.ok, false);
   assert.deepEqual(hallucinated.subjects, []);
   assert.match(hallucinated.error, /不是最终正文逐字出现/);
@@ -228,12 +310,12 @@ test('独立人物发现明确NONE正常闭合，幻觉姓名或改写锚点整�
 test('独立人物发现过滤已有完整权威身份，不把再次出现变成原创随机人物', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const existing = completeProfile(ticket);
-  existing.name = '白露';
-  existing.profileId = 'authority-bailu';
+  existing.name = '林页';
+  existing.profileId = 'authority-linye';
   delete existing.ticketId;
   const parsed = parseProfileDiscoveryReceipt(
-    '<人物发现>\n人物：白露\n锚点：白露把纸页压在掌下\n</人物发现>',
-    '白露把纸页压在掌下。',
+    '<人物发现>\n人物：林页\n锚点：林页在药房门口递出采购清单\n</人物发现>',
+    '林页在药房门口递出采购清单。',
     { existingProfiles: { existing } },
   );
   assert.equal(parsed.ok, true);
@@ -242,7 +324,7 @@ test('独立人物发现过滤已有完整权威身份，不把再次出现变�
 
 test('人物观察剥离Izumi的htmlcontent与隐藏摘要，但保留其后的真实正文', () => {
   const source = `<content>
-<htmlcontent><div class="status-panel">白露：状态卡说明。</div></htmlcontent>
+<htmlcontent><div class="status-panel">林页：状态卡说明。</div></htmlcontent>
 <span style="display: none;">HTML内容简述：展示玩家初始面板和选项。</span>
 <span hidden>隐藏标签：不属于正文。</span>
 <span aria-hidden="true">辅助说明：不属于正文。</span>
@@ -250,7 +332,7 @@ test('人物观察剥离Izumi的htmlcontent与隐藏摘要，但保留其后的�
 林澄推开药房的门，对柜台后的来客点了点头。
 </content>`;
   const narrative = profileNarrativeText(source);
-  assert.doesNotMatch(narrative, /白露：状态卡说明|HTML内容简述|隐藏标签|辅助说明|折叠说明/);
+  assert.doesNotMatch(narrative, /林页：状态卡说明|HTML内容简述|隐藏标签|辅助说明|折叠说明/);
   assert.match(narrative, /林澄推开药房的门/);
   assert.deepEqual(discoverProfileSubjects(narrative), []);
 });
@@ -534,8 +616,8 @@ test('独立API端点归一化、响应提取与诊断脱敏', () => {
   assert.equal(openAiChatEndpoint('https://example.com/v1/chat/completions'), 'https://example.com/v1/chat/completions');
   assert.equal(openAiModelsEndpoint('https://example.com/v1'), 'https://example.com/v1/models');
   assert.equal(chatCompletionText({ choices: [{ message: { content: 'OK' } }] }), 'OK');
-  assert.match(redactDiagnostic('Authorization: Bearer sk-example-secret-123456'), /已隐藏/);
-  assert.doesNotMatch(redactDiagnostic('Authorization: Bearer sk-example-secret-123456'), /secret/);
+  assert.match(redactDiagnostic('Authorization: Bearer placeholder-secret'), /已隐藏/);
+  assert.doesNotMatch(redactDiagnostic('Authorization: Bearer placeholder-secret'), /secret/);
   assert.doesNotMatch(redactDiagnostic('x-api-key: private-value-123456'), /private-value/);
   assert.match(diagnosticAdvice('profile_failed', 'JSON无法解析').action, /重试失败步骤/);
   assert.equal(diagnosticAdvice('profile_failed', '整批档案校验失败').severity, 'error');
@@ -550,10 +632,12 @@ test('诊断以明确阶段码为准，完成详情中的世界字样不会被�
   assert.equal(diagnosticAdvice('world_failed', '世界引擎失败').severity, 'error');
 });
 
-test('完整新档案绑定同一票据并编译为单根原子补丁', () => {
+test('完整新档案按正文生成前消费映射绑定同一票据并编译为单根原子补丁', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const current = { stat_data: { 时间: '上午' } };
-  const prepared = prepareProfileBatch([completeProfile(ticket)], [ticket], current);
+  const prepared = prepareProfileBatch([completeProfile(ticket)], [ticket], current, '', null, {
+    ticketAssignments: [{ name: '林澄', source: 'ticket', ticketId: ticket.ticketId }],
+  });
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   assert.deepEqual(prepared.profiles[0].personality, ticket.axes);
   const patch = buildProfilePatch(current, prepared.profiles);
@@ -570,7 +654,10 @@ test('原创人物的十四个骰轴是生成前事实，模型返回不得覆�
   const profile = completeProfile(ticket);
   profile.personality = Object.fromEntries(Object.keys(ticket.axes).map((key) => [key, `模型试图覆盖-${key}`]));
 
-  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} });
+  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} }, '', null, {
+    ticketReceiptStatus: 'complete',
+    ticketAssignments: [{ name: '林澄', source: 'ticket', ticketId: ticket.ticketId }],
+  });
 
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   assert.deepEqual(prepared.profiles[0].personality, ticket.axes);
@@ -789,7 +876,7 @@ test('冻结人物只按精确ID、有效票据或唯一主名匹配，共享ali
   assert.equal(matcher({ ticketId: '模型伪造的票据', name: '陌生人物' }), false);
 });
 
-test('未提交候选重复票据时保留两张档案，并按正文出场顺序重分未占用票据', () => {
+test('候选错票据时只服从正文生成前消费映射，不按正文顺序事后重分', () => {
   const tickets = generateTicketBatch(3, () => 0.25, 1700000000000);
   const first = completeProfile(tickets[0]);
   first.name = '林澄';
@@ -798,7 +885,7 @@ test('未提交候选重复票据时保留两张档案，并按正文出场顺�
   second.name = '周遥';
   second.aliases = [];
   const reserved = completeProfile(tickets[1]);
-  reserved.name = '白露';
+  reserved.name = '林页';
   reserved.aliases = [];
 
   const merged = mergeProfileCandidates([first], [second, reserved]);
@@ -807,30 +894,36 @@ test('未提交候选重复票据时保留两张档案，并按正文出场顺�
     merged,
     tickets,
     { stat_data: {} },
-    '周遥先走进药房。白露随后把伞收好。林澄最后从库房回来。',
+    '周遥先走进药房。林页随后把伞收好。林澄最后从库房回来。',
+    null,
+    { ticketAssignments: [
+      { name: '周遥', source: 'ticket', ticketId: tickets[0].ticketId },
+      { name: '林页', source: 'ticket', ticketId: tickets[1].ticketId },
+      { name: '林澄', source: 'ticket', ticketId: tickets[2].ticketId },
+    ] },
   );
 
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
-  assert.deepEqual(prepared.profiles.map((profile) => profile.name), ['周遥', '白露', '林澄']);
+  assert.deepEqual(prepared.profiles.map((profile) => profile.name), ['周遥', '林页', '林澄']);
   assert.deepEqual(prepared.profiles.map((profile) => profile.ticketId), [
     tickets[0].ticketId,
     tickets[1].ticketId,
     tickets[2].ticketId,
   ]);
-  assert.equal(prepared.normalizationRepairs.some((repair) => repair.code === 'uncommitted_ticket_reassigned'), true);
+  assert.equal(prepared.normalizationRepairs.some((repair) => repair.code === 'candidate_ticket_replaced_by_generation_receipt'), true);
 });
 
 test('世界书权威只接受结构化ID、唯一精确key或label，不从正文子串和通用alias推断', () => {
   const candidates = [
-    { name: '白露', aliases: ['护士'] },
+    { name: '林页', aliases: ['护士'] },
     { name: '黑羽', aliases: [] },
     { name: '队长', aliases: [] },
     { name: '洛青', aliases: [], authorityEntryId: 'entry-luoqing' },
     { name: '角色卡本人', aliases: [] },
   ];
   const entries = [
-    { uid: 'entry-background', keys: ['背景'], comment: '医院背景', content: '正文描述中偶然提到白露与她的秘密。' },
-    { uid: 'entry-bailu', keys: ['白露'], comment: '白露', content: '人物设定。' },
+    { uid: 'entry-background', keys: ['背景'], comment: '医院背景', content: '正文描述中偶然提到林页经过大厅。' },
+    { uid: 'entry-linye', keys: ['林页'], comment: '林页', content: '人物设定。' },
     { uid: 'entry-heiyu-a', keys: ['黑羽'], comment: '黑羽', content: '第一份重名条目。' },
     { uid: 'entry-heiyu-b', keys: ['黑羽'], comment: '其他记录', content: '第二份重名条目。' },
     { uid: 'entry-captain', keys: ['队长'], comment: '队长', content: '通用职务称谓。' },
@@ -840,21 +933,25 @@ test('世界书权威只接受结构化ID、唯一精确key或label，不从正�
 
   const protectedNames = authorityProtectedProfileNamesFromEntries(candidates, ['角色卡本人'], entries);
 
-  assert.deepEqual(protectedNames, ['白露', '洛青', '角色卡本人']);
+  assert.deepEqual(protectedNames, ['林页', '洛青', '角色卡本人']);
   assert.equal(protectedNames.includes('黑羽'), false);
   assert.equal(protectedNames.includes('队长'), false);
 
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const unrelated = completeProfile(ticket);
   unrelated.name = '赵宁';
-  unrelated.aliases = ['白露'];
+  unrelated.aliases = ['林页'];
   const prepared = prepareProfileBatch(
     [unrelated],
     [ticket],
     { stat_data: {} },
-    '赵宁走进病房，有人误把她喊成白露。',
+    '赵宁走进病房，有人误把她喊成林页。',
     null,
-    { authorityProtectedNames: protectedNames },
+    {
+      authorityProtectedNames: protectedNames,
+      ticketReceiptStatus: 'complete',
+      ticketAssignments: [{ name: '赵宁', source: 'ticket', ticketId: ticket.ticketId }],
+    },
   );
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   assert.equal(prepared.profiles[0].ticketId, ticket.ticketId);
@@ -969,13 +1066,15 @@ test('正文对白和未证实传闻只进入带可信度的观察材料，不�
   assert.equal(repeated.world.subjects[0].observations.length, 2);
 });
 
-test('人物知识以人物可达来源为边界：旧知识可保留，新增无来源知识必须拒绝', () => {
+test('人物知识以人物可达来源为边界：无来源内容降为可修订推断而不否决完整档案', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const fresh = completeProfile(ticket);
-  fresh.knowledge = ['仓库门锁昨晚被换过'];
-  const rejectedFresh = prepareProfileBatch([fresh], [ticket], { stat_data: {} });
-  assert.equal(rejectedFresh.ok, false);
-  assert.match(rejectedFresh.errors.join('；'), /knowledge|知识|来源|可达/u);
+  fresh.knowledge = ['通过职业训练掌握：常见药材辨识', '仓库门锁昨晚被换过'];
+  const normalizedFresh = prepareProfileBatch([fresh], [ticket], { stat_data: {} });
+  assert.equal(normalizedFresh.ok, true, normalizedFresh.errors.join('\n'));
+  assert.deepEqual(normalizedFresh.profiles[0].knowledge, ['通过职业训练掌握：常见药材辨识']);
+  assert.match(normalizedFresh.profiles[0].inferences.join('；'), /仓库门锁昨晚被换过/);
+  assert.equal(normalizedFresh.normalizationRepairs.some((repair) => repair.code === 'unreachable_knowledge_moved_to_inferences'), true);
 
   fresh.knowledge = ['经亲眼查看得知：仓库门锁昨晚被换过'];
   const acceptedFresh = prepareProfileBatch(
@@ -992,7 +1091,7 @@ test('人物知识以人物可达来源为边界：旧知识可保留，新增�
   systemGuide.identity = { species: '系统单元', gender: '不适用', age: '启用后持续运行', occupation: '资料服务程序', affiliation: '测试设施', socialPosition: '经授权提供公开登记资料的服务终端' };
   systemGuide.capabilities = ['能够通过系统权限读取测试主体已公开的登记档案'];
   systemGuide.resources = ['可调用公开资料接口与基础资料库'];
-  systemGuide.knowledge = ['经系统授权读取：测试主体已登记的公开字段A'];
+  systemGuide.knowledge = ['通过系统数据库分析得知：测试主体已登记的公开字段A'];
   systemGuide.evidence = ['正文明确资料终端是拥有公开资料读取权限的系统单元'];
   const systemAccepted = prepareProfileBatch(
     [systemGuide],
@@ -1001,6 +1100,72 @@ test('人物知识以人物可达来源为边界：旧知识可保留，新增�
     '资料终端通过公开资料权限读取了测试主体已经登记的字段A，并开始说明使用规则。',
   );
   assert.equal(systemAccepted.ok, true, systemAccepted.errors.join('\n'));
+
+  const selfProvedSystem = prepareProfileBatch(
+    [systemGuide],
+    [ticket],
+    { stat_data: {} },
+    '资料终端开始说明一般使用规则，正文没有交代其数据来源。',
+  );
+  assert.equal(selfProvedSystem.ok, false);
+  assert.match(selfProvedSystem.rejected[0].candidate.inferences.join('；'), /测试主体已登记的公开字段A/);
+
+  const authoritySystem = prepareProfileBatch(
+    [systemGuide],
+    [ticket],
+    { stat_data: {} },
+    '资料终端开始说明使用规则。',
+    null,
+    {
+      authorityProtectedNames: ['资料终端'],
+      authorityKnowledgeEvidence: {
+        资料终端: '角色卡明确资料终端是系统单元，可通过数据库权限读取测试主体已登记的公开字段A。',
+      },
+    },
+  );
+  assert.equal(authoritySystem.ok, true, authoritySystem.errors.join('\n'));
+  assert.deepEqual(authoritySystem.profiles[0].knowledge, systemGuide.knowledge);
+
+  const unverifiedAuthorityEvidence = prepareProfileBatch(
+    [systemGuide],
+    [ticket],
+    { stat_data: {} },
+    '资料终端开始说明使用规则。',
+    null,
+    {
+      authorityKnowledgeEvidence: {
+        资料终端: '候选自行声称自己是系统单元并拥有数据库读取权限。',
+      },
+    },
+  );
+  assert.equal(unverifiedAuthorityEvidence.ok, false);
+
+  const aliasBorrower = completeProfile(ticket);
+  aliasBorrower.name = '林页';
+  aliasBorrower.aliases = ['资料终端'];
+  aliasBorrower.knowledge = [
+    '通过职业训练掌握：常见药材辨识',
+    '经系统授权读取：敌对势力尚未公开的密令内容',
+  ];
+  const aliasBorrowRejected = prepareProfileBatch(
+    [aliasBorrower],
+    [ticket],
+    { stat_data: {} },
+    '资料终端通过数据库权限读取了敌对势力尚未公开的密令内容。林页在旁整理纸页。',
+  );
+  assert.equal(aliasBorrowRejected.ok, true, aliasBorrowRejected.errors.join('\n'));
+  assert.deepEqual(aliasBorrowRejected.profiles[0].aliases, ['资料终端']);
+  assert.deepEqual(aliasBorrowRejected.profiles[0].knowledge, ['通过职业训练掌握：常见药材辨识']);
+  assert.match(aliasBorrowRejected.profiles[0].inferences.join('；'), /敌对势力尚未公开的密令内容/);
+
+  const explicitlyBoundAlias = prepareProfileBatch(
+    [aliasBorrower],
+    [ticket],
+    { stat_data: {} },
+    '林页（资料终端）通过数据库权限读取了敌对势力尚未公开的密令内容。',
+  );
+  assert.equal(explicitlyBoundAlias.ok, true, explicitlyBoundAlias.errors.join('\n'));
+  assert.deepEqual(explicitlyBoundAlias.profiles[0].knowledge, aliasBorrower.knowledge);
 
   const ordinaryImpostor = completeProfile(ticket);
   ordinaryImpostor.knowledge = ['经系统授权读取：敌对势力的未公开密令'];
@@ -1028,8 +1193,9 @@ test('人物知识以人物可达来源为边界：旧知识可保留，新增�
   const leaked = prepareProfileBatch([
     { profileId: existing.profileId, name: existing.name, knowledge: [...existing.knowledge, '敌对势力尚未公开的密令内容'] },
   ], [], current, '林澄继续整理药材。');
-  assert.equal(leaked.ok, false);
-  assert.match(leaked.errors.join('；'), /knowledge|知识|来源|可达/u);
+  assert.equal(leaked.ok, true, leaked.errors.join('\n'));
+  assert.deepEqual(leaked.profiles[0].knowledge, existing.knowledge);
+  assert.match(leaked.profiles[0].inferences.join('；'), /敌对势力尚未公开的密令内容/);
 
   const reachable = prepareProfileBatch([
     { profileId: existing.profileId, name: existing.name, knowledge: [...existing.knowledge, '经同伴当面告知得知：北门将在日落后关闭'] },
@@ -1095,6 +1261,10 @@ test('人物档案只保留脚本锚点或既有身份支持的别名，不用�
     { stat_data: {} },
     '药房引导者微微点头，她轻声说明登记流程。我的回答是暂时观察。',
     requiredSubjects,
+    {
+      ticketReceiptStatus: 'complete',
+      ticketAssignments: [{ name: '药房引导者', source: 'ticket', ticketId: ticket.ticketId }],
+    },
   );
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   assert.deepEqual(prepared.profiles[0].aliases, ['药房引导者']);
@@ -1111,7 +1281,10 @@ test('模型发现的正文人物可用逐字唯一称谓绑定票据，语法�
   profile.aliases = ['荧光绿发青年', '欠身', '也就是', 'VoiceFingerprint'];
   delete profile.evidence;
   const narrative = '荧光绿发青年举起双手，随后欠身回应；也就是在这时，VoiceFingerprint字段被状态栏打印。';
-  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} }, narrative, []);
+  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} }, narrative, [], {
+    ticketReceiptStatus: 'complete',
+    ticketAssignments: [{ name: '荧光绿发青年', source: 'ticket', ticketId: ticket.ticketId }],
+  });
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   assert.deepEqual(prepared.profiles[0].aliases, ['荧光绿发青年']);
   assert.deepEqual(prepared.profiles[0].narrativeKnownNames, ['荧光绿发青年']);
@@ -1119,23 +1292,69 @@ test('模型发现的正文人物可用逐字唯一称谓绑定票据，语法�
   assert.deepEqual(prepared.normalizationRepairs, [{ profileIndex: 0, code: 'unsupported_aliases_removed', count: 3 }]);
 });
 
-test('新人自创ID或漏票据时按正文首次出现顺序绑定骰票，仍禁止复用票据', () => {
+test('新人物只接受正文生成前的票据消费映射，不在正文后按出现顺序任配', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const fake = completeProfile(ticket);
   fake.profileId = 'invented-id';
   fake.ticketId = 'not-a-ticket';
-  const normalized = prepareProfileBatch([fake], [ticket], { stat_data: {} }, '林澄正在药房柜台后整理药材。');
+  const normalized = prepareProfileBatch(
+    [fake],
+    [ticket],
+    { stat_data: {} },
+    '林澄正在药房柜台后整理药材。',
+    null,
+    { ticketAssignments: [{ name: '林澄', source: 'ticket', ticketId: ticket.ticketId }] },
+  );
   assert.equal(normalized.ok, true, normalized.errors.join('\n'));
   assert.equal(normalized.profiles[0].profileId, ticket.ticketId);
   assert.equal(normalized.profiles[0].ticketId, ticket.ticketId);
-  const first = completeProfile(ticket);
-  const second = completeProfile(ticket);
-  second.name = '周遥';
-  second.profileId = 'second-id';
-  assert.match(prepareProfileBatch([first, second], [ticket], { stat_data: {} }).errors.join('；'), /重复使用/);
+  assert.deepEqual(normalized.profiles[0].ticketBinding, {
+    status: 'bound', source: 'character-ticket-receipt', ticketId: ticket.ticketId,
+  });
+  assert.deepEqual(normalized.normalizationRepairs.find((repair) => repair.code === 'candidate_ticket_replaced_by_generation_receipt'), {
+    profileIndex: 0,
+    code: 'candidate_ticket_replaced_by_generation_receipt',
+    from: 'not-a-ticket',
+    to: ticket.ticketId,
+  });
+  for (const [receiptStatus, expectedStatus, expectedDetail] of [
+    ['missing', 'receipt_missing', 'receipt_not_present'],
+    ['invalid', 'receipt_invalid', 'receipt_validation_failed'],
+    ['complete', 'uncovered', 'profile_not_listed_in_receipt'],
+  ]) {
+    const creative = completeProfile(ticket);
+    creative.personality.temperament = `AI根据上下文主动补全-${receiptStatus}`;
+    const withoutBinding = prepareProfileBatch(
+      [creative],
+      [ticket],
+      { stat_data: {} },
+      '林澄正在药房柜台后整理药材。',
+      null,
+      {
+        ticketAssignments: receiptStatus === 'invalid'
+          ? [{ name: '林澄', source: 'ticket', ticketId: ticket.ticketId }]
+          : [],
+        ticketReceiptStatus: receiptStatus,
+        ticketReceiptError: receiptStatus === 'invalid' ? '回执校验失败的结构化原因' : '',
+      },
+    );
+    assert.equal(withoutBinding.ok, true, withoutBinding.errors.join('\n'));
+    assert.match(withoutBinding.profiles[0].profileId, /^profile-unbound-/);
+    assert.equal(withoutBinding.profiles[0].ticketId, undefined);
+    assert.equal(withoutBinding.profiles[0].personality.temperament, `AI根据上下文主动补全-${receiptStatus}`);
+    assert.deepEqual(withoutBinding.profiles[0].ticketBinding, {
+      status: expectedStatus, source: 'creative-completion', detail: expectedDetail,
+    });
+    assert.deepEqual(withoutBinding.normalizationRepairs.find((repair) => repair.code === 'complete_profile_saved_without_ticket'), {
+      profileIndex: 0,
+      code: 'complete_profile_saved_without_ticket',
+      status: expectedStatus,
+      detail: expectedDetail,
+    });
+  }
 });
 
-test('多新人即使模型返回顺序颠倒，也按最终正文首次出现次序依次绑定骰票', () => {
+test('多新人即使模型返回顺序颠倒，也只按正文生成前的显式消费映射绑定票据', () => {
   const tickets = generateTicketBatch(2, () => 0.25, 1700000000000);
   const later = completeProfile(tickets[0]);
   const earlier = completeProfile(tickets[1]);
@@ -1151,12 +1370,67 @@ test('多新人即使模型返回顺序颠倒，也按最终正文首次出现�
     tickets,
     { stat_data: {} },
     '周遥先推门进来，片刻后林澄才从后门出现。',
+    null,
+    {
+      ticketAssignments: [
+        { name: '周遥', source: 'ticket', ticketId: tickets[0].ticketId },
+        { name: '林澄', source: 'ticket', ticketId: tickets[1].ticketId },
+      ],
+    },
   );
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
   const byName = Object.fromEntries(prepared.profiles.map((profile) => [profile.name, profile]));
   assert.equal(byName.周遥.ticketId, tickets[0].ticketId);
   assert.equal(byName.林澄.ticketId, tickets[1].ticketId);
   assert.equal(byName.周遥.personality.temperament, tickets[0].axes.temperament);
+  assert.equal(byName.周遥.ticketBinding.status, 'bound');
+  assert.equal(byName.林澄.ticketBinding.status, 'bound');
+});
+
+test('模型在消费回执中自称authority不能绕过权威名录，命中权威名录后才按权威档案保存', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const guide = completeProfile(ticket);
+  guide.name = '引导者';
+  guide.profileId = 'model-invented-id';
+  guide.personality.temperament = '克制而亲切，先确认对方是否需要帮助';
+  const prepared = prepareProfileBatch(
+    [guide],
+    [ticket],
+    { stat_data: {} },
+    '引导者站在登记台后说明流程。',
+    null,
+    { ticketAssignments: [{ name: '引导者', source: 'authority', ticketId: '' }] },
+  );
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.match(prepared.profiles[0].profileId, /^profile-unbound-/);
+  assert.equal(prepared.profiles[0].ticketId, undefined);
+  assert.equal(prepared.profiles[0].authoritySource, undefined);
+  assert.deepEqual(prepared.profiles[0].ticketBinding, {
+    status: 'uncovered', source: 'creative-completion', detail: 'authority_not_verified',
+  });
+  assert.equal(prepared.profiles[0].personality.temperament, '克制而亲切，先确认对方是否需要帮助');
+  assert.equal(prepared.normalizationRepairs.some((repair) => repair.code === 'complete_profile_saved_without_ticket'
+    && repair.detail === 'authority_not_verified'), true);
+
+  const verified = prepareProfileBatch(
+    [guide],
+    [ticket],
+    { stat_data: {} },
+    '引导者站在登记台后说明流程。',
+    null,
+    {
+      ticketAssignments: [{ name: '引导者', source: 'authority', ticketId: '' }],
+      ticketReceiptStatus: 'complete',
+      authorityProtectedNames: ['引导者'],
+    },
+  );
+  assert.equal(verified.ok, true, verified.errors.join('\n'));
+  assert.match(verified.profiles[0].profileId, /^profile-authority-/);
+  assert.equal(verified.profiles[0].ticketId, undefined);
+  assert.equal(verified.profiles[0].authoritySource, 'character-card-or-worldbook');
+  assert.deepEqual(verified.profiles[0].ticketBinding, {
+    status: 'authority', source: 'character-card-or-worldbook',
+  });
 });
 
 test('人物医生与世界主体播种都防御性排除user和当前角色卡主体', () => {
@@ -1294,20 +1568,20 @@ test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不�
     chatId: 'chat-world',
     turn: 0,
     subjects: [{
-      id: 'person-bailu', type: 'person', name: '白露',
-      anchor: '平常以柔弱形象与队伍相处，但有自己的观察目标',
-      current: '私人记录仍未被旁人发现', goal: '验证自己对同行者的判断',
+      id: 'person-linye', type: 'person', name: '林页',
+      anchor: '在钟表铺做学徒，同时自行核对库存差异',
+      current: '私下核对的货运编号尚未公开', goal: '找出库存差异的来源',
       nextCheckTurn: 1, status: 'active',
     }],
     changes: [],
   };
-  const proposal = parseWorldProposal(`[SUBJECT person-bailu]
-尝试：在无人注意时整理此前观察到的细节
-结果：她完成了第一轮分类
-状态变化：私人记录已经按风险高低完成分类
-现状：私人记录仍未被旁人发现
-下一步：等待可验证其中一条判断的机会
-公开影响：她其实在伪装柔弱并暗中记录所有人的弱点
+  const proposal = parseWorldProposal(`[SUBJECT person-linye]
+尝试：关门后核对三张旧收据
+结果：她发现两笔日期相同的重复登记
+状态变化：重复登记已经被标出，货运编号仍在私下核对
+现状：私下核对的货运编号尚未公开
+下一步：比较下一批货物的封签编号
+公开影响：她其实在暗中调查店主并准备偷走账本
 公开渠道：direct_consequence
 [/SUBJECT]
 
@@ -1328,15 +1602,15 @@ test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不�
   const merged = applyWorldProposal(baseline, proposal, {
     chatId: 'chat-world',
     turn: 1,
-    acceptedText: '白露仍未公开私人记录；下游石阶开始积水。',
+    acceptedText: '林页在柜台后核对旧收据；下游石阶开始积水。',
   });
   const recalled = selectWorldRecall(merged.world, '继续自己的行程', {}, 8);
-  const bailu = merged.world.subjects.find((entry) => entry.name === '白露');
+  const linye = merged.world.subjects.find((entry) => entry.name === '林页');
   const water = merged.world.subjects.find((entry) => entry.name === '旧水门水位');
 
   assert.equal(merged.applied.length, 2);
-  assert.match(bailu.current, /未被旁人发现/);
-  assert.equal(bailu.publicEffect, '');
+  assert.match(linye.current, /尚未公开/);
+  assert.equal(linye.publicEffect, '');
   assert.equal(merged.skipped.some((entry) => entry.code === 'private_leak_removed'), true);
   assert.equal(water.anchor, '下游石阶开始积水');
   assert.equal(water.current, '下游石阶开始积水');
@@ -1344,15 +1618,31 @@ test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不�
   assert.equal(water.publicEffect, '');
   assert.equal(merged.world.changes.length, 1);
   assert.equal(recalled.length, 0);
-  assert.doesNotMatch(JSON.stringify(recalled), /伪装柔弱|暗中记录|所有人的弱点/);
+  assert.doesNotMatch(JSON.stringify(recalled), /调查店主|偷走账本|重复登记/);
 });
 
 test('完整报告只移除API字段和实际凭据，保留正文与变量', () => {
-  const report = removeApiFromExport({ api: { apiKey: 'secret-1234', endpoint: 'https://api.test' }, chat: '正文完整保留', stat_data: { 时间: '上午' }, raw: 'Bearer secret-1234' }, ['secret-1234']);
+  const report = removeApiFromExport({
+    api: { apiKey: 'credential-1234', endpoint: 'https://api.test' },
+    chat: '正文完整保留；secret: 林页的配方草稿；token: 桌游代币。',
+    stat_data: {
+      时间: '上午',
+      secret: '这是一条真实剧情秘密',
+      token: '这是一枚剧情代币',
+      headers: { 族谱标题: '旧家系' },
+      credentials: { 身份凭证: '城门通行证' },
+    },
+    raw: 'Authorization: Bearer credential-1234',
+  }, ['credential-1234', 'https://api.test']);
   assert.equal(report.api, undefined);
-  assert.equal(report.chat, '正文完整保留');
+  assert.equal(report.chat, '正文完整保留；secret: 林页的配方草稿；token: 桌游代币。');
   assert.equal(report.stat_data.时间, '上午');
-  assert.doesNotMatch(report.raw, /secret-1234/);
+  assert.equal(report.stat_data.secret, '这是一条真实剧情秘密');
+  assert.equal(report.stat_data.token, '这是一枚剧情代币');
+  assert.deepEqual(report.stat_data.headers, { 族谱标题: '旧家系' });
+  assert.deepEqual(report.stat_data.credentials, { 身份凭证: '城门通行证' });
+  assert.doesNotMatch(report.raw, /credential-1234/);
+  assert.match(report.raw, /\[API已排除\]/);
 });
 
 test('完整报告清理器可序列化循环引用、BigInt、日期、Map、Set、函数、控制器和异常', () => {

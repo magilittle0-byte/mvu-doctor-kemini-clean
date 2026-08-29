@@ -20,6 +20,8 @@ test('控制台包含变量、连接、人物、世界、诊断与两个互不�
   assert.match(source, /auditVariables/);
   assert.match(source, /removeApiFromExport/);
   assert.match(source, /正文只负责确认谁实际出场以及哪些事实不能违背，不是档案信息上限/);
+  assert.match(source, /本轮候选自己写出的identity、capabilities、resources或evidence不能给自己授权/);
+  assert.match(source, /若因此移空knowledge，必须另补至少一条不涉及秘密/);
   assert.match(source, /profileCompletionContract/);
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
@@ -127,7 +129,7 @@ test('运行中的修复详情可以列出缺项但不会冒充红色终态失�
   assert.match(presentation, /test\(text\)[\s\S]*severity: 'error'/);
 });
 
-test('变量医生只做一次聚焦语义判断，脚本仅负责格式、安全写入和诚实结果', () => {
+test('变量医生只做一次聚焦语义判断，尊重用户硬事实并用官方重放移除冗余派生操作', () => {
   const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
   assert.match(audit, /buildVariableAuditEvidence/);
   assert.match(audit, /evidence\.triggeringUser/);
@@ -143,6 +145,12 @@ test('变量医生只做一次聚焦语义判断，脚本仅负责格式、安�
   assert.doesNotMatch(audit, /buildReplayCompleteBlock|mergeUpdateVariableBlocks/);
   assert.match(audit, /model_reported_nochange/);
   assert.match(audit, /这仍不等于脚本能替代语义判断/);
+  assert.match(audit, /触发用户输入里明确填写的姓名、身份、点数和资源分配/);
+  assert.match(audit, /NPC的“引导、指引、邀请、要求”只证明NPC提出了行动，不证明玩家已经照做/);
+  assert.match(audit, /自动计算的派生字段/);
+  assert.match(audit, /protectedVariablePathsFromReference\(reference\)/);
+  assert.match(audit, /filterProtectedVariableOperations\(normalized\.operations, explicitlyProtectedPaths\)/);
+  assert.match(audit, /official_replay_redundant_operation_removed/);
   assert.match(audit, /assertVariableTarget\(session, messageId, target\)[\s\S]*prepareReplacement\(raw\)[\s\S]*assertVariableTarget\(session, messageId, target\)/);
   assert.doesNotMatch(audit, /assessVariableBaseline|buildVariableAuditChecklist|extractExplicitVariableClaims|partial-repair|authority-rejected/);
 });
@@ -174,7 +182,7 @@ test('正文只接收公开影响，主体锚点、私密现状和有限知识�
   assert.match(source, /只清空公开字段，私密推进仍已保留/);
 });
 
-test('accepted-final可并行生成变量与人物候选，但世界必须等待变量和人物事务都闭合', () => {
+test('accepted-final并行生成变量与人物候选，只有变量或人物持久化事务未闭合才阻断世界', () => {
   const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
   const variableStart = accepted.indexOf('const variableTask = auditVariables');
   const profileStart = accepted.indexOf('const profileTask = commitProfiles');
@@ -198,6 +206,10 @@ test('accepted-final可并行生成变量与人物候选，但世界必须等待
   assert.ok(profiles.indexOf('await execution.commitBarrier') < profiles.indexOf('await Mvu.replaceMvuData(candidate'));
   assert.match(source, /requestControllers: new Set\(\)/);
   assert.match(source, /internalGenerationDepth/);
+  const profileContentFailure = profiles.slice(profiles.indexOf('if (!prepared.ok && !prepared.profiles?.length)'), profiles.indexOf('if (!hasMvu)'));
+  assert.match(profileContentFailure, /blocksWorld: false/);
+  const discoveryFailure = profiles.slice(profiles.indexOf('if (!discovery.ok)'), profiles.indexOf('const forcedSubjects'));
+  assert.match(discoveryFailure, /blocksWorld: false/);
 });
 
 test('世界按主体调度并局部合并，取消会话不写入迟到结果', () => {
@@ -250,7 +262,8 @@ test('待重试队列按回复身份逐项结算，prepare不会静默丢弃任�
   const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
   const completed = accepted.indexOf('const variableNeedsManualConfirmation');
   const success = accepted.slice(completed, accepted.indexOf('await refreshUiData()', completed));
-  assert.match(success, /setRetry\(null\)/);
+  assert.match(success, /clearRetryForAcceptedSession\(session, context\)/);
+  assert.doesNotMatch(success, /setRetry\(null\)/);
   assert.doesNotMatch(success, /clearAll|pendingRetries\s*=\s*\[\]/);
 });
 
@@ -274,7 +287,10 @@ test('GENERATION_STARTED先逐项恢复旧事务，失败由manifest拦截器abo
   const blockedReturn = lifecycle.indexOf('return;', blockedWrite);
   const prepareStart = lifecycle.indexOf('preparation = beginGenerationPreparation', recoveryCall);
   assert.ok(recoveryCall >= 0 && blockedWrite > recoveryCall && blockedReturn > blockedWrite && prepareStart > blockedReturn);
-  assert.match(lifecycle, /if \(!isRerollGeneration\(kind\) && runtime\.retry\)/);
+  assert.match(lifecycle, /const nonBlockingProfileRetry = runtime\.retry\?\.kind === 'profile'/);
+  assert.match(lifecycle, /Boolean\(runtime\.retry\?\.completedStages\?\.variable\)/);
+  assert.match(lifecycle, /Boolean\(runtime\.retry\?\.completedStages\?\.world\)/);
+  assert.match(lifecycle, /if \(!isRerollGeneration\(kind\) && runtime\.retry && !nonBlockingProfileRetry\)/);
   assert.match(lifecycle, /if \(!recovered\) \{[\s\S]*runtime\.blockedGeneration = \{[\s\S]*clearInjection\(startContext\)[\s\S]*return;/);
   assert.match(lifecycle, /if \(!settings\(startContext\)\.enabled\) \{[\s\S]*clearInjection\(startContext\)[\s\S]*return;/);
   assert.match(lifecycle, /const startToken = beginGenerationStart\(kind, startContext\)/);
@@ -296,7 +312,10 @@ test('人物票据谱系按message、swipe和叙事指纹持久化，手动入�
   assert.match(ledger, /Number\(entry\?\.messageId\) === Number\(identity\?\.messageId\)/);
   assert.match(ledger, /Number\(entry\?\.swipeId\) === Number\(identity\?\.swipeId\)/);
   assert.match(ledger, /if \(existing\) \{[\s\S]*semanticJsonEqual\(existing\.tickets \|\| \[\], session\.tickets \|\| \[\]\)[\s\S]*拒绝事后重掷或覆盖[\s\S]*return existing/);
+  assert.match(ledger, /parseCharacterTicketReceipt\(acceptedText, session\.tickets \|\| \[\]\)/);
+  assert.match(ledger, /semanticJsonEqual\(existing\.assignments \|\| \[\], assignments\)/);
   assert.match(ledger, /tickets: runtime\.core\.deepClone\(Array\.isArray\(session\.tickets\) \? session\.tickets : \[\]\)/);
+  assert.match(ledger, /assignments: runtime\.core\.deepClone\(assignments\)/);
 
   const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
   const ledgerCommit = accepted.indexOf('recordTicketLedger(session, context, latestAi.index, acceptedText)');
@@ -491,7 +510,7 @@ test('metadata保持同一权威对象身份，不在每次读取时重建命名
 });
 
 test('世界面板从单一v7主体权威派生支线和变化，不再渲染旧多表世界', () => {
-  assert.equal(manifest.version, '0.7.1');
+  assert.equal(manifest.version, '0.7.2');
   const worldUi = source.slice(source.indexOf('function renderWorld'), source.indexOf('function renderDiagnostics'));
   assert.match(worldUi, /normalizeWorldState\(store\.world/);
   assert.match(worldUi, /world\.subjects/);

@@ -146,7 +146,7 @@ function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '
   };
   vm.runInNewContext(source, sandbox, { filename: 'index.js' });
   return {
-    context, handlers, prompts, doctorCalls, mvuWrites, mvuByMessage, uiRoot, uiNodes, hooks: sandbox.window.__doctorTestHooks,
+    context, handlers, prompts, doctorCalls, mvuWrites, mvuByMessage, uiRoot, uiNodes, window: sandbox.window, hooks: sandbox.window.__doctorTestHooks,
     generationInterceptor: sandbox.mvuDoctorKeminiGenerateInterceptor,
     counters: {
       get saveMetadata() { return saveMetadataCalls; },
@@ -158,7 +158,7 @@ function runtimeHarness(initialChat = [{ is_user: true, is_system: false, mes: '
   };
 }
 
-function completeAuthorityProfile(name = '白露') {
+function completeAuthorityProfile(name = '林页') {
   return {
     name,
     aliases: [],
@@ -179,6 +179,16 @@ function completeAuthorityProfile(name = '白露') {
     evidence: [`最终正文明确${name}在柜台前与店员交谈`],
     inferences: ['具体经历由角色卡权威人格与当前职业合理补全，后续证据可修订'],
   };
+}
+
+function withCharacterTicketReceipt(text, assignments = []) {
+  return `<konatan_planning~><CharacterTicketReceipt>${JSON.stringify(assignments)}</CharacterTicketReceipt></konatan_planning~>${text}`;
+}
+
+function currentTicketAssignment(harness, name, ordinal = 0) {
+  const ticket = harness.hooks.runtime.active?.tickets?.[ordinal];
+  assert.ok(ticket?.ticketId, `本轮第${ordinal + 1}张人物票据必须已在正文生成前创建`);
+  return { name, source: 'ticket', ticketId: ticket.ticketId };
 }
 
 function worldTicketsFromPrompt(prompt) {
@@ -232,8 +242,27 @@ function newProcessWorldBlock({ name, sourceAnchor, anchor, current, goal, attem
 [/SUBJECT]`;
 }
 
-async function acceptInitialSwipe(harness, text) {
+async function acceptInitialSwipe(harness, textOrFactory) {
   await harness.handlers.get('generation_started')('normal', {}, false);
+  const text = typeof textOrFactory === 'function'
+    ? textOrFactory(harness)
+    : textOrFactory;
+  const messageId = harness.context.chat.length;
+  harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, swipes: [text], mes: text });
+  harness.handlers.get('generation_ended')();
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
+  for (let attempt = 0; attempt < 60 && store.pendingAcceptedFinal; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return { store, messageId };
+}
+
+async function acceptNextSwipe(harness, userText, textOrFactory) {
+  harness.context.chat.push({ is_user: true, is_system: false, mes: userText });
+  await harness.handlers.get('generation_started')('normal', {}, false);
+  const text = typeof textOrFactory === 'function'
+    ? textOrFactory(harness)
+    : textOrFactory;
   const messageId = harness.context.chat.length;
   harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, swipes: [text], mes: text });
   harness.handlers.get('generation_ended')();
@@ -256,7 +285,7 @@ test('运行中完整报告快照保留active、processing、preparation与原�
   });
   harness.hooks.runtime.active = {
     id: 'active-run',
-    trace: [{ stage: '人物发现:response', output: `白露原始返回；${apiKey}` }],
+    trace: [{ stage: '人物发现:response', output: `林页原始返回；${apiKey}` }],
     callback() {},
   };
   harness.hooks.runtime.processingSession = {
@@ -272,7 +301,7 @@ test('运行中完整报告快照保留active、processing、preparation与原�
   assert.equal(snapshot.active.id, 'active-run');
   assert.equal(snapshot.processingSession.id, 'processing-run');
   assert.equal(snapshot.preparation.id, 'preparing-run');
-  assert.match(snapshot.active.trace[0].output, /白露原始返回/);
+  assert.match(snapshot.active.trace[0].output, /林页原始返回/);
   assert.match(snapshot.active.callback, /^\[Function/);
   assert.match(snapshot.preparation.controller.abort, /^\[Function/);
   assert.doesNotMatch(serialized, /report-secret-key-1234|private\.example\.test|private-model/);
@@ -321,7 +350,7 @@ test('finalize保存失败后processing可释放，但完整报告仍能从内�
 test('普通中文名由独立发现回执锁定，主档案模型第一次无变化也必须继续生成完整档案', async () => {
   let profileCalls = 0;
   let discoveryCalls = 0;
-  const profile = completeAuthorityProfile('白露');
+  const profile = completeAuthorityProfile('林页');
   const harness = runtimeHarness(undefined, '', false, {
     extensionSettings: {
       'mvu-doctor-kemini-clean': {
@@ -334,7 +363,7 @@ test('普通中文名由独立发现回执锁定，主档案模型第一次无�
     },
     generateDiscovery() {
       discoveryCalls += 1;
-      return '<人物发现>\n人物：白露\n锚点：白露把纸页压在掌下\n</人物发现>';
+      return '<人物发现>\n人物：林页\n锚点：林页在药房门口递出采购清单\n</人物发现>';
     },
     generateRaw({ systemPrompt }) {
       const system = String(systemPrompt || '');
@@ -345,20 +374,61 @@ test('普通中文名由独立发现回执锁定，主档案模型第一次无�
     },
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const accepted = '<content>白露把纸页压在掌下，又若无其事地向柜台后的店员笑了笑。</content><options><option>询问她记录了什么</option></options>';
-  const { store } = await acceptInitialSwipe(harness, accepted);
+  const accepted = '<content>林页在药房门口递出采购清单，并向值班药剂师询问到货日期。</content><options><option>询问清单内容</option></options>';
+  const { store } = await acceptInitialSwipe(harness, (activeHarness) => withCharacterTicketReceipt(
+    accepted,
+    [currentTicketAssignment(activeHarness, '林页')],
+  ));
   assert.equal(discoveryCalls, 1);
   assert.equal(profileCalls, 2);
-  const saved = Object.values(store.profiles).find((entry) => entry?.name === '白露');
+  const saved = Object.values(store.profiles).find((entry) => entry?.name === '林页');
   assert.ok(saved);
   assert.equal(saved.profileId, saved.ticketId);
   assert.equal(typeof saved.personality?.temperament, 'string');
+  assert.equal(store.ticketLedger[0].assignmentReceiptStatus, 'complete');
+  assert.deepEqual(store.ticketLedger[0].assignments.map(({ name, source, ticketId }) => ({ name, source, ticketId })), [
+    { name: '林页', source: 'ticket', ticketId: saved.ticketId },
+  ]);
   assert.equal(store.fullRuns[0].outcome.profiles.ok, true);
   assert.equal(store.fullRuns[0].outcome.profiles.changed, 1);
   assert.equal(store.fullRuns[0].trace.some((entry) => entry.stage === 'profile:nochange-rejected'), true);
 });
 
-test('无人物NONE允许人物档案无变化；幻觉发现失败进入定向人物重试且不落空壳', async (t) => {
+test('正文漏写人物票据回执时仍按数据库方式完整补档，但绝不事后配票', async () => {
+  const profile = completeAuthorityProfile('林页');
+  const harness = runtimeHarness(undefined, '', false, {
+    extensionSettings: {
+      'mvu-doctor-kemini-clean': { enabled: true, variableDoctor: false, worldEngine: false, repairAttempts: 0, ticketCount: 2 },
+    },
+    generateDiscovery() {
+      return '<人物发现>\n人物：林页\n锚点：林页在药房门口递出采购清单\n</人物发现>';
+    },
+    generateRaw({ systemPrompt }) {
+      return String(systemPrompt || '').includes('MVU人物档案医师')
+        ? `<人物档案更新>${JSON.stringify([profile])}</人物档案更新>`
+        : '';
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const { store } = await acceptInitialSwipe(
+    harness,
+    '<content>林页在药房门口递出采购清单，并向值班药剂师核对短缺品种。</content><options><option>询问缺货日期</option></options>',
+  );
+  const saved = Object.values(store.profiles).find((entry) => entry?.name === '林页');
+  assert.ok(saved);
+  assert.match(saved.profileId, /^profile-unbound-/u);
+  assert.equal(saved.ticketId, undefined);
+  assert.deepEqual(structuredClone(saved.ticketBinding), {
+    status: 'receipt_missing',
+    source: 'creative-completion',
+    detail: 'receipt_not_present',
+  });
+  assert.equal(store.ticketLedger[0].assignmentReceiptStatus, 'missing');
+  assert.equal(store.fullRuns[0].outcome.profiles.ok, true);
+  assert.equal(store.fullRuns[0].outcome.profiles.changed, 1);
+});
+
+test('无人物NONE允许人物档案无变化；幻觉发现失败只重试人物、不落空壳也不阻塞世界', async (t) => {
   await t.test('NONE', async () => {
     const harness = runtimeHarness(undefined, '', false, {
       extensionSettings: {
@@ -369,26 +439,230 @@ test('无人物NONE允许人物档案无变化；幻觉发现失败进入定向�
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const { store } = await acceptInitialSwipe(harness, '<content>雨水沿着空荡的石阶向下流去。</content><options><option>继续观察</option></options>');
+    const { store } = await acceptInitialSwipe(harness, withCharacterTicketReceipt(
+      '<content>雨水沿着空荡的石阶向下流去。</content><options><option>继续观察</option></options>',
+      [],
+    ));
     assert.equal(Object.keys(store.profiles).length, 0);
     assert.equal(store.fullRuns[0].outcome.profiles.ok, true);
+    assert.equal(store.ticketLedger[0].assignmentReceiptStatus, 'complete');
+    assert.deepEqual(store.ticketLedger[0].assignments, []);
   });
 
   await t.test('幻觉锚点', async () => {
+    let worldCalls = 0;
     const harness = runtimeHarness(undefined, '', false, {
       extensionSettings: {
-        'mvu-doctor-kemini-clean': { enabled: true, variableDoctor: false, worldEngine: false, repairAttempts: 0 },
+        'mvu-doctor-kemini-clean': { enabled: true, variableDoctor: false, worldEngine: true, repairAttempts: 0 },
       },
       generateDiscovery() {
-        return '<人物发现>\n人物：白露\n锚点：白露站在石阶上\n</人物发现>';
+        return '<人物发现>\n人物：林页\n锚点：林页在码头检修吊灯\n</人物发现>';
+      },
+      generateRaw({ systemPrompt }) {
+        const system = String(systemPrompt || '');
+        if (!system.includes('全局世界裁决器') && !system.includes('世界长期主体发现器')) return '';
+        worldCalls += 1;
+        return `世界摘要：石阶积水继续按天气条件变化。\n\n${newProcessWorldBlock({
+          name: '石阶积水',
+          sourceAnchor: '雨水沿着空荡的石阶向下流去',
+          anchor: '石阶积水会随降雨与排水条件继续变化',
+          current: '雨水正沿空荡石阶向下流动',
+          goal: '记录积水如何随降雨与排水变化',
+          attempt: '核对本时段雨势与石阶排水情况',
+          outcome: '本时段雨水仍沿石阶持续向下流动',
+          stateChange: '石阶积水成为可在下一时段复核的环境进程',
+          nextAction: '下一时段复核雨势与积水深度是否变化',
+          thread: '石阶降雨进程',
+        })}`;
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const { store } = await acceptInitialSwipe(harness, '<content>雨水沿着空荡的石阶向下流去。</content><options><option>继续观察</option></options>');
+    const { store } = await acceptInitialSwipe(harness, withCharacterTicketReceipt(
+      '<content>雨水沿着空荡的石阶向下流去。</content><options><option>继续观察</option></options>',
+      [],
+    ));
     assert.equal(Object.keys(store.profiles).length, 0);
     assert.equal(store.pendingRetry?.kind, 'profile');
     assert.match(store.fullRuns[0].outcome.profiles.error, /不是最终正文逐字出现|锚点不是最终正文连续逐字原文/);
+    assert.equal(worldCalls > 0, true);
+    assert.equal(store.world.subjects.some((subject) => subject.name === '石阶积水'), true);
   });
+});
+
+test('人物内容失败不阻塞下一回合，历史补档只合入当前人物根且不重放旧世界', async () => {
+  let r1ProfileCalls = 0;
+  let worldCalls = 0;
+  let historicalProfilePrompt = '';
+  const completeProfile = completeAuthorityProfile('林页');
+  const harness = runtimeHarness(undefined, '', false, {
+    completeMvu: true,
+    extensionSettings: {
+      'mvu-doctor-kemini-clean': {
+        enabled: true,
+        variableDoctor: false,
+        worldEngine: true,
+        repairAttempts: 0,
+        ticketCount: 2,
+      },
+    },
+    generateDiscovery({ prompt }) {
+      return String(prompt || '').includes('林页在药房门口递出采购清单')
+        ? '<人物发现>\n人物：林页\n锚点：林页在药房门口递出采购清单\n</人物发现>'
+        : '<人物发现>NONE</人物发现>';
+    },
+    generateRaw({ systemPrompt, prompt }) {
+      const system = String(systemPrompt || '');
+      if (system.includes('MVU人物档案医师')) {
+        if (!String(prompt || '').includes('林页在药房门口递出采购清单')) return '<人物档案无变化/>';
+        r1ProfileCalls += 1;
+        if (r1ProfileCalls === 1) return '<人物档案更新>[{"name":"林页"}]</人物档案更新>';
+        historicalProfilePrompt = String(prompt || '');
+        return `<人物档案更新>${JSON.stringify([completeProfile])}</人物档案更新>`;
+      }
+      if (system.includes('世界长期主体发现器')) {
+        worldCalls += 1;
+        return `世界摘要：石阶积水成为独立环境进程。\n\n${newProcessWorldBlock({
+          name: '石阶积水',
+          sourceAnchor: '雨水沿着空荡的石阶向下流去',
+          anchor: '石阶积水会随降雨与排水条件继续变化',
+          current: '雨水正沿空荡石阶向下流动',
+          goal: '记录积水如何随降雨与排水变化',
+          attempt: '核对本时段雨势与石阶排水情况',
+          outcome: '本时段雨水仍沿石阶持续向下流动',
+          stateChange: '石阶积水成为可在下一时段复核的环境进程',
+          nextAction: '下一时段复核雨势与积水深度是否变化',
+          thread: '石阶降雨进程',
+        })}`;
+      }
+      if (system.includes('全局世界裁决器')) {
+        worldCalls += 1;
+        return `世界摘要：既有石阶积水按本轮票据继续演化。\n\n${scheduledWorldBlocks(prompt, '石阶积水').join('\n\n')}`;
+      }
+      return '';
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const r1Accepted = '<content>林页在药房门口递出采购清单，并向值班药剂师询问到货日期。雨水沿着空荡的石阶向下流去。</content><options><option>继续观察</option></options>';
+  const first = await acceptInitialSwipe(harness, (activeHarness) => withCharacterTicketReceipt(
+    r1Accepted,
+    [currentTicketAssignment(activeHarness, '林页')],
+  ));
+  assert.equal(first.store.pendingRetry?.kind, 'profile');
+  assert.equal(first.store.pendingRetry?.messageId, first.messageId);
+  const r1TicketId = first.store.pendingRetry?.session?.tickets?.[0]?.ticketId;
+  assert.ok(r1TicketId);
+  assert.equal(first.store.world.subjects.some((subject) => subject.name === '石阶积水'), true);
+  assert.equal(first.store.fullRuns[0].outcome.world.ok, true);
+
+  const second = await acceptNextSwipe(
+    harness,
+    '再等一会儿，观察积水变化。',
+    withCharacterTicketReceipt(
+      '<content>雨势稍缓，石阶积水仍沿排水槽缓慢下泄。</content><options><option>继续观察</option></options>',
+      [],
+    ),
+  );
+  assert.equal(second.store.pendingRetries.some((entry) => entry.messageId === first.messageId && entry.kind === 'profile'), true);
+  assert.equal(harness.hooks.runtime.retry?.messageId, first.messageId);
+  const worldBeforeCatchup = structuredClone(second.store.world);
+  const r1MvuBeforeCatchup = structuredClone(harness.mvuByMessage.get(first.messageId) || { stat_data: {} });
+  const r2MvuBeforeCatchup = structuredClone(harness.mvuByMessage.get(second.messageId) || { stat_data: {} });
+  const r2Ledger = structuredClone(second.store.ticketLedger.find((entry) => entry.messageId === second.messageId));
+  second.store.ticketLedger = second.store.ticketLedger.filter((entry) => entry.messageId !== first.messageId);
+  const worldCallsBeforeCatchup = worldCalls;
+  const outcomeWorldsBeforeCatchup = new Map(second.store.swipeOutcomes.map((entry) => [
+    `${entry.messageId}:${entry.swipeId}:${entry.fingerprint}`,
+    structuredClone(entry.world),
+  ]));
+
+  const activeMvu = harness.window.Mvu;
+  const profileCallsBeforeUnavailableMvu = r1ProfileCalls;
+  const mvuWritesBeforeUnavailableMvu = harness.mvuWrites.length;
+  harness.window.Mvu = null;
+  await harness.hooks.retryLastFailure();
+  assert.equal(second.store.pendingRetries.some((entry) => entry.messageId === first.messageId && entry.kind === 'profile'), true);
+  assert.equal(harness.hooks.runtime.retry?.messageId, first.messageId);
+  assert.equal(r1ProfileCalls, profileCallsBeforeUnavailableMvu);
+  assert.equal(harness.mvuWrites.length, mvuWritesBeforeUnavailableMvu);
+  assert.equal(worldCalls, worldCallsBeforeCatchup);
+  assert.deepEqual(harness.mvuByMessage.get(second.messageId) || { stat_data: {} }, r2MvuBeforeCatchup);
+  harness.window.Mvu = activeMvu;
+
+  await harness.hooks.retryLastFailure();
+
+  const r2MvuAfterCatchup = structuredClone(harness.mvuByMessage.get(second.messageId) || { stat_data: {} });
+  const savedProfiles = Object.values(r2MvuAfterCatchup.stat_data?.人物档案?.byActorId || {});
+  assert.equal(savedProfiles.some((profile) => profile.name === '林页'), true);
+  assert.equal(savedProfiles.find((profile) => profile.name === '林页')?.ticketId, r1TicketId);
+  assert.deepEqual(harness.mvuByMessage.get(first.messageId) || { stat_data: {} }, r1MvuBeforeCatchup);
+  const withoutProfiles = (data) => {
+    const clone = structuredClone(data || { stat_data: {} });
+    if (clone.stat_data) delete clone.stat_data.人物档案;
+    return clone;
+  };
+  assert.deepEqual(withoutProfiles(r2MvuAfterCatchup), withoutProfiles(r2MvuBeforeCatchup));
+  assert.deepEqual(structuredClone({
+    revision: second.store.world.revision,
+    turn: second.store.world.turn,
+    subjects: second.store.world.subjects,
+    changes: second.store.world.changes,
+    receipts: second.store.world.receipts,
+  }), {
+    revision: worldBeforeCatchup.revision,
+    turn: worldBeforeCatchup.turn,
+    subjects: worldBeforeCatchup.subjects,
+    changes: worldBeforeCatchup.changes,
+    receipts: worldBeforeCatchup.receipts,
+  });
+  assert.equal(second.store.pendingRetries.some((entry) => entry.messageId === first.messageId), false);
+  assert.equal(worldCalls, worldCallsBeforeCatchup);
+  assert.match(historicalProfilePrompt, /建档证据之后、当前写入点之前的已接受公开正文/);
+  assert.match(historicalProfilePrompt, /雨势稍缓/);
+  const r2Outcome = second.store.swipeOutcomes.find((entry) => entry.messageId === second.messageId && entry.swipeId === 0);
+  assert.deepEqual(r2Outcome?.tickets || [], r2Ledger?.tickets || []);
+  const r1Outcome = second.store.swipeOutcomes.find((entry) => entry.messageId === first.messageId && entry.swipeId === 0);
+  assert.equal(Object.values(r1Outcome?.profileRoot?.byActorId || {}).some((profile) => profile.name === '林页'), true);
+  assert.equal((r1Outcome?.pendingRetries || []).some((entry) => entry.messageId === first.messageId), false);
+  for (const outcome of second.store.swipeOutcomes) {
+    const key = `${outcome.messageId}:${outcome.swipeId}:${outcome.fingerprint}`;
+    if (outcomeWorldsBeforeCatchup.has(key)) assert.deepEqual(structuredClone(outcome.world), outcomeWorldsBeforeCatchup.get(key));
+  }
+});
+
+test('重试目标正文变化时会持久化清理旧任务，刷新后不再复活', async () => {
+  const harness = runtimeHarness(undefined, '', false, {
+    extensionSettings: {
+      'mvu-doctor-kemini-clean': {
+        enabled: true,
+        variableDoctor: false,
+        worldEngine: false,
+        repairAttempts: 0,
+      },
+    },
+    generateDiscovery() {
+      return '<人物发现>\n人物：林页\n锚点：林页把纸页压在掌下\n</人物发现>';
+    },
+    generateRaw({ systemPrompt }) {
+      return String(systemPrompt || '').includes('MVU人物档案医师')
+        ? '<人物档案更新>[{"name":"林页"}]</人物档案更新>'
+        : '';
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const first = await acceptInitialSwipe(harness, (activeHarness) => withCharacterTicketReceipt(
+    '<content>林页把纸页压在掌下，开始核对柜台记录。</content><options><option>继续观察</option></options>',
+    [currentTicketAssignment(activeHarness, '林页')],
+  ));
+  assert.equal(first.store.pendingRetry?.kind, 'profile');
+  const saveCallsBeforeCleanup = harness.counters.saveMetadata;
+  harness.context.chat[first.messageId].mes = '<content>这一楼层已经换成另一段正文。</content>';
+
+  await harness.hooks.retryLastFailure();
+
+  assert.equal(harness.counters.saveMetadata > saveCallsBeforeCleanup, true);
+  assert.equal(first.store.pendingRetries.some((entry) => entry.messageId === first.messageId), false);
+  assert.equal(first.store.pendingRetry, null);
+  assert.equal(harness.hooks.runtime.retry, null);
 });
 
 test('disabled initialization preserves every lifecycle WAL without model, MVU or metadata writes', async () => {
@@ -722,7 +996,7 @@ test('accepted正文结构失败不创建变量、人物或世界任务，也不
 });
 
 test('worldbook entry with a unique exact structured character key protects the profile from random-ticket takeover', async () => {
-  const authorityProfile = completeAuthorityProfile('白露');
+  const authorityProfile = completeAuthorityProfile('林页');
   const harness = runtimeHarness(
     [{ is_user: true, is_system: false, mes: '走到旅店柜台前。' }],
     '',
@@ -743,10 +1017,10 @@ test('worldbook entry with a unique exact structured character key protects the 
             name: '当前角色卡主体',
             character_book: {
               entries: [{
-                comment: '白露',
-                keys: ['白露'],
+                comment: '林页',
+                keys: ['林页'],
                 enabled: true,
-                content: '白露是既有原著人物；她在权威设定中热情直率，并以记录员身份同行。',
+                content: '林页是合成设定中的既有人物；她务实健谈，并以药材采购员身份工作。',
               }],
             },
           },
@@ -769,18 +1043,25 @@ test('worldbook entry with a unique exact structured character key protects the 
     is_user: false,
     is_system: false,
     swipe_id: 0,
-    mes: '<content>白露走到旅店柜台前，与店员核对了今日的住客记录。</content><options><option>向她询问记录</option></options>',
+    mes: withCharacterTicketReceipt(
+      '<content>林页走进药房，把补货清单交给值班药剂师。</content><options><option>向她询问记录</option></options>',
+      [{ name: '林页', source: 'authority' }],
+    ),
   });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 700));
 
+  const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
   const root = harness.mvuByMessage.get(1).stat_data.人物档案.byActorId;
   const saved = Object.values(root)[0];
   assert.equal(Object.keys(root).length, 1);
-  assert.equal(saved.name, '白露');
+  assert.equal(saved.name, '林页');
   assert.equal(saved.authoritySource, 'character-card-or-worldbook');
   assert.equal(saved.ticketId, undefined);
   assert.equal(saved.personality.temperament, '角色卡明确设定的热情直率');
+  assert.deepEqual(store.ticketLedger[0].assignments.map(({ name, source, ticketId }) => ({ name, source, ticketId })), [
+    { name: '林页', source: 'authority', ticketId: '' },
+  ]);
   assert.equal(harness.doctorCalls.filter((request) => String(request.systemPrompt).includes('MVU人物档案医师')).length, 1);
 });
 
@@ -839,13 +1120,18 @@ test('retrying a variable failure reuses the already successful profile result i
     is_user: false,
     is_system: false,
     swipe_id: 0,
-    mes: '<content>室内没有发生新的变化，可以听见窗外的风声持续了一阵。</content><options><option>继续观察</option></options>',
+    mes: withCharacterTicketReceipt(
+      '<content>室内没有发生新的变化，可以听见窗外的风声持续了一阵。</content><options><option>继续观察</option></options>',
+      [],
+    ),
   });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
 
   const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
   assert.equal(store.fullRuns[0].outcome.stage, 'variable');
+  assert.equal(store.ticketLedger[0].assignmentReceiptStatus, 'complete');
+  assert.deepEqual(store.ticketLedger[0].assignments, []);
   assert.equal(profileCalls, 1);
   assert.equal(variableCalls, 1);
   assert.equal(typeof harness.hooks.retryLastFailure, 'function');
@@ -1435,8 +1721,10 @@ test('missing-checkpoint quarantine persists across later normal generations and
 });
 
 test('two accepted swipes round-trip their own Doctor outcome by message, swipe and final-text identity without recalling models', async () => {
-  const textA = '<content>分支甲中，林甲在东侧柜台查阅并核对了第一本账册。</content><options><option>询问林甲</option></options>';
-  const textB = '<content>分支乙中，林乙在西侧门廊阅读并检查了第二封信。</content><options><option>询问林乙</option></options>';
+  const baseTextA = '<content>分支甲中，林甲在东侧柜台查阅并核对了第一本账册。</content><options><option>询问林甲</option></options>';
+  const baseTextB = '<content>分支乙中，林乙在西侧门廊阅读并检查了第二封信。</content><options><option>询问林乙</option></options>';
+  let textA = '';
+  let textB = '';
   const baselineData = { stat_data: { 场景: { 位置: '旅店大厅' } } };
   const harness = runtimeHarness(
     [{ is_user: true, is_system: false, mes: '进入旅店大厅。' }],
@@ -1491,6 +1779,7 @@ test('two accepted swipes round-trip their own Doctor outcome by message, swipe 
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   await harness.handlers.get('generation_started')('normal', {}, false);
+  textA = withCharacterTicketReceipt(baseTextA, [currentTicketAssignment(harness, '林甲')]);
   harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, swipes: [textA], mes: textA });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
@@ -1513,6 +1802,7 @@ test('two accepted swipes round-trip their own Doctor outcome by message, swipe 
   await harness.handlers.get('generation_started')('swipe', {}, false);
   assert.equal(store.preparedReroll?.stage, 'generation_started');
   assert.equal(harness.hooks.runtime.active?.expectedFinalSwipeId, 1);
+  textB = withCharacterTicketReceipt(baseTextB, [currentTicketAssignment(harness, '林乙')]);
   harness.context.chat[1] = { is_user: false, is_system: false, swipe_id: 1, swipes: [textA, textB], mes: textB };
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
@@ -1703,12 +1993,18 @@ test('坏变量块的完整替换不得吸收或覆盖其他扩展同回合写�
   await new Promise((resolve) => setTimeout(resolve, 800));
 
   const store = harness.context.chatMetadata['mvu-doctor-kemini-clean'];
-  assert.equal(parseTrace.length, 1);
-  assert.notEqual(parseTrace[0].block, invalidBlock);
-  const replayPatchText = parseTrace[0].block.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/u)?.[1] || '';
+  assert.equal(parseTrace.length, 2);
+  const authoritativeReplay = parseTrace.find((entry) => String(entry.block).includes('/状态/数值'));
+  const redundantOperationProbe = parseTrace.find((entry) => !String(entry.block).includes('/状态/数值'));
+  assert.ok(authoritativeReplay);
+  assert.ok(redundantOperationProbe);
+  assert.notEqual(authoritativeReplay.block, invalidBlock);
+  const replayPatchText = authoritativeReplay.block.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/u)?.[1] || '';
   assert.deepEqual(JSON.parse(replayPatchText), [{ op: 'replace', path: '/状态/数值', value: 1 }]);
-  assert.deepEqual(parseTrace[0].before, previous);
-  assert.deepEqual(parseTrace[0].after, { stat_data: { 状态: { 数值: 1 }, 其他扩展: { 标记: '上一楼层' } } });
+  assert.deepEqual(authoritativeReplay.before, previous);
+  assert.deepEqual(authoritativeReplay.after, { stat_data: { 状态: { 数值: 1 }, 其他扩展: { 标记: '上一楼层' } } });
+  assert.deepEqual(redundantOperationProbe.before, previous);
+  assert.deepEqual(redundantOperationProbe.after, previous);
   assert.equal(store.fullRuns[0].outcome.ok, false);
   assert.equal(store.fullRuns[0].outcome.stage, 'variable');
   assert.match(store.fullRuns[0].outcome.variable.error, /未声明路径|遗漏了本楼层已有变化/);
@@ -1783,12 +2079,18 @@ test('坏变量块由模型给出完整替换块并经官方复放等于当前�
   assert.notEqual(repairedMessage, originalMessage);
   assert.equal(repairedMessage.includes(invalidBlock), false);
   assert.deepEqual(operations, [{ op: 'replace', path: '/状态/数值', value: 1 }]);
-  assert.equal(parseTrace.length, 1);
-  assert.notEqual(parseTrace[0].block, invalidBlock);
-  const replayPatchText = parseTrace[0].block.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/u)?.[1] || '';
+  assert.equal(parseTrace.length, 2);
+  const authoritativeReplay = parseTrace.find((entry) => String(entry.block).includes('/状态/数值'));
+  const redundantOperationProbe = parseTrace.find((entry) => !String(entry.block).includes('/状态/数值'));
+  assert.ok(authoritativeReplay);
+  assert.ok(redundantOperationProbe);
+  assert.notEqual(authoritativeReplay.block, invalidBlock);
+  const replayPatchText = authoritativeReplay.block.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/u)?.[1] || '';
   assert.deepEqual(JSON.parse(replayPatchText), operations);
-  assert.deepEqual(parseTrace[0].before, previous);
-  assert.deepEqual(parseTrace[0].after, current);
+  assert.deepEqual(authoritativeReplay.before, previous);
+  assert.deepEqual(authoritativeReplay.after, current);
+  assert.deepEqual(redundantOperationProbe.before, previous);
+  assert.deepEqual(redundantOperationProbe.after, previous);
   assert.equal(harness.counters.saveChat, 1);
   assert.equal(harness.counters.mvuReplace, 0);
   assert.equal(harness.mvuWrites.length, 0);
@@ -2014,11 +2316,15 @@ test('metadata-only profile persistence failure rolls back the profile and preve
   const worldBefore = structuredClone(store.world);
 
   await harness.handlers.get('generation_started')('normal', {}, false);
+  const acceptedWithReceipt = withCharacterTicketReceipt(
+    '<content>林档站在柜台旁，翻开登记簿核对了房号。</content><options><option>询问林档</option></options>',
+    [currentTicketAssignment(harness, '林档')],
+  );
   harness.context.chat.push({
     is_user: false,
     is_system: false,
     swipe_id: 0,
-    mes: '<content>林档站在柜台旁，翻开登记簿核对了房号。</content><options><option>询问林档</option></options>',
+    mes: acceptedWithReceipt,
   });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
@@ -2069,7 +2375,10 @@ test('audited no-change fails when the persisted profile projection cannot be re
     is_user: false,
     is_system: false,
     swipe_id: 0,
-    mes: '<content>室内没有出现其他人物，墙上的钟继续走动。</content><options><option>继续等待</option></options>',
+    mes: withCharacterTicketReceipt(
+      '<content>室内没有出现其他人物，墙上的钟继续走动。</content><options><option>继续等待</option></options>',
+      [],
+    ),
   });
   harness.handlers.get('generation_ended')();
   await new Promise((resolve) => setTimeout(resolve, 750));
@@ -2560,13 +2869,17 @@ test('changing accepted text and swipe while the profile model runs leaves profi
   const worldBefore = structuredClone(store.world);
 
   await harness.handlers.get('generation_started')('normal', {}, false);
-  harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, swipes: [accepted], mes: accepted });
+  const acceptedWithReceipt = withCharacterTicketReceipt(
+    accepted,
+    [currentTicketAssignment(harness, '林竞')],
+  );
+  harness.context.chat.push({ is_user: false, is_system: false, swipe_id: 0, swipes: [acceptedWithReceipt], mes: acceptedWithReceipt });
   harness.handlers.get('generation_ended')();
   await profileModelStarted;
 
   const externallyChanged = '<content>这条正文已经由外部切换为另一个 swipe。</content><options><option>等待</option></options>';
   harness.context.chat[1].swipe_id = 1;
-  harness.context.chat[1].swipes = [accepted, externallyChanged];
+  harness.context.chat[1].swipes = [acceptedWithReceipt, externallyChanged];
   harness.context.chat[1].mes = externallyChanged;
   releaseProfileModel();
   await new Promise((resolve) => setTimeout(resolve, 850));
@@ -2616,11 +2929,15 @@ test('profile commit rebases onto a newly added database non-profile field inste
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   await harness.handlers.get('generation_started')('normal', {}, false);
+  const acceptedWithReceipt = withCharacterTicketReceipt(
+    '<content>林库在档案室里整理了新的索引卡。</content><options><option>查看索引</option></options>',
+    [currentTicketAssignment(harness, '林库')],
+  );
   harness.context.chat.push({
     is_user: false,
     is_system: false,
     swipe_id: 0,
-    mes: '<content>林库在档案室里整理了新的索引卡。</content><options><option>查看索引</option></options>',
+    mes: acceptedWithReceipt,
   });
   harness.handlers.get('generation_ended')();
   await profileModelStarted;

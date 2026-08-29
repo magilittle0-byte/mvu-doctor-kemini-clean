@@ -34,8 +34,8 @@ const EMPTY_WORDS = /^(?:(?:未知|不详|待定|待确认|未登记|未说明|�
 export function profileCompletionContract() {
   return `每个人物必须按以下唯一结构输出完整对象；正文没有明说的内容不是空项，而是结合权威材料、世界观、人物身份和同一张骰票主动设计，并在inferences中说明为可修订补全：
 {
-  "profileId": "旧人物沿用既有ID；原创新人留空由脚本绑定票据；角色卡或世界书已有权威身份者留空由脚本建立稳定权威ID",
-  "ticketId": "原创新人使用分配的本轮ticketId；权威人物不得冒领随机票据；旧人物保持原值",
+  "profileId": "旧人物沿用既有ID；有效生成前票据回执中的原创新人由脚本绑定票据ID；缺失、无效或未覆盖回执的完整新人由脚本建立稳定无票据ID；角色卡或世界书已有权威身份者由脚本建立稳定权威ID",
+  "ticketId": "仅原创新人在有效生成前消费回执中绑定的本轮ticketId；回执缺失、无效、未覆盖以及权威人物都留空；旧人物保持原值",
   "name": "正文中可稳定单指的姓名、编号或唯一称谓",
   "aliases": ["仅填写最终正文逐字出现的稳定别名或既有档案已确认的别名；不要把代词、动作片段或句子残片当别名；没有可用空数组"],
   "identity": {
@@ -73,7 +73,7 @@ export function profileCompletionContract() {
   "evidence": ["至少一条来自最终叙事或权威材料的直接依据"],
   "inferences": ["至少一条医生主动设计且可被后续证据修订的补全说明"]
 }
-禁止用未知、待定、未登记、正文未提及或空字符串逃避补全；在这些占位词后加括号解释仍然不算完成。不适用字段必须写明不适用的世界观原因。所有列表字段必须是数组。`;
+禁止用未知、待定、未登记、正文未提及或空字符串逃避补全；在这些占位词后加括号解释仍然不算完成。不适用字段必须写明不适用的世界观原因。所有列表字段必须是数组。ticketBinding由脚本根据生成前回执与权威材料写入，模型不得自行声明。`;
 }
 
 export function deepClone(value) {
@@ -558,6 +558,157 @@ function doctorOwnedProfilePath(path) {
   return canonical[0] === PROFILE_ROOT.slice(1);
 }
 
+const EXPLICIT_VARIABLE_PROTECTION_MARKER = /(?:\[禁止修改\]|前端自动且禁止修改|禁止修改|只读|read[\s‐‑‒–—-]*only)/iu;
+const INLINE_JSON_POINTER = /(?:^|[\s`"'“”‘’([{【（:：=＝])((?:\/(?:~[01]|[^\s\/`"'“”‘’<>\[\]{}()（）,，。;；:：])+)+)/gu;
+const INLINE_DOTTED_PATH = /(?:^|[\s`"'“”‘’([{【（:：=＝])((?:(?:[\p{L}\p{N}_$-]+|\$\{[\p{L}\p{N}_-]+(?:\|[\p{L}\p{N}_-]+)+\})(?:\.(?:[\p{L}\p{N}_$-]+|\$\{[\p{L}\p{N}_-]+(?:\|[\p{L}\p{N}_-]+)+\}))+))(?=$|[\s`"'“”‘’)}\]】）>,，。;；:：])/gu;
+
+function explicitReferenceTexts(values, output = []) {
+  for (const value of values) {
+    if (typeof value === 'string') output.push(value);
+    else if (Array.isArray(value)) explicitReferenceTexts(value, output);
+    else if (value && typeof value === 'object') {
+      for (const key of ['schema', 'rules']) if (typeof value[key] === 'string') output.push(value[key]);
+    }
+  }
+  return output;
+}
+
+function expandFiniteDottedPathTemplate(path) {
+  let variants = [String(path || '')];
+  while (variants.some((value) => /\$\{[^{}]+\}/u.test(value))) {
+    const expanded = [];
+    for (const variant of variants) {
+      const match = variant.match(/\$\{([^{}]+)\}/u);
+      if (!match) {
+        expanded.push(variant);
+        continue;
+      }
+      const options = match[1].split('|').map((value) => value.trim()).filter(Boolean);
+      if (!options.length || options.length > 32 || options.some((value) => !/^[\p{L}\p{N}_-]+$/u.test(value))) return [];
+      for (const option of options) {
+        expanded.push(`${variant.slice(0, match.index)}${option}${variant.slice(Number(match.index) + match[0].length)}`);
+        if (expanded.length > 64) return [];
+      }
+    }
+    variants = expanded;
+  }
+  return variants;
+}
+
+function canonicalVariablePointer(path) {
+  const parts = pointerParts(path);
+  if (!parts?.length || parts.some((part) => !String(part).length)) return '';
+  return pointerPath(parts[0] === 'stat_data' ? parts.slice(1) : parts);
+}
+
+function variablePathsOnReferenceLine(line) {
+  const matches = [];
+  for (const match of String(line || '').matchAll(INLINE_JSON_POINTER)) {
+    const canonical = canonicalVariablePointer(match[1]);
+    if (canonical) matches.push({ raw: match[1], paths: [canonical] });
+  }
+  for (const match of String(line || '').matchAll(INLINE_DOTTED_PATH)) {
+    const expandedPaths = expandFiniteDottedPathTemplate(match[1])
+      .map((expanded) => canonicalVariablePointer(pointerPath(expanded.split('.'))))
+      .filter(Boolean);
+    if (expandedPaths.length) matches.push({ raw: match[1], paths: expandedPaths });
+  }
+  return matches;
+}
+
+function referenceLineIndent(line) {
+  return (String(line || '').match(/^[\t ]*/u)?.[0] || '').replace(/\t/gu, '  ').length;
+}
+
+function exactVariablePathHeading(line) {
+  let heading = String(line || '').trim();
+  if (!/[：:]\s*$/u.test(heading)) return [];
+  heading = heading.replace(/[：:]\s*$/u, '').replace(/^(?:[-*+]\s+)/u, '').trim();
+  const wrapped = heading.match(/^(?:`([^`]+)`|"([^"]+)"|'([^']+)'|“([^”]+)”|‘([^’]+)’)$/u);
+  if (wrapped) heading = wrapped.slice(1).find((value) => value !== undefined) || '';
+  return variablePathsOnReferenceLine(line)
+    .filter((entry) => entry.raw === heading)
+    .flatMap((entry) => entry.paths);
+}
+
+function protectedPathHeadingBefore(lines, markerIndex) {
+  const markerLine = String(lines[markerIndex] || '');
+  const marker = markerLine.trimStart();
+  if (!/^(?:[-*+]\s*)?(?:[【[]\s*)?(?:禁止修改|只读|read[\s‐‑‒–—-]*only)/iu.test(marker)) return [];
+  let childIndent = referenceLineIndent(markerLine);
+  let inspected = 0;
+  for (let index = markerIndex - 1; index >= 0 && inspected < 6; index -= 1, inspected += 1) {
+    const line = String(lines[index] || '');
+    if (!line.trim()) continue;
+    const indent = referenceLineIndent(line);
+    const exactPaths = exactVariablePathHeading(line);
+    if (exactPaths.length) return indent < childIndent ? exactPaths : [];
+    const containerOnly = /^[\p{L}\p{N}_-]+[：:]\s*$/u.test(line.trim());
+    if (!containerOnly || indent >= childIndent) return [];
+    childIndent = indent;
+  }
+  return [];
+}
+
+/**
+ * Extracts paths that share a line with an explicit read-only marker, plus the
+ * nearest lower-indented schema heading when only blank lines or container keys
+ * sit between it and a marker-first list item. It never crosses sibling paths or
+ * ordinary prose.
+ * It deliberately does not infer protection from ordinary prose or schema shape.
+ */
+export function protectedVariablePathsFromReference(...references) {
+  const paths = new Set();
+  for (const text of explicitReferenceTexts(references)) {
+    const lines = String(text).split(/\r?\n/u);
+    for (const [index, line] of lines.entries()) {
+      if (!EXPLICIT_VARIABLE_PROTECTION_MARKER.test(line)) continue;
+      for (const entry of variablePathsOnReferenceLine(line)) for (const path of entry.paths) paths.add(path);
+      for (const path of protectedPathHeadingBefore(lines, index)) paths.add(path);
+    }
+  }
+  return [...paths].sort((left, right) => left.localeCompare(right));
+}
+
+function protectedVariablePathMatch(path, protectedEntries) {
+  const canonical = canonicalVariablePointer(path);
+  const parts = pointerParts(canonical);
+  if (!parts?.length) return null;
+  return protectedEntries.find((entry) => entry.parts.length <= parts.length
+    && entry.parts.every((part, index) => part === parts[index])) || null;
+}
+
+/** Removes only operations that target an explicitly protected path or one of its descendants. */
+export function filterProtectedVariableOperations(operations = [], protectedPaths = []) {
+  const protectedEntries = [...new Set((protectedPaths || []).map(canonicalVariablePointer).filter(Boolean))]
+    .map((path) => ({ path, parts: pointerParts(path) }));
+  if (!protectedEntries.length) return { operations: deepClone(operations || []), repairs: [] };
+  const kept = [];
+  const repairs = [];
+  for (const [index, operation] of (operations || []).entries()) {
+    const fields = operation?.op === 'move' ? ['from', 'to'] : ['path'];
+    const hits = fields.map((field) => {
+      const path = operation?.[field];
+      const match = protectedVariablePathMatch(path, protectedEntries);
+      return match ? { field, path, protectedPath: match.path } : null;
+    }).filter(Boolean);
+    if (!hits.length) {
+      kept.push(deepClone(operation));
+      continue;
+    }
+    repairs.push({
+      index,
+      kind: 'protected-path',
+      code: 'explicit_reference_protected_operation_removed',
+      op: String(operation?.op || ''),
+      paths: hits.map((hit) => hit.path),
+      protectedPaths: [...new Set(hits.map((hit) => hit.protectedPath))],
+      detail: `已删除触碰明确只读字段的${String(operation?.op || '变量')}操作`,
+    });
+  }
+  return { operations: kept, repairs };
+}
+
 function setPointerValue(root, path, found, value) {
   const parts = pointerParts(path);
   if (!parts) return false;
@@ -943,6 +1094,53 @@ export function parseProfileReceipt(message) {
   }
 }
 
+export function parseCharacterTicketReceipt(message, tickets = []) {
+  const raw = String(message || '');
+  const match = raw.match(/<CharacterTicketReceipt>([\s\S]*?)<\/CharacterTicketReceipt>/iu);
+  if (!match) return { kind: 'missing', assignments: [], error: '正文规划区没有人物票据消费回执' };
+  let parsed;
+  try {
+    parsed = parseJsonWithLocalRepair(match[1]);
+    if (!Array.isArray(parsed)) throw new Error('人物票据消费回执必须是数组');
+  } catch (error) {
+    return { kind: 'invalid', assignments: [], error: `人物票据消费回执无法解析：${error.message}` };
+  }
+  const ticketIds = new Set((Array.isArray(tickets) ? tickets : []).map((ticket) => String(ticket?.ticketId || '')).filter(Boolean));
+  const sourceAliases = new Map([
+    ['ticket', 'ticket'], ['票据', 'ticket'],
+    ['authority', 'authority'], ['权威', 'authority'], ['角色卡', 'authority'], ['世界书', 'authority'], ['原作', 'authority'],
+    ['existing', 'existing'], ['已有档案', 'existing'], ['既有档案', 'existing'],
+  ]);
+  const assignments = [];
+  const errors = [];
+  const seenNames = new Set();
+  const seenTickets = new Set();
+  for (const [index, entry] of parsed.slice(0, 64).entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      errors.push(`第${index + 1}项不是对象`);
+      continue;
+    }
+    const name = cleanText(entry.name || entry.character || entry.actor || entry.label);
+    const source = sourceAliases.get(cleanText(entry.source || entry.kind || entry.type).toLocaleLowerCase()) || '';
+    const ticketId = cleanText(entry.ticketId || entry.ticket || '');
+    const normalizedName = name.toLocaleLowerCase();
+    if (!name || !profileIdentitySurface(name)) errors.push(`第${index + 1}项缺少稳定人物名称`);
+    if (!source) errors.push(`第${index + 1}项source必须是ticket、authority或existing`);
+    if (normalizedName && seenNames.has(normalizedName)) errors.push(`人物票据回执重复声明人物：${name}`);
+    if (source === 'ticket') {
+      if (!ticketId || !ticketIds.has(ticketId)) errors.push(`人物${name || `第${index + 1}项`}引用了不存在的本轮票据：${ticketId || '空'}`);
+      if (ticketId && seenTickets.has(ticketId)) errors.push(`同一人物票据被重复消费：${ticketId}`);
+    }
+    if (name && source) {
+      assignments.push({ name, source, ticketId: source === 'ticket' ? ticketId : '' });
+      seenNames.add(normalizedName);
+      if (source === 'ticket' && ticketId) seenTickets.add(ticketId);
+    }
+  }
+  if (errors.length) return { kind: 'invalid', assignments: [], errors, error: errors.join('；') };
+  return { kind: 'complete', assignments };
+}
+
 export function stripProfileReceipt(message) {
   return String(message || '')
     .replace(/<人物档案更新>[\s\S]*?<\/人物档案更新>/gi, '')
@@ -1037,7 +1235,10 @@ function stripNarrativeHtmlWidgets(text) {
 }
 
 export function profileNarrativeText(text) {
-  return stripNarrativeHtmlWidgets(String(text || '')
+  const raw = String(text || '');
+  const contentBlocks = [...raw.matchAll(/<content\b[^>]*>([\s\S]*?)<\/content\s*>/giu)];
+  const narrative = contentBlocks.length === 1 ? contentBlocks[0][1] : raw;
+  return stripNarrativeHtmlWidgets(narrative
     .replace(/<gm_chain\b[^>]*>[\s\S]*?<\/gm_chain\s*>/gi, '')
     .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking\s*>/gi, '')
     .replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi, '')
@@ -1532,10 +1733,10 @@ export function mergeProfileCandidates(previousProfiles, incomingProfiles) {
   return merged;
 }
 
-const SYSTEM_KNOWLEDGE_SOURCE = /(?:经|通过|由)?(?:系统|程序|资料库|数据库)(?:授权|权限|读取|检索|提供|同步|告知|记录)|(?:系统|程序)(?:权限|接口)|权限(?:读取|检索|获知|掌握)/u;
-const SYSTEM_ACTOR_IDENTITY = /(?:系统(?:单元|终端|代理|程序|助手|引导)|程序(?:实体|代理|单元)|人工智能|\bAI\b|构装(?:体|单元)|资料库终端|数据库终端|后台代理)/iu;
-const SYSTEM_ACCESS_CAPABILITY = /(?:(?:系统|程序|资料库|数据库).{0,16}(?:授权|权限|读取|检索|接口)|(?:授权|权限).{0,12}(?:系统|程序|资料库|数据库).{0,12}(?:读取|检索|接口))/u;
-const REACHABLE_KNOWLEDGE_SOURCE = /(?:亲历|亲眼|目睹|观察|听见|听到|告诉|当面(?:告知|说明|交谈|告诉)|获(?:得)?告知|被告知|调查|查证|侦察|查阅|阅读|公开资料|公告|广播|传闻|报告|书信|记录|证据|职业训练|训练所学|学习所得|自身记忆|根据[^：:]{0,24}(?:推断|判断)|来源[：:]|(?:经|通过|由)?(?:系统|程序|资料库|数据库)(?:授权|权限|读取|检索|提供|同步|告知|记录)|权限(?:读取|检索|获知|掌握))/u;
+const SYSTEM_KNOWLEDGE_SOURCE = /(?:经|通过|由)?(?:系统|程序|资料库|数据库|大数据)(?:授权|权限|读取|检索|提供|同步|告知|记录|分析|评估)|(?:系统|程序)(?:权限|接口)|权限(?:读取|检索|获知|掌握)/u;
+const SYSTEM_ACTOR_IDENTITY = /(?:系统(?:单元|终端|代理|程序|助手|引导)|程序(?:实体|代理|单元)|人工智能|\bAI\b|构装(?:体|单元)|资料(?:库)?终端|数据库终端|后台代理)/iu;
+const SYSTEM_ACCESS_CAPABILITY = /(?:(?:系统|程序|资料(?:库)?|数据库).{0,16}(?:授权|权限|读取|检索|接口)|(?:授权|权限).{0,12}(?:系统|程序|资料(?:库)?|数据库).{0,12}(?:读取|检索|接口))/u;
+const REACHABLE_KNOWLEDGE_SOURCE = /(?:亲历|亲眼|目睹|观察|听见|听到|告诉|当面(?:告知|说明|交谈|告诉)|获(?:得)?告知|被告知|调查|查证|侦察|查阅|阅读|公开资料|公告|广播|传闻|报告|书信|记录|证据|职业训练|训练所学|学习所得|自身记忆|根据[^：:]{0,24}(?:推断|判断)|来源[：:]|(?:经|通过|由)?(?:系统|程序|资料库|数据库|大数据)(?:授权|权限|读取|检索|提供|同步|告知|记录|分析|评估)|权限(?:读取|检索|获知|掌握))/u;
 
 function sharedCjkBigrams(left, right) {
   const grams = (value) => {
@@ -1570,31 +1771,120 @@ function actorReachableNarrative(profile, narrative) {
     .join('\n');
 }
 
-function profileSupportsSystemKnowledge(profile, narrative = '') {
-  const identitySurface = [
-    profile?.name,
-    profile?.identity?.species,
-    profile?.identity?.occupation,
-    profile?.identity?.affiliation,
-    profile?.identity?.socialPosition,
-    profile?.history,
-  ].map(cleanText).filter(Boolean).join('\n');
-  const accessSurface = [
-    ...(asList(profile?.capabilities)),
-    ...(asList(profile?.resources)),
-    ...(asList(profile?.evidence)),
-    String(narrative || '').split(/(?<=[。！？!?\n])/u)
-      .filter((sentence) => normalizedNames(profile).some((name) => sentence.toLocaleLowerCase().includes(name)))
-      .slice(0, 12),
-  ].map(cleanText).filter(Boolean).join('\n');
-  return SYSTEM_ACTOR_IDENTITY.test(identitySurface) && SYSTEM_ACCESS_CAPABILITY.test(`${identitySurface}\n${accessSurface}`);
+function narrativeSurfaceForConfirmedNames(narrative, names = []) {
+  const confirmedNames = cleanStringArray(names, 24).map((name) => name.toLocaleLowerCase());
+  if (!confirmedNames.length) return '';
+  return String(narrative || '').split(/(?<=[。！？!?\n])/u)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => {
+      const normalized = sentence.toLocaleLowerCase();
+      return confirmedNames.some((name) => normalized.includes(name));
+    })
+    .join('\n');
 }
 
-function knowledgeEntryHasReachableSource(value, profile = {}, narrative = '') {
+function narrativeExplicitlyBindsNames(narrative, primaryName, alias) {
+  const primary = cleanText(primaryName).toLocaleLowerCase();
+  const alternate = cleanText(alias).toLocaleLowerCase();
+  if (!primary || !alternate || primary === alternate) return false;
+  const surface = String(narrative || '').toLocaleLowerCase().replace(/\s+/gu, '');
+  const parenthetical = [
+    `${primary}（${alternate}）`, `${primary}(${alternate})`,
+    `${alternate}（${primary}）`, `${alternate}(${primary})`,
+  ];
+  if (parenthetical.some((pattern) => surface.includes(pattern))) return true;
+  const connectors = ['也就是', '就是', '即是', '即', '又称', '别名为', '代号为', '名为', '被称为'];
+  return connectors.some((connector) => surface.includes(`${primary}${connector}${alternate}`)
+    || surface.includes(`${alternate}${connector}${primary}`)
+    || surface.includes(`${primary}，${connector}${alternate}`)
+    || surface.includes(`${alternate}，${connector}${primary}`));
+}
+
+function narrativeBindsConfirmedSystemIdentity(narrativeSurface, names = []) {
+  const sentences = String(narrativeSurface || '').split(/(?<=[。！？!?\n])/u).filter(Boolean);
+  for (const rawName of cleanStringArray(names, 24)) {
+    const name = rawName.toLocaleLowerCase();
+    if (SYSTEM_ACTOR_IDENTITY.test(rawName)) return true;
+    for (const sentence of sentences) {
+      const normalized = sentence.toLocaleLowerCase();
+      let at = normalized.indexOf(name);
+      while (at >= 0) {
+        const before = sentence.slice(Math.max(0, at - 40), at);
+        const after = sentence.slice(at + rawName.length, at + rawName.length + 48);
+        const forwardIdentity = /^(?:本身|实际|其实)?\s*(?:是|为|作为|属于|系|由)/u.test(after)
+          && SYSTEM_ACTOR_IDENTITY.test(after);
+        const reverseIdentity = /(?:名为|称为|代号为|编号为)\s*$/u.test(before)
+          && SYSTEM_ACTOR_IDENTITY.test(before);
+        if (forwardIdentity || reverseIdentity) return true;
+        at = normalized.indexOf(name, at + name.length);
+      }
+    }
+  }
+  return false;
+}
+
+function trustedSystemKnowledgeSurface(profile, narrative = '', trust = {}) {
+  const persisted = trust?.persistedProfile && typeof trust.persistedProfile === 'object'
+    ? trust.persistedProfile
+    : {};
+  const authorityEvidence = cleanText(trust?.authorityEvidence);
+  const confirmedNarrativeNames = cleanStringArray(
+    trust?.trustedNarrativeNames?.length ? trust.trustedNarrativeNames : [profile?.name],
+    24,
+  );
+  const candidateNarrativeSurface = narrativeSurfaceForConfirmedNames(narrative, confirmedNarrativeNames);
+  const persistedAndAuthorityIdentity = [
+    persisted?.name,
+    persisted?.identity?.species,
+    persisted?.identity?.occupation,
+    persisted?.identity?.affiliation,
+    persisted?.identity?.socialPosition,
+    persisted?.history,
+    authorityEvidence,
+  ].map(cleanText).filter(Boolean).join('\n');
+  const narrativeIdentityBound = narrativeBindsConfirmedSystemIdentity(
+    candidateNarrativeSurface,
+    confirmedNarrativeNames,
+  );
+  const narrativeEvidence = SYSTEM_ACTOR_IDENTITY.test(persistedAndAuthorityIdentity) || narrativeIdentityBound
+    ? candidateNarrativeSurface
+    : '';
+  const identitySurface = [persistedAndAuthorityIdentity, narrativeEvidence]
+    .map(cleanText).filter(Boolean).join('\n');
+  const accessSurface = [
+    ...(asList(persisted?.capabilities)),
+    ...(asList(persisted?.resources)),
+    ...(asList(persisted?.evidence)),
+    ...(asList(persisted?.knowledge)),
+    authorityEvidence,
+    narrativeEvidence,
+  ].map(cleanText).filter(Boolean).join('\n');
+  return { identitySurface, accessSurface, trustedSurface: `${identitySurface}\n${accessSurface}`.trim() };
+}
+
+function profileSupportsSystemKnowledge(value, profile, narrative = '', trust = {}) {
+  const trusted = trustedSystemKnowledgeSurface(profile, narrative, trust);
+  if (!SYSTEM_ACTOR_IDENTITY.test(trusted.identitySurface)
+    || !SYSTEM_ACCESS_CAPABILITY.test(trusted.trustedSurface)) return false;
+  const raw = typeof value === 'string'
+    ? value
+    : cleanText(value?.content || value?.fact || value?.knowledge || value?.text);
+  const fact = cleanText(String(raw || '').split(/[：:]/u).slice(1).join('：') || raw);
+  if (!fact || !trusted.trustedSurface) return false;
+  const quoted = fact.match(/[“"]([^”"]{3,120})[”"]/u)?.[1];
+  return Boolean((quoted && trusted.trustedSurface.includes(quoted))
+    || trusted.trustedSurface.includes(fact)
+    || sharedCjkBigrams(fact, trusted.trustedSurface) >= 2);
+}
+
+function knowledgeEntryHasReachableSource(value, profile = {}, narrative = '', trust = {}) {
   if (typeof value === 'string') {
     const text = value.trim();
+    if (/(?:系统|程序|资料库|数据库|大数据).{0,20}(?:分析|评估|读取|检索|授权|权限)/u.test(text)) {
+      return profileSupportsSystemKnowledge(text, profile, narrative, trust);
+    }
     if (!REACHABLE_KNOWLEDGE_SOURCE.test(text)) return false;
-    if (SYSTEM_KNOWLEDGE_SOURCE.test(text)) return profileSupportsSystemKnowledge(profile, narrative);
+    if (SYSTEM_KNOWLEDGE_SOURCE.test(text)) return profileSupportsSystemKnowledge(text, profile, narrative, trust);
     if (/(?:职业训练|训练所学|学习所得|自身记忆)/u.test(text)) {
       return Boolean(cleanText(profile?.identity?.occupation) || cleanText(profile?.history));
     }
@@ -1610,9 +1900,10 @@ function knowledgeEntryHasReachableSource(value, profile = {}, narrative = '') {
   const source = cleanText(value.source || value.origin || value.learnedFrom || value.evidence);
   const content = cleanText(value.content || value.fact || value.knowledge || value.text);
   if (!source || !content || !REACHABLE_KNOWLEDGE_SOURCE.test(`来源：${source}`)) return false;
-  if (SYSTEM_KNOWLEDGE_SOURCE.test(source)) return profileSupportsSystemKnowledge(profile, narrative);
-  if (!String(narrative || '').trim()) return true;
-  return knowledgeEntryHasReachableSource(`${source}：${content}`, profile, narrative);
+  if (SYSTEM_KNOWLEDGE_SOURCE.test(source)) {
+    return profileSupportsSystemKnowledge(`${source}：${content}`, profile, narrative, trust);
+  }
+  return knowledgeEntryHasReachableSource(`${source}：${content}`, profile, narrative, trust);
 }
 
 export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedText = '', requiredSubjects = null, options = {}) {
@@ -1622,17 +1913,20 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
   }
   const existing = existingProfilesFromData(currentData);
   const ticketMap = new Map((tickets || []).map((ticket) => [String(ticket.ticketId), ticket]));
-  const authorityProtectedNames = new Set(cleanStringArray(options.authorityProtectedNames, 240).map((name) => name.toLocaleLowerCase()));
-  const excludedNames = new Set(cleanStringArray(options.excludedNames, 240).map((name) => name.toLocaleLowerCase()));
-  const authorityProtected = (profile) => authorityProtectedNames.has(cleanText(profile?.name).toLocaleLowerCase());
-  const ticketClaimCounts = new Map();
-  for (const profile of normalizedProfiles.filter((candidate) => !authorityProtected(candidate))) {
-    const ticketId = String(profile?.ticketId || '');
-    if (ticketMap.has(ticketId)) ticketClaimCounts.set(ticketId, (ticketClaimCounts.get(ticketId) || 0) + 1);
+  const assignmentContractProvided = Object.prototype.hasOwnProperty.call(options, 'ticketAssignments');
+  const ticketAssignments = new Map();
+  for (const assignment of Array.isArray(options.ticketAssignments) ? options.ticketAssignments : []) {
+    const name = cleanText(assignment?.name).toLocaleLowerCase();
+    if (name && !ticketAssignments.has(name)) ticketAssignments.set(name, deepClone(assignment));
   }
-  const uniquelyClaimedTickets = new Set([...ticketClaimCounts]
-    .filter(([, count]) => count === 1).map(([ticketId]) => ticketId));
-  const availableTickets = [...ticketMap.values()].sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0));
+  const authorityProtectedNames = new Set(cleanStringArray(options.authorityProtectedNames, 240).map((name) => name.toLocaleLowerCase()));
+  const authorityKnowledgeEvidence = new Map(Object.entries(options.authorityKnowledgeEvidence || {})
+    .map(([name, evidence]) => [cleanText(name).toLocaleLowerCase(), cleanText(evidence)])
+    .filter(([name, evidence]) => name && evidence));
+  const excludedNames = new Set(cleanStringArray(options.excludedNames, 240).map((name) => name.toLocaleLowerCase()));
+  const ticketReceiptStatus = cleanText(options.ticketReceiptStatus).toLocaleLowerCase();
+  const ticketReceiptErrorPresent = Boolean(cleanText(options.ticketReceiptError));
+  const ticketReceiptAssignmentsUsable = !ticketReceiptStatus || ticketReceiptStatus === 'complete';
   const usedTickets = new Set(Object.entries(existing).flatMap(([profileId, profile]) => [profileId, String(profile?.ticketId || '')])
     .filter((ticketId) => ticketMap.has(ticketId)));
   const usedIds = new Set();
@@ -1658,6 +1952,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
 
   for (const { profile: input, originalIndex: index } of orderedProfiles) {
     const localErrors = [];
+    let deferredUnboundRepair = null;
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       localErrors.push(`第${index + 1}张档案不是对象`);
       rejected.push({ index, name: '', errors: localErrors, candidate: deepClone(input) });
@@ -1683,6 +1978,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
     const requestedId = String(profile.profileId || '').trim();
     const candidateNames = normalizedNames(profile);
     const primaryName = cleanText(profile.name).toLocaleLowerCase();
+    const hasAuthorityIdentity = authorityProtectedNames.has(primaryName);
     const primaryMatches = nameIndex.get(primaryName) || new Set();
     const allMatches = new Set(candidateNames.flatMap((name) => [...(nameIndex.get(name) || [])]));
     let matchedId = primaryMatches.size === 1 ? [...primaryMatches][0] : allMatches.size === 1 ? [...allMatches][0] : '';
@@ -1714,40 +2010,58 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
       .filter((item) => item && profileIdentitySurface(item) && narrative.includes(item.toLocaleLowerCase()));
     profile.narrativeKnownNames = cleanStringArray([...persistedNarrativeKnownNames, ...namesSeenInNarrative], 24);
     const submittedTicketId = String(profile.ticketId || '');
-    let ticket = ticketMap.get(submittedTicketId);
+    const assignment = ticketReceiptAssignmentsUsable
+      ? candidateNames.map((name) => ticketAssignments.get(name)).find(Boolean) || null
+      : null;
+    let ticket = assignment?.source === 'ticket' ? ticketMap.get(String(assignment.ticketId || '')) : null;
     if (!isExisting) {
       if (enforceNarrativeIdentity && !namesSeenInNarrative.length) localErrors.push(`第${index + 1}张新档案没有最终正文逐字出现的稳定name或alias身份锚点`);
-      const authorityName = cleanText(profile.name).toLocaleLowerCase();
-      const hasAuthorityIdentity = authorityProtectedNames.has(authorityName);
-        if (hasAuthorityIdentity) {
+      const authorityName = primaryName;
+      if (hasAuthorityIdentity) {
           profileId = stableWorldId('profile-authority', authorityName);
           profile.authoritySource = 'character-card-or-worldbook';
+          profile.ticketBinding = { status: 'authority', source: 'character-card-or-worldbook' };
           delete profile.ticketId;
           ticket = null;
-        } else {
-        const submittedClaimIsUnique = Boolean(ticket && ticketClaimCounts.get(submittedTicketId) === 1);
-        if (!submittedClaimIsUnique || usedTickets.has(submittedTicketId)) {
-          const previousTicketId = submittedTicketId;
-          ticket = availableTickets.find((candidate) => !usedTickets.has(candidate.ticketId)
-            && !uniquelyClaimedTickets.has(candidate.ticketId));
-          if (ticket && previousTicketId && previousTicketId !== ticket.ticketId) {
-            normalizationRepairs.push({
-              profileIndex: index,
-              code: 'uncommitted_ticket_reassigned',
-              from: previousTicketId,
-              to: ticket.ticketId,
-            });
-          }
+      } else if (ticket) {
+        if (submittedTicketId && submittedTicketId !== ticket.ticketId) normalizationRepairs.push({
+          profileIndex: index,
+          code: 'candidate_ticket_replaced_by_generation_receipt',
+          from: submittedTicketId,
+          to: ticket.ticketId,
+        });
+      } else {
+        let status = 'uncovered';
+        let detail = 'profile_not_listed_in_receipt';
+        if (ticketReceiptStatus === 'missing' || (!assignmentContractProvided && !ticketReceiptStatus)) {
+          status = 'receipt_missing';
+          detail = 'receipt_not_present';
+        } else if (ticketReceiptStatus === 'invalid') {
+          status = 'receipt_invalid';
+          detail = ticketReceiptErrorPresent ? 'receipt_validation_failed' : 'receipt_marked_invalid';
+        } else if (assignment?.source === 'authority') {
+          detail = 'authority_not_verified';
+        } else if (assignment?.source === 'existing') {
+          detail = 'existing_identity_not_found';
+        } else if (assignment?.source === 'ticket') {
+          detail = 'ticket_not_in_generation_batch';
         }
-        if (!ticket) {
-          if (ticketClaimCounts.get(submittedTicketId) > 1) {
-            localErrors.push(`第${index + 1}张原创人物重复使用票据 ${submittedTicketId}，且已经没有未占用票据可供重分`);
-          } else localErrors.push(`第${index + 1}张原创人物档案没有匹配本轮characterCreationTicket`);
-        }
+        profileId = stableWorldId('profile-unbound', authorityName);
+        delete profile.authoritySource;
+        delete profile.ticketId;
+        profile.ticketBinding = { status, source: 'creative-completion', detail };
+        deferredUnboundRepair = {
+          profileIndex: index,
+          code: 'complete_profile_saved_without_ticket',
+          status,
+          detail,
+        };
       }
       if (ticket && !hasAuthorityIdentity) {
         profileId = ticket.ticketId;
         profile.ticketId = ticket.ticketId;
+        profile.ticketBinding = { status: 'bound', source: 'character-ticket-receipt', ticketId: ticket.ticketId };
+        delete profile.authoritySource;
         profile.personality = mergeCandidateValue(profile.personality || {}, ticket.axes, 'personality');
         if (usedTickets.has(ticket.ticketId)) localErrors.push(`同一票据被多名新人物重复使用：${ticket.ticketId}`);
       }
@@ -1758,9 +2072,42 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
     const knowledgeToValidate = isExisting
       ? submittedKnowledge.filter((entry) => !persistedKnowledgeSignatures.has(JSON.stringify(entry)))
       : asList(profile.knowledge).filter(meaningfulProfileListItem);
-    const unreachableKnowledge = knowledgeToValidate.filter((entry) => !knowledgeEntryHasReachableSource(entry, profile, profileNarrativeText(acceptedText)));
+    const knowledgeTrust = {
+      persistedProfile: isExisting ? existing[profileId] : null,
+      authorityEvidence: hasAuthorityIdentity ? authorityKnowledgeEvidence.get(primaryName) || '' : '',
+      trustedNarrativeNames: isExisting
+        ? normalizedNames(existing[profileId])
+        : [
+          cleanText(profile.name),
+          ...asList(profile.aliases).filter((alias) => narrativeExplicitlyBindsNames(
+            profileNarrativeText(acceptedText),
+            profile.name,
+            alias,
+          )),
+        ],
+    };
+    const unreachableKnowledge = knowledgeToValidate.filter((entry) => !knowledgeEntryHasReachableSource(
+      entry,
+      profile,
+      profileNarrativeText(acceptedText),
+      knowledgeTrust,
+    ));
     if (unreachableKnowledge.length) {
-      localErrors.push(`第${index + 1}张档案新增knowledge缺少人物可达来源（亲历、获告知、调查、查阅、公开资料、职业训练，或有身份/能力依据的系统授权读取）：${unreachableKnowledge.map((entry) => cleanText(typeof entry === 'string' ? entry : entry?.content || entry?.fact || '未说明内容')).slice(0, 3).join('；')}`);
+      const unreachableSignatures = new Set(unreachableKnowledge.map((entry) => JSON.stringify(entry)));
+      profile.knowledge = asList(profile.knowledge).filter((entry) => !unreachableSignatures.has(JSON.stringify(entry)));
+      const inferenceSignatures = new Set(asList(profile.inferences).map((entry) => JSON.stringify(entry)));
+      profile.inferences = asList(profile.inferences);
+      for (const entry of unreachableKnowledge) {
+        const content = cleanText(typeof entry === 'string' ? entry : entry?.content || entry?.fact || entry?.knowledge || entry?.text || '');
+        if (!content) continue;
+        const inference = `可修订推断：${content}（人物当前没有可达来源；后续出现亲历、获告知、调查、查阅或系统授权证据时再转为已知信息。）`;
+        if (!inferenceSignatures.has(JSON.stringify(inference))) profile.inferences.push(inference);
+      }
+      normalizationRepairs.push({
+        profileIndex: index,
+        code: 'unreachable_knowledge_moved_to_inferences',
+        count: unreachableKnowledge.length,
+      });
     }
     if (profileId && usedIds.has(profileId)) localErrors.push(`档案批次内profileId重复：${profileId}`);
     localErrors.push(...profileCompletenessReport(profile, `第${index + 1}张档案`).errors);
@@ -1769,6 +2116,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
       errors.push(...localErrors);
       continue;
     }
+    if (deferredUnboundRepair) normalizationRepairs.push(deferredUnboundRepair);
     prepared.push(profile);
     usedIds.add(profileId);
     if (!isExisting && ticket && profile.ticketId) usedTickets.add(ticket.ticketId);
@@ -3727,6 +4075,7 @@ export function formatGenerationInjection({ tickets, recall, profileDigest = [],
     JSON.stringify(recallSelectionInput(currentAction)),
     'characterCreationTicket（按首次出现顺序使用；有权威设定或已有档案者跳过）：',
     JSON.stringify(tickets || []),
+    '正文生成前必须在<konatan_planning~>规划区写出唯一<CharacterTicketReceipt>JSON数组</CharacterTicketReceipt>：每个本轮实际出场的稳定NPC逐一映射为source=ticket、authority或existing；ticket只填写实际采用的本轮ticketId，authority/existing不填ticketId。name必须是随后正文逐字出现的稳定姓名或唯一称谓。Doctor只保存这份消费映射，不会在正文后从未消费票据里替人物补抽。',
     '世界后台已经造成、现在可能进入正文的公开影响：',
     JSON.stringify(publicEffects),
     '公开影响不要求逐字照抄，也不要求全部出现。先服从玩家当前动作；在时间、地点和因果上自然到达时，才通过相应渠道写成环境痕迹、未证实传闻、具名公开行动或直接可见后果。',
@@ -3770,12 +4119,15 @@ export function profilesFromData(data) {
 }
 
 export function removeApiFromExport(value, secrets = []) {
-  const blocked = /^(?:api|apiKey|endpoint|authorization|headers|requestHeaders|credentials|accessToken|refreshToken|secret)$/i;
+  const blocked = /^(?:api|apiConfig|apiKey)$/i;
   const secretValues = (secrets || []).map((item) => String(item || '')).filter((item) => item.length >= 4);
   const active = new WeakMap();
   const visit = (item, path = '$') => {
     if (typeof item === 'string') {
-      let text = redactDiagnostic(item);
+      let text = item
+        .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/giu, '$1[API已排除]')
+        .replace(/((?:x-)?api[-_ ]?key\s*[:=]\s*)[^\s,;]+/giu, '$1[API已排除]')
+        .replace(/([?&](?:api_key|access_token)=)[^&#\s]+/giu, '$1[API已排除]');
       for (const secret of secretValues) text = text.split(secret).join('[API已排除]');
       return text;
     }
