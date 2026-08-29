@@ -34,8 +34,8 @@ const EMPTY_WORDS = /^(?:(?:未知|不详|待定|待确认|未登记|未说明|�
 export function profileCompletionContract() {
   return `每个人物必须按以下唯一结构输出完整对象；正文没有明说的内容不是空项，而是结合权威材料、世界观、人物身份和同一张骰票主动设计，并在inferences中说明为可修订补全：
 {
-  "profileId": "旧人物沿用既有ID；新人留空字符串",
-  "ticketId": "新人使用分配的本轮ticketId；旧人物保持原值",
+  "profileId": "旧人物沿用既有ID；原创新人留空由脚本绑定票据；角色卡或世界书已有权威身份者留空由脚本建立稳定权威ID",
+  "ticketId": "原创新人使用分配的本轮ticketId；权威人物不得冒领随机票据；旧人物保持原值",
   "name": "正文中可稳定单指的姓名、编号或唯一称谓",
   "aliases": ["仅填写最终正文逐字出现的稳定别名或既有档案已确认的别名；不要把代词、动作片段或句子残片当别名；没有可用空数组"],
   "identity": {
@@ -477,6 +477,13 @@ function parentPointer(path) {
   return parts?.length > 1 ? pointerPath(parts.slice(0, -1)) : '/';
 }
 
+function doctorOwnedProfilePath(path) {
+  const parts = pointerParts(path);
+  if (!parts?.length) return false;
+  const canonical = parts[0] === 'stat_data' ? parts.slice(1) : parts;
+  return canonical[0] === PROFILE_ROOT.slice(1);
+}
+
 function setPointerValue(root, path, found, value) {
   const parts = pointerParts(path);
   if (!parts) return false;
@@ -546,6 +553,24 @@ function leafChanges(before, after, base = '', output = [], limit = 240) {
 
 export function diffStatData(previousData, currentData, limit = 240) {
   return leafChanges(statDataOf(previousData), statDataOf(currentData), '', [], Math.max(1, Number(limit) || 240));
+}
+
+export function buildReplayVariableOperations(previousData, finalData, limit = 1200) {
+  if (!previousData || !Object.keys(statDataOf(previousData) || {}).length) {
+    return { ok: false, operations: [], error: '缺少上一楼层MVU基线，无法把坏变量块重建为可重放的完整终态' };
+  }
+  const changes = diffStatData(previousData, finalData, Math.max(1, Number(limit) || 1200));
+  if (changes.length >= Math.max(1, Number(limit) || 1200)) {
+    return { ok: false, operations: [], error: '上一楼层到最终状态的差异超过安全重建上限' };
+  }
+  const operations = changes
+    .filter((change) => change?.path && change.path !== '/' && !doctorOwnedProfilePath(change.path))
+    .map((change) => {
+      if (change.beforeMissing) return { op: 'insert', path: change.path, value: deepClone(change.after) };
+      if (change.afterMissing) return { op: 'remove', path: change.path };
+      return { op: 'replace', path: change.path, value: deepClone(change.after) };
+    });
+  return { ok: true, operations };
 }
 
 function matchingStatePaths(data, pattern, limit = 12) {
@@ -633,27 +658,51 @@ function authorityScope(line) {
   return match ? match[1].split('.').filter(Boolean) : null;
 }
 
-function authorityRecords(rulesText) {
+function authorityRecords(rulesText, currentData) {
   const records = [];
   let scope = null;
+  const statePaths = allStatePaths(currentData);
+  const protectedRule = /禁止修改|完全禁止修改|脚本托管保护|前端(?:系统)?自动(?:完成|计算|合成)|只读/u;
   for (const rawLine of String(rulesText || '').split(/\r?\n/)) {
     const nextScope = authorityScope(rawLine);
     if (nextScope) {
       scope = nextScope;
       continue;
     }
-    if (!scope || !/禁止修改|完全禁止修改|脚本托管保护|前端(?:系统)?自动(?:完成|计算|合成)|只读/u.test(rawLine)) continue;
-    records.push({ scope: [...scope], normalized: normalizedAuthorityText(rawLine), source: rawLine.trim() });
+    if (!protectedRule.test(rawLine)) continue;
+    const normalized = normalizedAuthorityText(rawLine);
+    const trimmed = String(rawLine || '').trim();
+    const inlineMatch = trimmed.match(/^[-*]?\s*([^：:]+?)\s*[：:]\s*(.+)$/u);
+    const explicitPointer = trimmed.match(/^[-*]?\s*(\/[^\s：:]+)/u)?.[1] || '';
+    const inlineSelector = inlineMatch && protectedRule.test(inlineMatch[2])
+      ? normalizedAuthorityText(inlineMatch[1])
+      : '';
+    const scopeParts = inlineSelector ? [] : scope ? [...scope] : [];
+    const matchedPaths = statePaths.filter((path) => {
+      if (explicitPointer && path === explicitPointer) return true;
+      const parts = pointerParts(path) || [];
+      const leaf = normalizedAuthorityText(parts.at(-1));
+      const full = normalizedAuthorityText(parts.join('.'));
+      if (inlineSelector) return inlineSelector === leaf || inlineSelector === full;
+      const scopeMatches = !scopeParts.length || scopeParts.every((part, index) =>
+        normalizedAuthorityText(parts[index]) === normalizedAuthorityText(part));
+      return scopeMatches && ((leaf.length >= 2 && normalized.includes(leaf))
+        || (full.length >= 3 && normalized.includes(full)));
+    });
+    records.push({
+      scope: scopeParts,
+      normalized,
+      source: rawLine.trim(),
+      paths: [...new Set(matchedPaths)],
+    });
   }
   return records;
 }
 
 function pathMatchesAuthorityRecord(path, record) {
   const parts = pointerParts(path);
-  if (!parts?.length || !record?.scope?.length) return false;
-  if (record.scope.some((part, index) => normalizedAuthorityText(parts[index]) !== normalizedAuthorityText(part))) return false;
-  const leaf = normalizedAuthorityText(parts.at(-1));
-  return leaf.length >= 2 && record.normalized.includes(leaf);
+  if (!parts?.length || !record) return false;
+  return (record.paths || []).some((protectedPath) => pathOverlaps(path, protectedPath));
 }
 
 function allStatePaths(data, limit = 2400) {
@@ -672,7 +721,7 @@ function allStatePaths(data, limit = 2400) {
 }
 
 export function assessVariableWriteAuthority(currentData, rulesText, operations = []) {
-  const records = authorityRecords(rulesText);
+  const records = authorityRecords(rulesText, currentData);
   const allowedOperations = [];
   const rejectedOperations = [];
   for (const [index, operation] of (operations || []).entries()) {
@@ -731,9 +780,11 @@ export function normalizeVariableOperations(currentData, operations = []) {
     const operation = { ...deepClone(raw), op: alias };
     if (!PATCH_OPERATIONS.has(operation.op)) return { ok: false, error: `第${index + 1}个变量操作不受支持：${operation.op || '空'}`, operations: [], repairs };
     for (const key of operation.op === 'move' ? ['from', 'to'] : ['path']) {
+      if (doctorOwnedProfilePath(operation[key])) return { ok: false, code: 'profile-root-owned-by-profile-doctor', error: `第${index + 1}个变量操作越权触碰${PROFILE_ROOT}；人物档案只允许人物医生原子提交`, operations: [], repairs };
       const fixed = repairOperationPath(stat, operation.op === 'move' && key === 'to' ? 'insert' : operation.op, operation[key]);
       if (fixed.repair) repairs.push({ index, kind: 'path', detail: fixed.repair });
       operation[key] = fixed.path;
+      if (doctorOwnedProfilePath(operation[key])) return { ok: false, code: 'profile-root-owned-by-profile-doctor', error: `第${index + 1}个变量操作经路径归一化后越权触碰${PROFILE_ROOT}；人物档案只允许人物医生原子提交`, operations: [], repairs };
     }
     if (operation.op === 'delta' && typeof operation.value === 'string' && operation.value.trim() !== '' && Number.isFinite(Number(operation.value))) {
       operation.value = Number(operation.value);
@@ -892,6 +943,10 @@ export function validatePatchOperations(currentData, operations) {
   const rollbackPaths = [];
   for (const [index, operation] of (operations || []).entries()) {
     const number = index + 1;
+    const operationPaths = operation.op === 'move' ? [operation.from, operation.to] : [operation.path];
+    if (operationPaths.some(doctorOwnedProfilePath)) {
+      return { ok: false, code: 'profile-root-owned-by-profile-doctor', error: `第${number}个操作越权触碰${PROFILE_ROOT}；变量医生不得与人物档案提交竞争` };
+    }
     const schemaError = validateOperationSchema(currentData, operation, number);
     if (schemaError) return { ok: false, code: 'schema_incompatible', error: schemaError };
     if (operation.op === 'move') {
@@ -1052,15 +1107,35 @@ export function mergeUpdateVariableBlocks(originalMessage, correctionMessage) {
   const original = parseUpdateVariableBlock(originalMessage);
   const correction = parseUpdateVariableBlock(correctionMessage);
   if (!correction.ok) return correction;
+  const source = String(originalMessage || '');
+  const completeBlocks = [...source.matchAll(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi)];
+  const openTags = [...source.matchAll(/<UpdateVariable\b[^>]*>/gi)];
+  const closeTags = [...source.matchAll(/<\/UpdateVariable\s*>/gi)];
+  if (openTags.length !== closeTags.length || openTags.length > 1 || closeTags.length > 1 || completeBlocks.length > 1) {
+    return {
+      ok: false,
+      code: 'ambiguous-original-envelope',
+      error: `原正文的UpdateVariable边界不可唯一证明（开始${openTags.length}个、结束${closeTags.length}个、完整${completeBlocks.length}个），拒绝追加或猜测替换`,
+      operations: [],
+    };
+  }
   const operations = [...(original.ok ? original.operations : []), ...correction.operations];
   const block = buildUpdateVariableBlock(operations, '保留原变量更新，并追加医生已验证的纠错。');
-  const source = String(originalMessage || '');
-  const replaced = original.ok
-    ? source.replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi, (match, offset) => (
-      offset === source.search(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/i) ? block : ''
-    )).replace(/\n{3,}/g, '\n\n').trim()
-    : `${source.trim()}\n\n${block}`.trim();
-  return { ok: true, operations, block, message: replaced };
+  let replaced;
+  let mode;
+  if (completeBlocks.length === 1) {
+    const match = completeBlocks[0];
+    replaced = `${source.slice(0, match.index)}${block}${source.slice(Number(match.index) + match[0].length)}`.replace(/\n{3,}/g, '\n\n').trim();
+    mode = original.ok ? 'merge-valid' : 'replace-invalid-bounded';
+  } else {
+    replaced = `${source.trim()}\n\n${block}`.trim();
+    mode = 'append-missing';
+  }
+  const verified = parseUpdateVariableBlock(replaced);
+  if (!verified.ok || !semanticJsonEqual(verified.operations, operations)) {
+    return { ok: false, code: 'merged-block-verification-failed', error: `合并后的正文没有形成唯一且等价的变量块：${verified.error || '操作读回不一致'}`, operations: [] };
+  }
+  return { ok: true, operations, block, message: replaced, mode };
 }
 
 export function parseProfileReceipt(message) {
@@ -1106,6 +1181,15 @@ function asList(value) {
   return usableScalar(value) ? [value] : [];
 }
 
+function meaningfulProfileListItem(value) {
+  if (typeof value === 'string') return isNonEmptyText(value);
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'boolean') return true;
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(meaningfulProfileListItem);
+  return Object.values(value).some(meaningfulProfileListItem);
+}
+
 export function profileCompletenessReport(profile, fallbackLabel = '人物档案') {
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
     return { ok: false, errors: [`${fallbackLabel}不是对象`] };
@@ -1118,7 +1202,7 @@ export function profileCompletenessReport(profile, fallbackLabel = '人物档案
   if (!Array.isArray(profile.aliases)) errors.push(`${label}的aliases不是数组`);
   for (const path of REQUIRED_ARRAYS) {
     const value = at(profile, path);
-    if (!Array.isArray(value) || value.length < 1) errors.push(`${label}缺少完整列表：${path}`);
+    if (!Array.isArray(value) || !value.some(meaningfulProfileListItem)) errors.push(`${label}缺少可用内容的完整列表：${path}`);
   }
   return { ok: errors.length === 0, errors };
 }
@@ -1260,6 +1344,98 @@ export function discoverProfileSubjects(text, options = {}) {
   return [...found.values()].sort((left, right) => left.firstIndex - right.firstIndex);
 }
 
+/**
+ * Parses the deliberately small, natural-language receipt produced by the
+ * independent accepted-narrative person discovery pass.  This receipt is not
+ * a profile store: it only proves which literal identities the existing
+ * profile completion transaction must cover.
+ */
+export function parseProfileDiscoveryReceipt(raw, acceptedText, options = {}) {
+  const text = String(raw || '');
+  const narrative = profileNarrativeText(acceptedText);
+  const blocks = [...text.matchAll(/<人物发现(?:\s[^>]*)?>([\s\S]*?)<\/人物发现\s*>/giu)];
+  if (blocks.length !== 1) {
+    return { ok: false, kind: 'invalid', subjects: [], error: '人物发现回执必须且只能包含一个<人物发现>块' };
+  }
+  const body = String(blocks[0][1] || '').trim();
+  if (/^NONE$/iu.test(body)) return { ok: true, kind: 'none', subjects: [], error: '' };
+  if (!body) return { ok: false, kind: 'invalid', subjects: [], error: '人物发现回执为空；无人物时必须明确返回NONE' };
+
+  const records = [];
+  let pending = null;
+  const unwrap = (value) => {
+    const cleaned = String(value || '').trim();
+    const pairs = [['“', '”'], ['「', '」'], ['『', '』'], ['"', '"'], ["'", "'"], ['`', '`']];
+    const pair = pairs.find(([left, right]) => cleaned.startsWith(left) && cleaned.endsWith(right) && cleaned.length > left.length + right.length);
+    return pair ? cleaned.slice(pair[0].length, -pair[1].length).trim() : cleaned;
+  };
+  for (const rawLine of body.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const person = line.match(/^(?:(?:[-*]|\d+[.、])\s*)?人物[：:]\s*(.+)$/u);
+    if (person) {
+      if (pending) return { ok: false, kind: 'invalid', subjects: [], error: `人物“${pending.label}”缺少逐字锚点` };
+      pending = { label: unwrap(person[1]), anchor: '' };
+      continue;
+    }
+    const anchor = line.match(/^(?:(?:[-*]|\d+[.、])\s*)?锚点[：:]\s*(.+)$/u);
+    if (anchor) {
+      if (!pending) return { ok: false, kind: 'invalid', subjects: [], error: '人物发现回执先出现了锚点，缺少对应人物' };
+      pending.anchor = unwrap(anchor[1]);
+      records.push(pending);
+      pending = null;
+      continue;
+    }
+    return { ok: false, kind: 'invalid', subjects: [], error: `人物发现回执含无法识别的行：${line.slice(0, 80)}` };
+  }
+  if (pending) return { ok: false, kind: 'invalid', subjects: [], error: `人物“${pending.label}”缺少逐字锚点` };
+  if (!records.length) return { ok: false, kind: 'invalid', subjects: [], error: '人物发现回执没有人物记录；无人物时必须明确返回NONE' };
+
+  const excluded = new Set([
+    ...profileNamesFromInput(options.existingProfiles),
+    ...(options.excludedNames || []).map((value) => String(value || '').trim().toLocaleLowerCase()),
+  ].filter(Boolean));
+  const found = new Map();
+  for (const record of records) {
+    const label = record.label;
+    const anchor = record.anchor;
+    if (!label || label.length > 40 || !profileIdentitySurface(label)) {
+      return { ok: false, kind: 'invalid', subjects: [], error: `人物发现返回了不可用身份：${label || '空值'}` };
+    }
+    if (!narrative.includes(label)) {
+      return { ok: false, kind: 'invalid', subjects: [], error: `人物“${label}”不是最终正文逐字出现的姓名或唯一称谓` };
+    }
+    if (!anchor || anchor.length > 280 || !narrative.includes(anchor)) {
+      return { ok: false, kind: 'invalid', subjects: [], error: `人物“${label}”的锚点不是最终正文连续逐字原文` };
+    }
+    if (!anchor.includes(label)) {
+      return { ok: false, kind: 'invalid', subjects: [], error: `人物“${label}”的逐字锚点没有包含该身份，无法证明锚点归属` };
+    }
+    const normalized = label.toLocaleLowerCase();
+    if (excluded.has(normalized)) continue;
+    const existing = found.get(normalized);
+    if (existing) {
+      if (!existing.evidence.includes(anchor)) existing.evidence.push(anchor);
+      continue;
+    }
+    found.set(normalized, {
+      label,
+      names: [label],
+      aliases: [label],
+      evidence: [anchor],
+      sourceAnchor: anchor,
+      sources: ['accepted-final-person-discovery'],
+      firstIndex: narrative.indexOf(anchor),
+    });
+  }
+  return {
+    ok: true,
+    kind: 'subjects',
+    subjects: [...found.values()].sort((left, right) => left.firstIndex - right.firstIndex),
+    error: '',
+  };
+}
+
 export function validateProfileSubjectCoverage(profiles, requiredSubjects = []) {
   const coveredNames = new Set((Array.isArray(profiles) ? profiles : []).flatMap((profile) => normalizedNames(profile)));
   const missing = (requiredSubjects || []).filter((subject) => {
@@ -1296,9 +1472,13 @@ export function normalizeProfileCandidates(rawProfiles, acceptedText = '', requi
   });
 }
 
-function mergeCandidateValue(previous, incoming) {
+const PROFILE_APPEND_ONLY_ARRAYS = new Set(['aliases', 'evidence', 'narrativeKnownNames']);
+
+function mergeCandidateValue(previous, incoming, path = '') {
   if (Array.isArray(incoming)) {
-    const combined = [...(Array.isArray(previous) ? previous : []), ...incoming].filter(usableScalar);
+    const combined = PROFILE_APPEND_ONLY_ARRAYS.has(path)
+      ? [...(Array.isArray(previous) ? previous : []), ...incoming].filter(usableScalar)
+      : incoming.filter(usableScalar);
     const seen = new Set();
     return combined.filter((value) => {
       const signature = JSON.stringify(value);
@@ -1309,17 +1489,236 @@ function mergeCandidateValue(previous, incoming) {
   }
   if (incoming && typeof incoming === 'object') {
     const base = previous && typeof previous === 'object' && !Array.isArray(previous) ? deepClone(previous) : {};
-    for (const [key, value] of Object.entries(incoming)) base[key] = mergeCandidateValue(base[key], value);
+    for (const [key, value] of Object.entries(incoming)) base[key] = mergeCandidateValue(base[key], value, path ? `${path}.${key}` : key);
     return base;
   }
   return usableScalar(incoming) ? incoming : deepClone(previous);
 }
 
 function sameCandidate(left, right) {
-  const exactKeys = ['profileId', 'ticketId'];
-  if (exactKeys.some((key) => left?.[key] && right?.[key] && String(left[key]) === String(right[key]))) return true;
-  const leftNames = new Set(normalizedNames(left));
-  return normalizedNames(right).some((name) => leftNames.has(name));
+  const leftProfileId = cleanText(left?.profileId);
+  const rightProfileId = cleanText(right?.profileId);
+  if (leftProfileId && rightProfileId && leftProfileId === rightProfileId) return true;
+  const leftPrimary = cleanText(left?.name).toLocaleLowerCase();
+  const rightPrimary = cleanText(right?.name).toLocaleLowerCase();
+  return Boolean(leftPrimary && rightPrimary && leftPrimary === rightPrimary);
+}
+
+function validTicketIdSet(validTickets) {
+  return new Set((Array.isArray(validTickets) ? validTickets : [])
+    .map((ticket) => cleanText(typeof ticket === 'string' ? ticket : ticket?.ticketId))
+    .filter(Boolean));
+}
+
+export function createFrozenProfileMatcher(frozenProfiles = [], knownProfiles = [], validTickets = []) {
+  const frozen = Array.isArray(frozenProfiles) ? frozenProfiles.filter((profile) => profile && typeof profile === 'object') : [];
+  const known = Array.isArray(knownProfiles)
+    ? knownProfiles.filter((profile) => profile && typeof profile === 'object')
+    : Object.entries(knownProfiles && typeof knownProfiles === 'object' ? knownProfiles : {})
+      .map(([profileId, profile]) => profile && typeof profile === 'object' ? { ...profile, profileId: profile.profileId || profileId } : null)
+      .filter(Boolean);
+  const validTicketIds = validTicketIdSet(validTickets);
+  const ownerKey = (profile, fallback) => {
+    const profileId = cleanText(profile?.profileId);
+    if (profileId) return `profile:${profileId}`;
+    const ticketId = cleanText(profile?.ticketId);
+    if (ticketId && validTicketIds.has(ticketId)) return `ticket:${ticketId}`;
+    return fallback;
+  };
+  const frozenOwnerKeys = new Set();
+  const frozenProfileIds = new Set();
+  const ticketOwners = new Map();
+  const nameOwners = new Map();
+  const addNameOwner = (name, owner) => {
+    const normalized = cleanText(name).toLocaleLowerCase();
+    if (!normalized) return;
+    if (!nameOwners.has(normalized)) nameOwners.set(normalized, new Set());
+    nameOwners.get(normalized).add(owner);
+  };
+  const allProfiles = [
+    ...known.map((profile, index) => ({ profile, owner: ownerKey(profile, `known:${index}`) })),
+    ...frozen.map((profile, index) => ({ profile, owner: ownerKey(profile, `frozen:${index}`), frozen: true })),
+  ];
+  for (const { profile, owner, frozen: isFrozen } of allProfiles) {
+    for (const name of normalizedNames(profile)) addNameOwner(name, owner);
+    const ticketId = cleanText(profile.ticketId);
+    if (ticketId && validTicketIds.has(ticketId)) {
+      if (!ticketOwners.has(ticketId)) ticketOwners.set(ticketId, new Set());
+      ticketOwners.get(ticketId).add(owner);
+    }
+    if (!isFrozen) continue;
+    frozenOwnerKeys.add(owner);
+    const profileId = cleanText(profile.profileId);
+    if (profileId) frozenProfileIds.add(profileId);
+  }
+  return (profile) => {
+    const profileId = cleanText(profile?.profileId);
+    if (profileId && frozenProfileIds.has(profileId)) return true;
+    const ticketId = cleanText(profile?.ticketId);
+    const ownersForTicket = ticketId && validTicketIds.has(ticketId) ? ticketOwners.get(ticketId) : null;
+    if (ownersForTicket?.size === 1 && frozenOwnerKeys.has([...ownersForTicket][0])) return true;
+    const primaryName = cleanText(profile?.name).toLocaleLowerCase();
+    if (primaryName) {
+      const owners = nameOwners.get(primaryName);
+      return Boolean(owners?.size === 1 && frozenOwnerKeys.has([...owners][0]));
+    }
+    return false;
+  };
+}
+
+const GENERIC_AUTHORITY_SUBJECT = /^(?:人物|角色|npc|主角|配角|路人|陌生人|男人|女人|男子|女子|少女|少年|老人|孩子|队长|领队|老板|店主|医生|护士|老师|同学|朋友|敌人|守卫|士兵|侍卫|服务员|工作人员|管理员|导师|首领|会长|部长|局长|校长|经理|主管|前台|后勤|司机|乘客|顾客|客人)$/iu;
+
+export function authorityProtectedProfileNamesFromEntries(candidateProfiles = [], canonicalCardNames = [], entries = []) {
+  const candidates = (Array.isArray(candidateProfiles) ? candidateProfiles : [])
+    .filter((profile) => profile && typeof profile === 'object');
+  const canonicalNames = new Set((Array.isArray(canonicalCardNames) ? canonicalCardNames : [canonicalCardNames])
+    .map((name) => cleanText(name).toLocaleLowerCase()).filter(Boolean));
+  const enabledEntries = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => entry && typeof entry === 'object' && entry.enabled !== false && !entry.disable);
+  const tokenOwners = new Map();
+  const idOwners = new Map();
+  const entrySubjects = new Map();
+  const addOwner = (map, value, owner) => {
+    const normalized = cleanText(value).toLocaleLowerCase();
+    if (!normalized) return;
+    if (!map.has(normalized)) map.set(normalized, new Set());
+    map.get(normalized).add(owner);
+  };
+  enabledEntries.forEach((entry, index) => {
+    const owner = `entry:${index}`;
+    for (const value of [entry.uid, entry.id, entry.entryId, entry.worldbookEntryId]) addOwner(idOwners, value, owner);
+    const labels = [entry.comment, entry.name];
+    const keys = [entry.keys, entry.key, entry.keysecondary]
+      .flatMap((value) => Array.isArray(value) ? value : String(value || '').split(','));
+    const subjects = [...labels, ...keys, entry.subject, entry.subjectName, entry.characterName]
+      .flatMap((value) => Array.isArray(value) ? value : [value])
+      .map((value) => cleanText(value).toLocaleLowerCase()).filter(Boolean);
+    entrySubjects.set(owner, new Set(subjects));
+    for (const value of subjects) addOwner(tokenOwners, value, owner);
+  });
+  const protectedNames = [];
+  for (const profile of candidates) {
+    const primary = cleanText(profile.name);
+    const normalizedPrimary = primary.toLocaleLowerCase();
+    if (!primary) continue;
+    if (canonicalNames.has(normalizedPrimary)) {
+      protectedNames.push(primary);
+      continue;
+    }
+    const structuredIds = [
+      profile.authorityEntryId,
+      profile.worldbookEntryId,
+      profile.sourceEntryId,
+      profile.authoritySource?.entryId,
+      profile.sourceRef?.entryId,
+    ].map((value) => cleanText(value).toLocaleLowerCase()).filter(Boolean);
+    const explicitPrimary = profileIdentitySurface(primary) && !GENERIC_AUTHORITY_SUBJECT.test(primary);
+    const exactStructuredOwner = explicitPrimary && structuredIds.some((id) => {
+      const owners = idOwners.get(id);
+      if (owners?.size !== 1) return false;
+      return entrySubjects.get([...owners][0])?.has(normalizedPrimary);
+    });
+    const exactUniqueToken = explicitPrimary && tokenOwners.get(normalizedPrimary)?.size === 1;
+    if (exactStructuredOwner || exactUniqueToken) protectedNames.push(primary);
+  }
+  return [...new Set(protectedNames)];
+}
+
+function actorNarrativeSurface(profile, narrative) {
+  const names = normalizedNames(profile);
+  if (!names.length) return '';
+  return String(narrative || '').split(/(?<=[。！？!?\n])/u)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => {
+      const normalized = sentence.toLocaleLowerCase();
+      return names.some((name) => normalized.includes(name));
+    })
+    .join('\n');
+}
+
+function profileValueSupportedByNarrative(value, profile, narrative, exact = false) {
+  const text = cleanText(typeof value === 'string' ? value : value?.content || value?.fact || value?.text);
+  if (!text) return false;
+  const surface = actorNarrativeSurface(profile, narrative);
+  if (!surface) return false;
+  return surface.includes(text) || (!exact && sharedCjkBigrams(text, surface) >= 2);
+}
+
+function appendOwnedProfileItems(previous, incoming, profile, narrative, allowInference = false, limit = 48) {
+  const combined = asList(previous).map(deepClone);
+  const seen = new Set(combined.map((value) => JSON.stringify(value)));
+  for (const value of asList(incoming)) {
+    const signature = JSON.stringify(value);
+    if (seen.has(signature)) continue;
+    if (!allowInference && combined.length && !profileValueSupportedByNarrative(value, profile, narrative)) continue;
+    combined.push(deepClone(value));
+    seen.add(signature);
+  }
+  return combined.slice(0, Math.max(1, Number(limit || 48)));
+}
+
+const PROFILE_DYNAMIC_TRANSITION_MARKERS = {
+  relationships: /(?:决裂|反目|敌对|结盟|和解|分手|断绝|解除|终止|背叛|由.{0,12}(?:变为|转为)|不再是|成为(?:盟友|敌人|同伴|上下级|恋人|朋友))/u,
+  capabilities: /(?:失去|丧失|无法|不能再|不再能|恢复|学会|掌握|获得.{0,8}(?:能力|技巧|技能)|废除|被封印|被禁用|受伤.{0,8}(?:无法|不能))/u,
+  resources: /(?:用掉|用尽|耗尽|花完|喝完|吃完|交给|移交|归还|丢失|遗失|损毁|破坏|被夺|被偷|不再持有|只剩|获得|得到|买到|拾取|补充|增加|减少|消耗)/u,
+};
+
+function mergeOwnedDynamicItems(previous, incoming, profile, narrative, field, limit = 48) {
+  const oldItems = asList(previous).map(deepClone);
+  const explicitlyEmpty = Array.isArray(incoming) && incoming.length === 0;
+  const surface = actorNarrativeSurface(profile, narrative);
+  const transition = PROFILE_DYNAMIC_TRANSITION_MARKERS[field];
+  const canRetire = Boolean(surface && transition?.test(surface));
+  const mentionedDuringTransition = (value) => {
+    const text = cleanText(typeof value === 'string' ? value : value?.content || value?.fact || value?.text);
+    return Boolean(text && surface && sharedCjkBigrams(text, surface) >= 1);
+  };
+  const newItems = asList(incoming).filter((value) => profileValueSupportedByNarrative(value, profile, narrative)
+    || (canRetire && mentionedDuringTransition(value)));
+  if (oldItems.length && canRetire && explicitlyEmpty) {
+    const emptyState = field === 'relationships'
+      ? '当前没有仍然成立的持续关系（最终正文明确原关系已经终止）'
+      : field === 'capabilities'
+        ? '当前没有可用的相关能力（最终正文明确原能力已经失去或停用）'
+        : '当前没有可调用的相关资源（最终正文明确原资源已经耗尽、移交或失去）';
+    return [emptyState];
+  }
+  if (!oldItems.length) return (newItems.length ? newItems : asList(incoming)).map(deepClone).slice(0, limit);
+  if (!newItems.length) return oldItems.slice(0, limit);
+  const retained = canRetire
+    ? oldItems.filter((value) => !mentionedDuringTransition(value))
+    : oldItems;
+  return appendOwnedProfileItems(retained, newItems, profile, narrative, false, limit);
+}
+
+function mergeExistingProfileOwned(previous, incoming, narrative) {
+  const merged = deepClone(previous);
+  merged.aliases = appendOwnedProfileItems(previous.aliases, incoming.aliases, previous, narrative, true, 24);
+  merged.narrativeKnownNames = appendOwnedProfileItems(previous.narrativeKnownNames, incoming.narrativeKnownNames, previous, narrative, true, 24);
+  for (const root of ['identity', 'appearance', 'personality']) {
+    merged[root] = merged[root] && typeof merged[root] === 'object' ? merged[root] : {};
+    for (const [key, value] of Object.entries(incoming?.[root] || {})) {
+      if (!usableScalar(merged[root][key])) merged[root][key] = deepClone(value);
+    }
+  }
+  if (!usableScalar(merged.history) && usableScalar(incoming.history)) merged.history = deepClone(incoming.history);
+  merged.currentState = merged.currentState && typeof merged.currentState === 'object' ? merged.currentState : {};
+  for (const [key, value] of Object.entries(incoming?.currentState || {})) {
+    if (!usableScalar(merged.currentState[key]) || profileValueSupportedByNarrative(value, previous, narrative)) {
+      merged.currentState[key] = deepClone(value);
+    }
+  }
+  merged.relationships = mergeOwnedDynamicItems(previous.relationships, incoming.relationships, previous, narrative, 'relationships', 48);
+  merged.capabilities = mergeOwnedDynamicItems(previous.capabilities, incoming.capabilities, previous, narrative, 'capabilities', 48);
+  merged.resources = mergeOwnedDynamicItems(previous.resources, incoming.resources, previous, narrative, 'resources', 48);
+  merged.knowledge = appendOwnedProfileItems(previous.knowledge, incoming.knowledge, previous, narrative, true, 48);
+  merged.evidence = appendOwnedProfileItems(previous.evidence, incoming.evidence, previous, narrative, false, 64);
+  merged.inferences = appendOwnedProfileItems(previous.inferences, incoming.inferences, previous, narrative, true, 48);
+  merged.profileId = previous.profileId;
+  if (usableScalar(previous.ticketId)) merged.ticketId = previous.ticketId;
+  else delete merged.ticketId;
+  merged.name = previous.name;
+  return merged;
 }
 
 export function mergeProfileCandidates(previousProfiles, incomingProfiles) {
@@ -1342,24 +1741,94 @@ export function mergeProfileCandidates(previousProfiles, incomingProfiles) {
   return merged;
 }
 
-export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedText = '', requiredSubjects = null) {
+const REACHABLE_KNOWLEDGE_SOURCE = /(?:亲历|亲眼|目睹|观察|听见|听到|告诉|当面(?:告知|说明|交谈|告诉)|获(?:得)?告知|被告知|调查|查证|侦察|查阅|阅读|公开资料|公告|广播|传闻|报告|书信|记录|证据|职业训练|训练所学|学习所得|自身记忆|根据[^：:]{0,24}(?:推断|判断)|来源[：:])/u;
+
+function sharedCjkBigrams(left, right) {
+  const grams = (value) => {
+    const chars = String(value || '').replace(/[^\p{Script=Han}\p{L}\p{N}]/gu, '');
+    const output = new Set();
+    for (let index = 0; index + 1 < chars.length; index += 1) output.add(chars.slice(index, index + 2));
+    return output;
+  };
+  const leftGrams = grams(left);
+  const rightGrams = grams(right);
+  let count = 0;
+  for (const gram of leftGrams) if (rightGrams.has(gram)) count += 1;
+  return count;
+}
+
+function actorReachableNarrative(profile, narrative) {
+  const names = normalizedNames(profile);
+  if (!names.length) return '';
+  const sourceAction = /(?:亲眼|目睹|看见|观察|听见|听到|告诉|告知|说明|交谈|收到|获知|被告知|调查|查证|侦察|查阅|阅读|学习|回忆|记得|发现)/u;
+  return String(narrative || '').split(/(?<=[。！？!?\n])/u)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => {
+      const normalized = sentence.toLocaleLowerCase();
+      if (!sourceAction.test(sentence)) return false;
+      return names.some((name) => {
+        const at = normalized.indexOf(name);
+        if (at < 0) return false;
+        const window = sentence.slice(Math.max(0, at - 28), at + name.length + 28);
+        return sourceAction.test(window);
+      });
+    })
+    .join('\n');
+}
+
+function knowledgeEntryHasReachableSource(value, profile = {}, narrative = '') {
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!REACHABLE_KNOWLEDGE_SOURCE.test(text)) return false;
+    if (/(?:职业训练|训练所学|学习所得|自身记忆)/u.test(text)) {
+      return Boolean(cleanText(profile?.identity?.occupation) || cleanText(profile?.history));
+    }
+    if (!String(narrative || '').trim()) return false;
+    const reachableNarrative = actorReachableNarrative(profile, narrative);
+    const quoted = text.match(/[“"]([^”"]{3,120})[”"]/u)?.[1];
+    if (quoted && reachableNarrative.includes(quoted)) return true;
+    if (!reachableNarrative || !REACHABLE_KNOWLEDGE_SOURCE.test(reachableNarrative)) return false;
+    const fact = text.split(/[：:]/u).slice(1).join('：') || text;
+    return sharedCjkBigrams(fact, reachableNarrative) >= 2;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const source = cleanText(value.source || value.origin || value.learnedFrom || value.evidence);
+  const content = cleanText(value.content || value.fact || value.knowledge || value.text);
+  if (!source || !content || !REACHABLE_KNOWLEDGE_SOURCE.test(`来源：${source}`)) return false;
+  if (!String(narrative || '').trim()) return true;
+  return knowledgeEntryHasReachableSource(`${source}：${content}`, profile, narrative);
+}
+
+export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedText = '', requiredSubjects = null, options = {}) {
   const normalizedProfiles = normalizeProfileCandidates(rawProfiles, acceptedText, requiredSubjects);
   if (normalizedProfiles.length < 1) {
-    return { ok: false, errors: ['人物档案批次为空'], profiles: [], normalizationRepairs: [] };
+    return { ok: false, partial: false, errors: ['人物档案批次为空'], profiles: [], rejected: [], normalizationRepairs: [] };
   }
   const existing = existingProfilesFromData(currentData);
   const ticketMap = new Map((tickets || []).map((ticket) => [String(ticket.ticketId), ticket]));
-  const claimedTickets = new Set(normalizedProfiles
-    .map((profile) => String(profile?.ticketId || ''))
-    .filter((ticketId) => ticketMap.has(ticketId)));
+  const authorityProtectedNames = new Set(cleanStringArray(options.authorityProtectedNames, 240).map((name) => name.toLocaleLowerCase()));
+  const excludedNames = new Set(cleanStringArray(options.excludedNames, 240).map((name) => name.toLocaleLowerCase()));
+  const authorityProtected = (profile) => authorityProtectedNames.has(cleanText(profile?.name).toLocaleLowerCase());
+  const ticketClaimCounts = new Map();
+  for (const profile of normalizedProfiles.filter((candidate) => !authorityProtected(candidate))) {
+    const ticketId = String(profile?.ticketId || '');
+    if (ticketMap.has(ticketId)) ticketClaimCounts.set(ticketId, (ticketClaimCounts.get(ticketId) || 0) + 1);
+  }
+  const uniquelyClaimedTickets = new Set([...ticketClaimCounts]
+    .filter(([, count]) => count === 1).map(([ticketId]) => ticketId));
   const availableTickets = [...ticketMap.values()].sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0));
-  const usedTickets = new Set();
+  const usedTickets = new Set(Object.entries(existing).flatMap(([profileId, profile]) => [profileId, String(profile?.ticketId || '')])
+    .filter((ticketId) => ticketMap.has(ticketId)));
+  const usedIds = new Set();
   const nameIndex = new Map();
   for (const [id, profile] of Object.entries(existing)) {
-    for (const name of normalizedNames(profile)) nameIndex.set(name, id);
+    for (const name of normalizedNames(profile)) {
+      if (!nameIndex.has(name)) nameIndex.set(name, new Set());
+      nameIndex.get(name).add(id);
+    }
   }
-  const ids = new Set();
   const prepared = [];
+  const rejected = [];
   const errors = [];
   const normalizationRepairs = [];
   const narrative = profileNarrativeText(acceptedText).toLocaleLowerCase();
@@ -1372,65 +1841,130 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
   }).sort((left, right) => left.position - right.position || left.originalIndex - right.originalIndex);
 
   for (const { profile: input, originalIndex: index } of orderedProfiles) {
+    const localErrors = [];
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      errors.push(`第${index + 1}张档案不是对象`);
+      localErrors.push(`第${index + 1}张档案不是对象`);
+      rejected.push({ index, name: '', errors: localErrors, candidate: deepClone(input) });
+      errors.push(...localErrors);
       continue;
     }
     let profile = deepClone(input);
+    const excludedIdentity = normalizedNames(profile).find((name) => excludedNames.has(name));
+    if (excludedIdentity) {
+      localErrors.push(`第${index + 1}张候选命中玩家或当前角色卡扮演主体“${excludedIdentity}”，人物医生不得为其建档或建立自主世界主体`);
+      rejected.push({ index, name: cleanText(profile.name), errors: localErrors, candidate: profile });
+      errors.push(...localErrors);
+      continue;
+    }
     const rawAliases = asList(profile.aliases).map((value) => String(value).trim()).filter(Boolean);
     const retainedAliases = rawAliases.filter((alias) => {
       const normalized = alias.toLocaleLowerCase();
       return nameIndex.has(normalized) || (profileIdentitySurface(alias) && narrative.includes(normalized));
     });
     const rejectedAliases = rawAliases.filter((alias) => !retainedAliases.includes(alias));
-    if (rejectedAliases.length) {
-      normalizationRepairs.push({
-        profileIndex: index,
-        code: 'unsupported_aliases_removed',
-        count: rejectedAliases.length,
-      });
-    }
+    if (rejectedAliases.length) normalizationRepairs.push({ profileIndex: index, code: 'unsupported_aliases_removed', count: rejectedAliases.length });
     profile.aliases = retainedAliases;
-    const matchedId = normalizedNames(profile).map((name) => nameIndex.get(name)).find(Boolean);
     const requestedId = String(profile.profileId || '').trim();
-    let profileId = String(matchedId || (requestedId && existing[requestedId] ? requestedId : '')).trim();
+    const candidateNames = normalizedNames(profile);
+    const primaryName = cleanText(profile.name).toLocaleLowerCase();
+    const primaryMatches = nameIndex.get(primaryName) || new Set();
+    const allMatches = new Set(candidateNames.flatMap((name) => [...(nameIndex.get(name) || [])]));
+    let matchedId = primaryMatches.size === 1 ? [...primaryMatches][0] : allMatches.size === 1 ? [...allMatches][0] : '';
+    if (!matchedId && allMatches.size > 1) {
+      localErrors.push(`第${index + 1}张档案的姓名或称谓同时命中多个既有人物（${[...allMatches].join('、')}）；共享称谓不能用于静默串档，请返回唯一姓名或一致的profileId与唯一姓名锚点`);
+    }
+    if (requestedId && existing[requestedId]) {
+      const requestedPrimary = cleanText(existing[requestedId]?.name).toLocaleLowerCase();
+      const uniquelySupportsRequested = primaryName === requestedPrimary
+        || candidateNames.some((name) => (nameIndex.get(name)?.size === 1) && nameIndex.get(name).has(requestedId));
+      if (!uniquelySupportsRequested) {
+        localErrors.push(`第${index + 1}张档案请求profileId ${requestedId}，但只提供了共享或不一致称谓，无法证明属于该既有人物`);
+      } else matchedId = requestedId;
+    }
+    let profileId = String(matchedId || '').trim();
     const isExisting = Boolean(profileId && existing[profileId]);
-    const persistedNarrativeKnownNames = isExisting
-      ? cleanStringArray(existing[profileId]?.narrativeKnownNames, 24)
+    if (requestedId && existing[requestedId] && matchedId && matchedId !== requestedId) {
+      localErrors.push(`第${index + 1}张档案试图以profileId ${requestedId} 覆盖另一个既有人物身份`);
+    }
+    const submittedKnowledge = Object.prototype.hasOwnProperty.call(input, 'knowledge')
+      ? asList(input.knowledge).filter(meaningfulProfileListItem)
       : [];
-    if (isExisting) profile = mergeCandidateValue(existing[profileId], profile);
+    const persistedKnowledgeSignatures = new Set((isExisting ? asList(existing[profileId]?.knowledge) : [])
+      .map((entry) => JSON.stringify(entry)));
+    const persistedNarrativeKnownNames = isExisting ? cleanStringArray(existing[profileId]?.narrativeKnownNames, 24) : [];
+    if (isExisting) profile = mergeExistingProfileOwned(existing[profileId], profile, profileNarrativeText(acceptedText));
     const namesSeenInNarrative = [profile?.name, ...(Array.isArray(profile?.aliases) ? profile.aliases : [])]
       .map((item) => cleanText(item))
       .filter((item) => item && profileIdentitySurface(item) && narrative.includes(item.toLocaleLowerCase()));
     profile.narrativeKnownNames = cleanStringArray([...persistedNarrativeKnownNames, ...namesSeenInNarrative], 24);
-    let ticket = ticketMap.get(String(profile.ticketId || ''));
+    const submittedTicketId = String(profile.ticketId || '');
+    let ticket = ticketMap.get(submittedTicketId);
     if (!isExisting) {
-      if (enforceNarrativeIdentity && !namesSeenInNarrative.length) {
-        errors.push(`第${index + 1}张新档案没有最终正文逐字出现的稳定name或alias身份锚点`);
-        continue;
+      if (enforceNarrativeIdentity && !namesSeenInNarrative.length) localErrors.push(`第${index + 1}张新档案没有最终正文逐字出现的稳定name或alias身份锚点`);
+      const authorityName = cleanText(profile.name).toLocaleLowerCase();
+      const hasAuthorityIdentity = authorityProtectedNames.has(authorityName);
+        if (hasAuthorityIdentity) {
+          profileId = stableWorldId('profile-authority', authorityName);
+          profile.authoritySource = 'character-card-or-worldbook';
+          delete profile.ticketId;
+          ticket = null;
+        } else {
+        const submittedClaimIsUnique = Boolean(ticket && ticketClaimCounts.get(submittedTicketId) === 1);
+        if (!submittedClaimIsUnique || usedTickets.has(submittedTicketId)) {
+          const previousTicketId = submittedTicketId;
+          ticket = availableTickets.find((candidate) => !usedTickets.has(candidate.ticketId)
+            && !uniquelyClaimedTickets.has(candidate.ticketId));
+          if (ticket && previousTicketId && previousTicketId !== ticket.ticketId) {
+            normalizationRepairs.push({
+              profileIndex: index,
+              code: 'uncommitted_ticket_reassigned',
+              from: previousTicketId,
+              to: ticket.ticketId,
+            });
+          }
+        }
+        if (!ticket) {
+          if (ticketClaimCounts.get(submittedTicketId) > 1) {
+            localErrors.push(`第${index + 1}张原创人物重复使用票据 ${submittedTicketId}，且已经没有未占用票据可供重分`);
+          } else localErrors.push(`第${index + 1}张原创人物档案没有匹配本轮characterCreationTicket`);
+        }
       }
-      if (!ticket) {
-        ticket = availableTickets.find((candidate) => !usedTickets.has(candidate.ticketId) && !claimedTickets.has(candidate.ticketId));
+      if (ticket && !hasAuthorityIdentity) {
+        profileId = ticket.ticketId;
+        profile.ticketId = ticket.ticketId;
+        profile.personality = mergeCandidateValue(profile.personality || {}, ticket.axes, 'personality');
+        if (usedTickets.has(ticket.ticketId)) localErrors.push(`同一票据被多名新人物重复使用：${ticket.ticketId}`);
       }
-      if (!ticket) {
-        errors.push(`第${index + 1}张新档案没有匹配本轮characterCreationTicket`);
-        continue;
-      }
-      profileId = ticket.ticketId;
-      profile.ticketId = ticket.ticketId;
-      profile.personality = mergeCandidateValue(ticket.axes, profile.personality || {});
-      if (usedTickets.has(ticket.ticketId)) errors.push(`同一票据被多名新人物重复使用：${ticket.ticketId}`);
-      usedTickets.add(ticket.ticketId);
     }
     profile.profileId = profileId;
     if (isExisting && usableScalar(existing[profileId]?.ticketId)) profile.ticketId = existing[profileId].ticketId;
-    if (ids.has(profileId)) errors.push(`档案批次内profileId重复：${profileId}`);
-    ids.add(profileId);
-
-    errors.push(...profileCompletenessReport(profile, `第${index + 1}张档案`).errors);
+    if (!isExisting && profileId && existing[profileId]) localErrors.push(`第${index + 1}张新档案生成的profileId已属于既有人物，拒绝覆盖：${profileId}`);
+    const knowledgeToValidate = isExisting
+      ? submittedKnowledge.filter((entry) => !persistedKnowledgeSignatures.has(JSON.stringify(entry)))
+      : asList(profile.knowledge).filter(meaningfulProfileListItem);
+    const unreachableKnowledge = knowledgeToValidate.filter((entry) => !knowledgeEntryHasReachableSource(entry, profile, profileNarrativeText(acceptedText)));
+    if (unreachableKnowledge.length) {
+      localErrors.push(`第${index + 1}张档案新增knowledge缺少人物可达来源（亲历、获告知、调查、查阅、公开资料或职业训练）：${unreachableKnowledge.map((entry) => cleanText(typeof entry === 'string' ? entry : entry?.content || entry?.fact || '未说明内容')).slice(0, 3).join('；')}`);
+    }
+    if (profileId && usedIds.has(profileId)) localErrors.push(`档案批次内profileId重复：${profileId}`);
+    localErrors.push(...profileCompletenessReport(profile, `第${index + 1}张档案`).errors);
+    if (localErrors.length) {
+      rejected.push({ index, name: cleanText(profile.name), errors: localErrors, candidate: profile });
+      errors.push(...localErrors);
+      continue;
+    }
     prepared.push(profile);
+    usedIds.add(profileId);
+    if (!isExisting && ticket && profile.ticketId) usedTickets.add(ticket.ticketId);
   }
-  return { ok: errors.length === 0, errors, profiles: prepared, normalizationRepairs };
+  return {
+    ok: errors.length === 0 && prepared.length > 0,
+    partial: prepared.length > 0 && errors.length > 0,
+    errors,
+    profiles: prepared,
+    rejected,
+    normalizationRepairs,
+  };
 }
 
 export function buildProfilePatch(currentData, profiles) {
@@ -1579,9 +2113,14 @@ export function diagnosticAdvice(kind, detail) {
   return { severity: 'info', summary: '医生记录了一条运行信息。', action: '展开详情核对；若影响当前回合，可在修正配置后重试失败步骤。' };
 }
 
-export const WORLD_SCHEMA_VERSION = 5;
+export const WORLD_SCHEMA_VERSION = 7;
 
-const PUBLIC_PROJECTION_LEAK_MARKERS = /(?:内心|真实(?:想法|目的|身份)|暗中|私下|偷偷|无人(?:看见|察觉|知道)|其实|伪装|装作|盘算|谋划|记仇|小本本|悄无声息地(?:写|记|记录)|背地里|不为人知|(?:袖中|袖口|背后|暗处).{0,16}(?:写|记录|记下)|(?:写下|记下|记录).{0,16}(?:名字|名单|信息|弱点)|评估.{0,12}(?:价值|弱点|威胁)|(?:其|他|她|它|角色|人物|NPC)?.{0,8}的?秘密(?:身份|目的|计划|行动|记录|档案|弱点|真相|情报)?\s*(?:是|为|在于|包括|涉及|指向)|秘密(?:地|进行|策划|记录|收集|评估|跟踪|监视))/u;
+const PUBLIC_PROJECTION_LEAK_MARKERS = /(?:内心|真实(?:想法|目的|身份)|暗中|私下|偷偷|无人(?:看见|察觉|知道)|其实|伪装|装作|盘算|谋划|背地里|不为人知|秘密(?:身份|目的|计划|行动|记录|档案|弱点|真相|情报)?\s*(?:是|为|在于|包括|涉及|指向)|秘密(?:地|进行|策划|记录|收集|评估|跟踪|监视))/u;
+const PUBLIC_INTENT_MARKERS = /(?:为了|打算|计划|决定|意图|企图|故意|想要|试图|目的|动机)/u;
+const PUBLIC_CAUSAL_ATTRIBUTION_MARKERS = /(?:因为|由于|因此|从而|由.{0,18}(?:造成|导致|引起|留下))/u;
+const RUMOR_UNCERTAINTY_MARKERS = /(?:传闻|据说|听说|有人说|风声|未经证实|据称|似乎|可能|或许|坊间)/u;
+const PUBLIC_OBSERVABLE_SURFACE_MARKERS = /(?:看见|看到|听见|听到|闻到|发现|出现|消失|打开|关闭|破损|损坏|移动|到达|离开|进入|走出|前往|穿过|张贴|宣布|递交|搬运|交付|袭击|拦截|封锁|公开|露面|痕迹|脚印|足迹|划痕|血迹|水痕|残留|碎片|告示|封条|价格|缺货|库存|人群|车辆|灯光?|声音|响声|气味|烟雾?|温度|天气|雨|雪|风|雾|雷|火|水|门|窗|道路|地面|墙面?|货架|建筑|伤口|增加|减少|上升|下降|改变|变化|倒塌|停电|断水|震动|摇晃|腐蚀|生锈|染色|湿润|干燥|拥堵|空缺|排队)/u;
+const PUBLIC_HIDDEN_AGENT_ACTION_MARKERS = /(?:(?:记录者|行动者|某人|有人|幕后(?:人物|势力)?).{0,18}(?:整理|记录|收集|调查|监视|分析|跟踪|完成)|(?:已|已经)(?:整理完?|收集完?|调查完?|监视|分析完?|记录完?))/u;
 
 function cleanText(value, fallback = '') {
   const text = String(value ?? '').trim();
@@ -1589,8 +2128,8 @@ function cleanText(value, fallback = '') {
 }
 
 function cleanStringArray(value, limit = 24) {
-  return [...new Set((Array.isArray(value) ? value : value == null ? [] : [value])
-    .map((item) => cleanText(item)).filter(Boolean))].slice(0, limit);
+  const source = Array.isArray(value) ? value : value == null ? [] : String(value).split(/[，,、；;\n]/u);
+  return [...new Set(source.map((item) => cleanText(item)).filter(Boolean))].slice(0, limit);
 }
 
 function publicProjectionLeak(value) {
@@ -1598,10 +2137,26 @@ function publicProjectionLeak(value) {
   return texts.map((item) => cleanText(item)).find((item) => item && PUBLIC_PROJECTION_LEAK_MARKERS.test(item)) || '';
 }
 
-function exactNarrativeEvidence(acceptedText, evidence) {
-  const source = String(acceptedText || '');
-  const quote = cleanText(evidence);
-  return quote.length >= 4 && quote.length <= 180 && source.includes(quote);
+export function publicProjectionIssue(value, channel, subject = {}) {
+  const text = cleanText(value);
+  const normalizedChannel = normalizePublicChannel(channel);
+  if (!text || normalizedChannel === 'none') return text ? 'public_channel_none' : '';
+  if (publicProjectionLeak(text)) return 'private_truth_or_hidden_intent';
+  const subjectName = cleanText(subject?.name);
+  if (normalizedChannel === 'environment_trace') {
+    if (subject?.type !== 'process' && subjectName.length >= 2 && text.includes(subjectName)) return 'environment_trace_names_subject';
+    if (!PUBLIC_OBSERVABLE_SURFACE_MARKERS.test(text)) return 'environment_trace_not_observable';
+    if (PUBLIC_HIDDEN_AGENT_ACTION_MARKERS.test(text)) return 'environment_trace_contains_agentive_hidden_action';
+    if (PUBLIC_INTENT_MARKERS.test(text) || PUBLIC_CAUSAL_ATTRIBUTION_MARKERS.test(text)) return 'environment_trace_explains_cause';
+  }
+  if (normalizedChannel === 'rumor' && !RUMOR_UNCERTAINTY_MARKERS.test(text)) return 'rumor_missing_uncertainty';
+  if (normalizedChannel === 'named_action') {
+    if (subjectName.length < 2 || !text.includes(subjectName)) return 'named_action_missing_subject_name';
+    if (!PUBLIC_OBSERVABLE_SURFACE_MARKERS.test(text)) return 'named_action_not_observable';
+  }
+  if (normalizedChannel === 'direct_consequence' && !PUBLIC_OBSERVABLE_SURFACE_MARKERS.test(text)) return 'direct_consequence_not_observable';
+  if (['named_action', 'direct_consequence'].includes(normalizedChannel) && (PUBLIC_INTENT_MARKERS.test(text) || PUBLIC_HIDDEN_AGENT_ACTION_MARKERS.test(text))) return 'public_projection_explains_private_intent';
+  return '';
 }
 
 function stableWorldId(prefix, ...parts) {
@@ -1615,40 +2170,206 @@ function stableWorldId(prefix, ...parts) {
 }
 
 function optionalInteger(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string' && !value.trim()) return null;
+  if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) return null;
   const numeric = Number(value);
   return Number.isInteger(numeric) ? numeric : null;
 }
 
-function worldDigestPayload(world) {
-  const copy = deepClone(world || {});
-  delete copy.digest;
-  delete copy.persistence;
-  delete copy.checkpoint;
-  delete copy.migration;
-  if (copy.recall) delete copy.recall.pending;
-  return copy;
+function explicitSubjectType(value) {
+  const text = cleanText(value).toLocaleLowerCase();
+  if (['person', 'actor', 'npc', '人物', '角色'].includes(text)) return 'person';
+  if (['faction', 'group', '势力', '组织', '阵营'].includes(text)) return 'faction';
+  if (['process', 'environment', 'event', '过程', '环境', '事件', '任务'].includes(text)) return 'process';
+  return '';
 }
 
-export function worldDigest(world) {
-  return stableWorldId('wd', JSON.stringify(worldDigestPayload(world)));
+function normalizeSubjectType(value) {
+  return explicitSubjectType(value) || 'process';
 }
 
-function normalizeSourceRef(value = {}, fallback = {}) {
+function normalizeSubjectStatus(value) {
+  const text = cleanText(value).toLocaleLowerCase();
+  if (['done', 'resolved', 'complete', '完成', '结束', '已解决'].includes(text)) return 'done';
+  if (['waiting', 'blocked', 'paused', '等待', '受阻', '暂停'].includes(text)) return 'waiting';
+  return 'active';
+}
+
+function normalizePublicChannel(value) {
+  const text = cleanText(value).toLocaleLowerCase();
+  if (['environment', 'trace', 'environment_trace', '环境痕迹', '痕迹'].includes(text)) return 'environment_trace';
+  if (['rumor', '传闻', '风声'].includes(text)) return 'rumor';
+  if (['named_action', 'observable_action', '具名行动', '公开行动'].includes(text)) return 'named_action';
+  if (['direct_consequence', 'observable', '直接后果', '可见后果'].includes(text)) return 'direct_consequence';
+  return 'none';
+}
+
+function normalizeResultType(value) {
+  const text = cleanText(value).toLocaleLowerCase();
+  if (['success', '成功', '达成'].includes(text)) return 'success';
+  if (['partial', '部分', '有限成功'].includes(text)) return 'partial';
+  if (['blocked', 'failure', '受阻', '失败'].includes(text)) return 'blocked';
+  if (['waiting', '等待'].includes(text)) return 'waiting';
+  return 'delayed';
+}
+
+function normalizeWorldSource(value = {}, fallback = {}) {
   const source = value && typeof value === 'object' ? value : {};
   return {
     chatId: cleanText(source.chatId, cleanText(fallback.chatId)),
     messageId: optionalInteger(source.messageId) ?? optionalInteger(fallback.messageId),
-    turn: Math.max(0, Number(source.turn ?? fallback.turn) || 0),
     sourceKey: cleanText(source.sourceKey, cleanText(fallback.sourceKey)),
     excerpt: cleanText(source.excerpt, cleanText(fallback.excerpt)).slice(0, 500),
     at: cleanText(source.at, cleanText(fallback.at, new Date().toISOString())),
   };
 }
 
-function emptyRecall() {
-  return { pending: null, receipts: [] };
+function normalizeWorldReceipt(entry = {}, fallback = {}) {
+  return {
+    sourceKey: cleanText(entry.sourceKey, cleanText(fallback.sourceKey)),
+    messageId: optionalInteger(entry.messageId) ?? optionalInteger(fallback.messageId),
+    turn: Math.max(0, Number(entry.turn || fallback.turn || 0)),
+    status: ['applied', 'partial', 'noop'].includes(cleanText(entry.status)) ? cleanText(entry.status) : 'noop',
+    subjectIds: cleanStringArray(entry.subjectIds, 32),
+    unresolvedSubjectIds: cleanStringArray(entry.unresolvedSubjectIds, 32),
+    unresolvedDiscoveries: cleanStringArray(entry.unresolvedDiscoveries, 32),
+    at: cleanText(entry.at, cleanText(fallback.at, new Date().toISOString())),
+  };
+}
+
+function normalizeObservationEpistemic(value) {
+  const text = cleanText(value).toLocaleLowerCase();
+  if (['confirmed_public_effect', 'confirmed', '已确认公开影响'].includes(text)) return 'confirmed_public_effect';
+  if (['direct', 'direct_observation', '直接观察'].includes(text)) return 'direct';
+  if (['claim', 'statement', '说法', '声称'].includes(text)) return 'claim';
+  if (['rumor', '传闻', '风声'].includes(text)) return 'rumor';
+  return 'unverified';
+}
+
+function normalizeSubjectObservation(entry = {}, fallback = {}) {
+  const source = entry && typeof entry === 'object' ? entry : { fact: entry };
+  const fact = cleanText(source.fact, cleanText(source.text));
+  if (!fact) return null;
+  return {
+    fact,
+    epistemic: normalizeObservationEpistemic(source.epistemic || source.kind),
+    turn: Math.max(0, Number(source.turn || fallback.turn || 0)),
+    source: normalizeWorldSource(source.source, fallback),
+  };
+}
+
+function normalizeActorPlanReceipt(entry = {}, fallback = {}) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const subjectId = cleanText(entry.subjectId, cleanText(fallback.subjectId));
+  const planId = cleanText(entry.planId);
+  if (!subjectId || !planId) return null;
+  const phase = cleanText(entry.phase) === 'bootstrap' ? 'bootstrap' : 'next';
+  return {
+    planId,
+    subjectId,
+    phase,
+    attempt: cleanText(entry.attempt),
+    goal: cleanText(entry.goal),
+    knowledge: cleanStringArray(entry.knowledge, 32),
+    nextAction: cleanText(entry.nextAction),
+    nextCheckTurn: Math.max(0, optionalInteger(entry.nextCheckTurn) ?? 0),
+    basedOnTicketId: cleanText(entry.basedOnTicketId),
+    basedOnAttempt: cleanText(entry.basedOnAttempt),
+    basedOnAdjudicationDigest: cleanText(entry.basedOnAdjudicationDigest),
+    plannedTurn: Math.max(0, Number(entry.plannedTurn || fallback.turn || 0)),
+    sourceKey: cleanText(entry.sourceKey, cleanText(fallback.sourceKey)),
+    at: cleanText(entry.at, cleanText(fallback.at, new Date().toISOString())),
+  };
+}
+
+function normalizeSubject(entry = {}, index = 0, fallback = {}) {
+  const type = normalizeSubjectType(entry.type || entry.kind);
+  const name = cleanText(entry.name, cleanText(entry.title, `${type === 'person' ? '人物' : type === 'faction' ? '势力' : '过程'}${index + 1}`));
+  const id = cleanText(entry.id, stableWorldId('subject', type, entry.profileId, name));
+  const publicEffect = cleanText(entry.publicEffect);
+  const requestedPublicChannel = normalizePublicChannel(entry.publicChannel);
+  const publicChannel = publicEffect && !publicProjectionIssue(publicEffect, requestedPublicChannel, { name, type })
+    ? requestedPublicChannel
+    : 'none';
+  return {
+    id,
+    type,
+    name,
+    profileId: cleanText(entry.profileId),
+    anchor: cleanText(entry.anchor, cleanText(entry.identityAnchor)),
+    current: cleanText(entry.current, cleanText(entry.summary)),
+    goal: cleanText(entry.goal, cleanText(entry.driver)),
+    knowledge: cleanStringArray(entry.knowledge, 32),
+    observedFacts: cleanStringArray(entry.observedFacts, 32),
+    observations: (Array.isArray(entry.observations) ? entry.observations : [])
+      .map((observation) => normalizeSubjectObservation(observation, fallback)).filter(Boolean).slice(-48),
+    resources: cleanStringArray(entry.resources, 24),
+    constraints: cleanStringArray(entry.constraints, 24),
+    nextAction: cleanText(entry.nextAction, cleanText(entry.nextBeat)),
+    nextCheckTurn: Math.max(0, optionalInteger(entry.nextCheckTurn ?? entry.nextActionTurn) ?? Number(fallback.turn || 0)),
+    planReceipt: normalizeActorPlanReceipt(entry.planReceipt, { subjectId: id, turn: fallback.turn, sourceKey: fallback.sourceKey, at: fallback.at }),
+    status: normalizeSubjectStatus(entry.status),
+    lastAdvancedTurn: Math.max(0, Number(entry.lastAdvancedTurn || entry.updatedTurn || 0)),
+    silenceTurns: Math.max(0, Number(entry.silenceTurns || 0)),
+    threadKeys: cleanStringArray(entry.threadKeys ?? entry.sourceThreadIds, 16),
+    discoverySignature: cleanText(entry.discoverySignature),
+    recentModes: cleanStringArray(entry.recentModes, 8).slice(-8),
+    publicEffect: publicChannel === 'none' ? '' : publicEffect,
+    publicChannel,
+    publicEffectTurn: publicChannel === 'none' ? 0 : Math.max(0, Number(entry.publicEffectTurn || entry.lastAdvancedTurn || entry.updatedTurn || fallback.turn || 0)),
+    publicEffectSourceChangeId: publicChannel === 'none' ? '' : cleanText(entry.publicEffectSourceChangeId),
+    offeredTurn: Math.max(0, Number(entry.offeredTurn || 0)),
+    lastOfferedTurn: Math.max(0, Number(entry.lastOfferedTurn || entry.offeredTurn || 0)),
+    lastOfferedSourceKey: cleanText(entry.lastOfferedSourceKey),
+    offerCount: Math.max(0, Number(entry.offerCount || 0)),
+    shownTurn: Math.max(0, Number(entry.shownTurn || 0)),
+    createdTurn: Math.max(0, Number(entry.createdTurn || fallback.turn || 0)),
+    updatedTurn: Math.max(0, Number(entry.updatedTurn || entry.lastAdvancedTurn || fallback.turn || 0)),
+    source: normalizeWorldSource(entry.source || entry.sourceRef, fallback),
+  };
+}
+
+function normalizeChange(entry = {}, index = 0, fallback = {}) {
+  const turn = Math.max(0, Number(entry.turn || fallback.turn || 0));
+  const subjectIds = cleanStringArray(entry.subjectIds ?? entry.actorId ?? entry.subjectId, 16);
+  const publicEffect = cleanText(entry.publicEffect, cleanText(entry.observableConsequence));
+  const requestedPublicChannel = normalizePublicChannel(entry.publicChannel || (entry.visibility === 'observable' ? 'direct_consequence' : 'none'));
+  const publicChannel = publicEffect && !publicProjectionIssue(publicEffect, requestedPublicChannel, fallback.subject || {})
+    ? requestedPublicChannel
+    : 'none';
+  return {
+    id: cleanText(entry.id, stableWorldId('change', subjectIds, turn, entry.stateChange, entry.outcome, index)),
+    subjectIds,
+    threadKeys: cleanStringArray(entry.threadKeys ?? entry.threadId, 16),
+    turn,
+    mode: cleanText(entry.mode),
+    resultType: normalizeResultType(entry.resultType || entry.status),
+    attempt: cleanText(entry.attempt, cleanText(entry.action, cleanText(entry.intent))),
+    outcome: cleanText(entry.outcome, cleanText(entry.resultSummary, cleanText(entry.consequence))),
+    cost: cleanText(entry.cost, cleanStringArray(entry.actualCosts ?? entry.resourceCosts, 12).join('；')),
+    stateChange: cleanText(entry.stateChange, cleanStringArray(entry.appliedStateChanges, 12).join('；')),
+    visibility: publicChannel === 'none' ? 'private' : publicChannel === 'rumor' ? 'trace' : 'public',
+    publicEffect: publicChannel === 'none' ? '' : publicEffect,
+    publicChannel,
+    offeredTurn: Math.max(0, Number(entry.offeredTurn || 0)),
+    lastOfferedTurn: Math.max(0, Number(entry.lastOfferedTurn || entry.offeredTurn || 0)),
+    lastOfferedSourceKey: cleanText(entry.lastOfferedSourceKey),
+    offerCount: Math.max(0, Number(entry.offerCount || 0)),
+    shownTurn: Math.max(0, Number(entry.shownTurn || 0)),
+    source: normalizeWorldSource(entry.source || entry.sourceRef, fallback),
+    at: cleanText(entry.at, fallback.at || new Date().toISOString()),
+  };
+}
+
+function worldDigestPayload(world) {
+  const copy = deepClone(world || {});
+  delete copy.digest;
+  delete copy.persistence;
+  delete copy.migration;
+  return copy;
+}
+
+export function worldDigest(world) {
+  return stableWorldId('wd', JSON.stringify(worldDigestPayload(world)));
 }
 
 export function emptyWorldState(chatId = '') {
@@ -1657,842 +2378,1453 @@ export function emptyWorldState(chatId = '') {
     schemaVersion: WORLD_SCHEMA_VERSION,
     chatId: cleanText(chatId),
     revision: 0,
-    commitId: '',
-    digest: '',
-    observedThrough: { turn: 0, sourceKey: '', at: now },
-    simulatedThrough: { turn: 0, sourceKey: '', at: now },
+    turn: 0,
     summary: '',
-    threads: [],
-    lanes: { actors: [], factions: [], environment: { summary: '', economy: '', incidents: [], trends: [], winds: [] } },
-    attempts: [],
-    adjudications: [],
-    resolvedArchive: [],
-    tombstoneThroughTurn: 0,
-    recall: emptyRecall(),
+    subjects: [],
+    changes: [],
+    receipts: [],
     failures: [],
-    checkpoint: { state: 'world_committed', candidate: null, candidateDigest: '', preparedAt: '', committedAt: '' },
-    persistence: { status: 'unverified', revision: 0, commitId: '', digest: '', readbackAt: '', error: '' },
+    persistence: { status: 'loaded', savedAt: '', readbackAt: now, error: '' },
     migration: null,
     updatedAt: now,
+    digest: '',
   };
   world.digest = worldDigest(world);
   return world;
 }
 
-function legacyWorldRecords(world = {}) {
-  const map = [
-    ['branches', 'parallel'], ['npcIntents', 'personal'], ['agreements', 'promise'], ['hostilePlans', 'enemy'],
+function legacyThreadRecords(input = {}) {
+  const records = Array.isArray(input.threads) ? input.threads : [];
+  const oldLists = [
+    ['branches', '平行事项'], ['npcIntents', '人物事项'], ['agreements', '约定'], ['hostilePlans', '敌对事项'],
   ];
-  return map.flatMap(([key, kind]) => (Array.isArray(world?.[key]) ? world[key] : []).map((entry, index) => ({
-    id: cleanText(entry?.id, stableWorldId('thread', kind, entry?.title, entry?.actor, entry?.location, index)),
-    kind,
-    title: cleanText(entry?.title, cleanText(entry?.actor, '未命名连续性事项')),
-    stage: entry?.status === 'resolved' ? 'resolved' : entry?.status === 'waiting' ? 'dormant' : 'advancing',
-    actorIds: cleanStringArray(entry?.actor),
-    factionIds: [],
-    locations: cleanStringArray(entry?.location),
-    keywords: cleanStringArray(entry?.keywords, 16),
-    summary: cleanText(entry?.consequence, cleanText(entry?.intent)),
-    offscreenBeat: cleanText(entry?.intent),
-    publicTitle: '',
-    publicSurface: '',
-    publicClues: [],
-    trigger: '',
-    nextBeat: cleanText(entry?.intent),
-    stakes: cleanText(entry?.consequence),
-    urgency: key === 'hostilePlans' ? 4 : 2,
-    knowledge: 'hidden',
-    causedBy: [], effects: [], rumors: [],
-    revealedSummary: '', revealEvidence: '', knownByActorIds: [],
-    createdTurn: 0, lastAdvancedTurn: 0,
-    sourceRef: normalizeSourceRef({}, { at: entry?.updatedAt }),
-    updatedAt: cleanText(entry?.updatedAt, world?.updatedAt || new Date().toISOString()),
-  })));
+  for (const [key, label] of oldLists) {
+    for (const entry of Array.isArray(input[key]) ? input[key] : []) {
+      records.push({
+        id: entry?.id,
+        title: entry?.title || entry?.actor || label,
+        summary: entry?.consequence || entry?.intent,
+        nextBeat: entry?.intent,
+        actorIds: cleanStringArray(entry?.actor),
+        stage: entry?.status,
+        kind: key,
+      });
+    }
+  }
+  return records;
 }
 
-function normalizeThread(entry, index = 0, fallbackSource = {}) {
-  const kind = ['parallel', 'personal', 'promise', 'enemy', 'mystery', 'social', 'resource', 'environment'].includes(entry?.kind) ? entry.kind : 'parallel';
-  const title = cleanText(entry?.title, cleanText(entry?.summary, '未命名连续性事项'));
-  const actorIds = cleanStringArray(entry?.actorIds ?? entry?.actors ?? entry?.actor);
-  const locations = cleanStringArray(entry?.locations ?? entry?.location);
-  return {
-    id: cleanText(entry?.id, stableWorldId('thread', kind, title, actorIds, locations, index)),
-    kind,
-    title,
-    stage: ['seeded', 'advancing', 'manifested', 'dormant', 'resolved', 'failed'].includes(entry?.stage) ? entry.stage : (entry?.status === 'resolved' ? 'resolved' : 'advancing'),
-    actorIds,
-    factionIds: cleanStringArray(entry?.factionIds ?? entry?.factions),
-    locations,
-    keywords: cleanStringArray(entry?.keywords, 16),
-    summary: cleanText(entry?.summary, cleanText(entry?.consequence, cleanText(entry?.intent))),
-    offscreenBeat: cleanText(entry?.offscreenBeat, cleanText(entry?.intent)),
-    publicTitle: cleanText(entry?.publicTitle),
-    publicSurface: cleanText(entry?.publicSurface),
-    publicClues: cleanStringArray(entry?.publicClues, 16),
-    trigger: cleanText(entry?.trigger),
-    nextBeat: cleanText(entry?.nextBeat, cleanText(entry?.intent)),
-    stakes: cleanText(entry?.stakes, cleanText(entry?.consequence)),
-    urgency: Math.max(0, Math.min(5, Number(entry?.urgency) || 0)),
-    knowledge: ['hidden', 'rumor', 'observed'].includes(entry?.knowledge) ? entry.knowledge : 'hidden',
-    causedBy: cleanStringArray(entry?.causedBy),
-    effects: cleanStringArray(entry?.effects),
-    rumors: cleanStringArray(entry?.rumors),
-    revealedSummary: cleanText(entry?.revealedSummary),
-    revealEvidence: cleanText(entry?.revealEvidence).slice(0, 180),
-    knownByActorIds: cleanStringArray(entry?.knownByActorIds, 40),
-    createdTurn: Math.max(0, Number(entry?.createdTurn) || Number(fallbackSource.turn) || 0),
-    lastAdvancedTurn: Math.max(0, Number(entry?.lastAdvancedTurn) || Number(fallbackSource.turn) || 0),
-    sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
-    updatedAt: cleanText(entry?.updatedAt, fallbackSource.at || new Date().toISOString()),
+function migrateLegacyWorld(input, options = {}) {
+  const chatId = cleanText(options.chatId, cleanText(input?.chatId));
+  const turn = Math.max(0, Number(input?.simulatedThrough?.turn || input?.observedThrough?.turn || input?.turn || 0));
+  const now = cleanText(input?.updatedAt, new Date().toISOString());
+  const subjects = [];
+  const changes = [];
+  const byIdentity = new Map();
+  const addSubject = (raw) => {
+    const subject = normalizeSubject(raw, subjects.length, { chatId, turn, at: now });
+    const key = cleanText(subject.profileId || subject.name).toLocaleLowerCase();
+    if (key && byIdentity.has(key)) {
+      const existing = subjects[byIdentity.get(key)];
+      existing.threadKeys = cleanStringArray([...existing.threadKeys, ...subject.threadKeys], 16);
+      if (!existing.current) existing.current = subject.current;
+      if (!existing.goal) existing.goal = subject.goal;
+      if (!existing.nextAction) existing.nextAction = subject.nextAction;
+      return existing;
+    }
+    byIdentity.set(key || subject.id, subjects.length);
+    subjects.push(subject);
+    return subject;
   };
-}
 
-function normalizeActorLane(entry, index = 0) {
-  const actorId = cleanText(entry?.actorId, cleanText(entry?.name, `actor-${index + 1}`));
-  return {
-    actorId,
-    name: cleanText(entry?.name, actorId),
-    goal: cleanText(entry?.goal),
-    planSteps: cleanStringArray(entry?.planSteps, 12),
-    nextActionTurn: Math.max(0, Number(entry?.nextActionTurn) || 0),
-    lastActionTurn: Math.max(0, Number(entry?.lastActionTurn) || 0),
-    silenceTurns: Math.max(0, Number(entry?.silenceTurns) || 0),
-    status: ['ready', 'waiting', 'blocked_unready', 'inactive'].includes(entry?.status) ? entry.status : 'waiting',
-    lastAction: cleanText(entry?.lastAction),
-    sourceThreadIds: cleanStringArray(entry?.sourceThreadIds ?? entry?.threadIds),
-  };
-}
+  for (const actor of Array.isArray(input?.lanes?.actors) ? input.lanes.actors : []) {
+    addSubject({
+      id: actor.actorId && `subject-${actor.actorId}`,
+      type: 'person', name: actor.name || actor.actorId, profileId: actor.actorId,
+      anchor: actor.goal, current: actor.lastAction, goal: actor.goal,
+      nextAction: actor.planSteps?.[0], nextCheckTurn: actor.nextActionTurn,
+      lastAdvancedTurn: actor.lastActionTurn, silenceTurns: actor.silenceTurns,
+      status: actor.status, threadKeys: actor.sourceThreadIds,
+    });
+  }
+  for (const faction of Array.isArray(input?.lanes?.factions) ? input.lanes.factions : []) {
+    addSubject({
+      id: faction.factionId && `subject-${faction.factionId}`,
+      type: 'faction', name: faction.name || faction.factionId,
+      anchor: faction.summary, current: faction.condition || faction.summary, goal: faction.goal,
+      nextCheckTurn: turn, status: faction.status, threadKeys: faction.sourceThreadIds,
+    });
+  }
+  const environment = input?.lanes?.environment || input?.environment;
+  if (environment && typeof environment === 'object'
+    && [environment.summary, environment.economy, ...(environment.incidents || []), ...(environment.trends || []), ...(environment.winds || [])].some(Boolean)) {
+    addSubject({
+      type: 'process', name: '区域环境与社会过程', anchor: '依据已确认的环境、经济、事件与趋势按自身惯性演化',
+      current: [environment.summary, environment.economy, ...(environment.incidents || []), ...(environment.trends || []), ...(environment.winds || [])].filter(Boolean).join('；'),
+      goal: '按既有条件、惯性、阈值与外力继续演化', nextCheckTurn: turn, status: 'active', threadKeys: ['环境与社会变化'],
+    });
+  }
 
-function normalizeFactionLane(entry, index = 0) {
-  const name = cleanText(entry?.name, `未命名阵营${index + 1}`);
-  return {
-    id: cleanText(entry?.id, stableWorldId('faction', name)),
-    name,
-    goal: cleanText(entry?.goal),
-    status: cleanText(entry?.status, 'active'),
-    relation: cleanText(entry?.relation),
-    condition: cleanText(entry?.condition),
-    summary: cleanText(entry?.summary),
-    sourceThreadIds: cleanStringArray(entry?.sourceThreadIds ?? entry?.threadIds),
-  };
-}
+  for (const thread of legacyThreadRecords(deepClone(input || {}))) {
+    const actorKeys = cleanStringArray(thread.actorIds).map((item) => item.toLocaleLowerCase());
+    let subject = subjects.find((entry) => actorKeys.includes(entry.profileId.toLocaleLowerCase()) || actorKeys.includes(entry.name.toLocaleLowerCase()));
+    if (!subject) {
+      subject = addSubject({
+        type: thread.kind === 'hostilePlans' ? 'faction' : 'process',
+        name: cleanText(thread.title, '迁移中的世界事项'),
+        anchor: cleanText(thread.summary, '由旧世界记录迁移，后续按实际主体与条件继续核实'),
+        current: cleanText(thread.summary), goal: cleanText(thread.summary), nextAction: cleanText(thread.nextBeat),
+        nextCheckTurn: turn, status: thread.stage, threadKeys: [thread.id || thread.title],
+      });
+    } else {
+      subject.threadKeys = cleanStringArray([...subject.threadKeys, thread.id || thread.title], 16);
+      if (!subject.current) subject.current = cleanText(thread.summary);
+      if (!subject.nextAction) subject.nextAction = cleanText(thread.nextBeat);
+    }
+  }
 
-function normalizeAttempt(entry, index = 0, fallbackSource = {}) {
-  const actorId = cleanText(entry?.actorId, cleanText(entry?.actor));
-  const threadId = cleanText(entry?.threadId);
-  const action = cleanText(entry?.action, cleanText(entry?.intent));
-  return {
-    attemptId: cleanText(entry?.attemptId, stableWorldId('attempt', actorId, threadId, action, fallbackSource.sourceKey, index)),
-    actorId,
-    actorName: cleanText(entry?.actorName, cleanText(entry?.actor, actorId)),
-    threadId,
-    intent: cleanText(entry?.intent, action),
-    action,
-    knowledgeBasis: cleanStringArray(entry?.knowledgeBasis),
-    capabilityBasis: cleanStringArray(entry?.capabilityBasis),
-    resourceCosts: cleanStringArray(entry?.resourceCosts),
-    expectedDuration: cleanText(entry?.expectedDuration),
-    risk: cleanText(entry?.risk),
-    visibility: ['hidden', 'rumor', 'observable'].includes(entry?.visibility) ? entry.visibility : 'hidden',
-    publicSurface: cleanText(entry?.publicSurface),
-    publicClues: cleanStringArray(entry?.publicClues, 12),
-    playerDecisionRequired: Boolean(entry?.playerDecisionRequired),
-    status: ['pending_world', 'settled', 'blocked_unready', 'cancelled'].includes(entry?.status) ? entry.status : 'pending_world',
-    sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
-    createdTurn: Math.max(0, Number(entry?.createdTurn) || Number(fallbackSource.turn) || 0),
-  };
-}
+  const adjudications = new Map((Array.isArray(input?.adjudications) ? input.adjudications : []).map((entry) => [entry.attemptId, entry]));
+  for (const attempt of Array.isArray(input?.attempts) ? input.attempts : []) {
+    const result = adjudications.get(attempt.attemptId) || {};
+    const identity = cleanText(attempt.actorId || attempt.actorName).toLocaleLowerCase();
+    const subject = subjects.find((entry) => entry.profileId.toLocaleLowerCase() === identity || entry.name.toLocaleLowerCase() === identity);
+    changes.push(normalizeChange({
+      id: result.resultId || attempt.attemptId,
+      subjectIds: subject ? [subject.id] : [],
+      threadKeys: [attempt.threadId].filter(Boolean),
+      turn: result.sourceRef?.turn || attempt.sourceRef?.turn || turn,
+      mode: 'legacy_action', resultType: result.status,
+      attempt: attempt.action || attempt.intent, outcome: result.resultSummary,
+      cost: result.actualCosts, stateChange: result.appliedStateChanges,
+      publicEffect: result.observableConsequence || attempt.publicSurface,
+      publicChannel: attempt.visibility === 'observable' ? 'direct_consequence' : attempt.visibility === 'rumor' ? 'rumor' : 'none',
+      source: result.sourceRef || attempt.sourceRef,
+    }, changes.length, { chatId, turn, at: now, subject: subject || {} }));
+  }
 
-function normalizeAdjudication(entry, index = 0, fallbackSource = {}) {
-  const attemptId = cleanText(entry?.attemptId);
   return {
-    resultId: cleanText(entry?.resultId, stableWorldId('result', attemptId, entry?.resultSummary, fallbackSource.sourceKey, index)),
-    attemptId,
-    actorId: cleanText(entry?.actorId, cleanText(entry?.actor)),
-    status: ['success', 'partial', 'failure', 'delayed', 'blocked'].includes(entry?.status) ? entry.status : 'delayed',
-    resultSummary: cleanText(entry?.resultSummary, cleanText(entry?.consequence)),
-    actualCosts: cleanStringArray(entry?.actualCosts),
-    actualDuration: cleanText(entry?.actualDuration),
-    observableConsequence: cleanText(entry?.observableConsequence, cleanText(entry?.consequence)),
-    publicClues: cleanStringArray(entry?.publicClues, 12),
-    appliedStateChanges: cleanStringArray(entry?.appliedStateChanges),
-    revealPath: cleanText(entry?.revealPath),
-    sourceRef: normalizeSourceRef(entry?.sourceRef, fallbackSource),
-    settledTurn: Math.max(0, Number(entry?.settledTurn) || Number(fallbackSource.turn) || 0),
+    schemaVersion: WORLD_SCHEMA_VERSION,
+    chatId,
+    revision: Math.max(0, Number(input?.revision || 0)),
+    turn,
+    summary: cleanText(input?.summary),
+    subjects,
+    changes,
+    receipts: [],
+    failures: [],
+    persistence: { status: 'migrated', savedAt: '', readbackAt: now, error: '' },
+    migration: { fromSchema: Number(input?.schemaVersion || 0), at: now, subjectCount: subjects.length, changeCount: changes.length },
+    updatedAt: now,
+    digest: '',
   };
 }
 
 export function normalizeWorldState(input = {}, options = {}) {
-  const source = input && typeof input === 'object' ? input : {};
-  const base = emptyWorldState(options.chatId || source.chatId || '');
-  const fromSchema = Number(source.schemaVersion) || 3;
-  const hasLegacyArrays = ['branches', 'npcIntents', 'agreements', 'hostilePlans'].some((key) => Array.isArray(source?.[key]));
-  const needsMigration = fromSchema !== WORLD_SCHEMA_VERSION;
-  const threads = Array.isArray(source.threads) ? source.threads : (hasLegacyArrays ? legacyWorldRecords(source) : []);
-  const fallbackSource = normalizeSourceRef({}, { chatId: options.chatId || source.chatId, at: source.updatedAt });
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return emptyWorldState(options.chatId);
+  const source = Number(input.schemaVersion) === WORLD_SCHEMA_VERSION && Array.isArray(input.subjects)
+    ? deepClone(input)
+    : migrateLegacyWorld(input, options);
+  const chatId = cleanText(options.chatId, cleanText(source.chatId));
+  const turn = Math.max(0, Number(source.turn || 0));
+  const now = cleanText(source.updatedAt, new Date().toISOString());
+  const subjects = (Array.isArray(source.subjects) ? source.subjects : []).map((entry, index) => normalizeSubject(entry, index, { chatId, turn, at: now }));
+  const ids = new Set();
+  const uniqueSubjects = subjects.filter((entry) => {
+    if (ids.has(entry.id)) return false;
+    ids.add(entry.id);
+    return true;
+  }).slice(-240);
+  const subjectById = new Map(uniqueSubjects.map((entry) => [entry.id, entry]));
+  const changes = (Array.isArray(source.changes) ? source.changes : []).map((entry, index) => {
+    const subjectIds = cleanStringArray(entry?.subjectIds ?? entry?.actorId ?? entry?.subjectId, 16);
+    const projectionSubject = subjectIds.map((id) => subjectById.get(id)).find(Boolean) || {};
+    return normalizeChange(entry, index, { chatId, turn, at: now, subject: projectionSubject });
+  }).slice(-480);
   const world = {
-    ...base,
-    ...source,
     schemaVersion: WORLD_SCHEMA_VERSION,
-    chatId: cleanText(options.chatId, cleanText(source.chatId)),
-    revision: Math.max(0, Number(source.revision) || 0),
-    commitId: cleanText(source.commitId),
-    observedThrough: { ...base.observedThrough, ...(source.observedThrough || {}) },
-    simulatedThrough: { ...base.simulatedThrough, ...(source.simulatedThrough || {}) },
+    chatId,
+    revision: Math.max(0, Number(source.revision || 0)),
+    turn,
     summary: cleanText(source.summary),
-    threads: threads.slice(0, 160).map((entry, index) => normalizeThread(entry, index, fallbackSource)),
-    lanes: {
-      actors: (Array.isArray(source?.lanes?.actors) ? source.lanes.actors : []).slice(0, 120).map(normalizeActorLane),
-      factions: (Array.isArray(source?.lanes?.factions) ? source.lanes.factions : []).slice(0, 80).map(normalizeFactionLane),
-      environment: {
-        summary: cleanText(source?.lanes?.environment?.summary),
-        economy: cleanText(source?.lanes?.environment?.economy),
-        incidents: cleanStringArray(source?.lanes?.environment?.incidents, 40),
-        trends: cleanStringArray(source?.lanes?.environment?.trends, 40),
-        winds: cleanStringArray(source?.lanes?.environment?.winds, 40),
-      },
+    subjects: uniqueSubjects,
+    changes,
+    receipts: (Array.isArray(source.receipts) ? source.receipts : [])
+      .map((entry) => normalizeWorldReceipt(entry, { chatId, turn, at: now }))
+      .filter((entry) => entry.sourceKey)
+      .slice(-240),
+    failures: (Array.isArray(source.failures) ? source.failures : []).map((entry) => ({
+      subjectId: cleanText(entry?.subjectId), code: cleanText(entry?.code, 'world_update_skipped'),
+      detail: cleanText(entry?.detail), turn: Math.max(0, Number(entry?.turn || turn)), at: cleanText(entry?.at, now),
+      sourceKey: cleanText(entry?.sourceKey),
+      discoverySignature: cleanText(entry?.discoverySignature),
+      discoveryAnchor: cleanText(entry?.discoveryAnchor),
+      discoveryName: cleanText(entry?.discoveryName),
+    })).slice(-80),
+    persistence: {
+      status: cleanText(source.persistence?.status, 'loaded'),
+      savedAt: cleanText(source.persistence?.savedAt),
+      readbackAt: cleanText(source.persistence?.readbackAt),
+      error: cleanText(source.persistence?.error),
     },
-    attempts: (Array.isArray(source.attempts) ? source.attempts : []).slice(-160).map((entry, index) => normalizeAttempt(entry, index, fallbackSource)),
-    adjudications: (Array.isArray(source.adjudications) ? source.adjudications : []).slice(-160).map((entry, index) => normalizeAdjudication(entry, index, fallbackSource)),
-    resolvedArchive: (Array.isArray(source.resolvedArchive) ? source.resolvedArchive : []).slice(-160).map((entry, index) => normalizeThread(entry, index, fallbackSource)),
-    tombstoneThroughTurn: Math.max(0, Number(source.tombstoneThroughTurn) || 0),
-    recall: {
-      pending: source?.recall?.pending && typeof source.recall.pending === 'object' ? deepClone(source.recall.pending) : null,
-      receipts: (Array.isArray(source?.recall?.receipts) ? source.recall.receipts : []).slice(-80).map((entry) => ({ ...entry })),
-    },
-    failures: (Array.isArray(source.failures) ? source.failures : []).slice(-40).map((entry) => ({ ...entry })),
-    checkpoint: source.checkpoint && typeof source.checkpoint === 'object' ? { ...base.checkpoint, ...deepClone(source.checkpoint) } : base.checkpoint,
-    persistence: source.persistence && typeof source.persistence === 'object' ? { ...base.persistence, ...source.persistence } : base.persistence,
-    migration: source.migration || (needsMigration ? { fromSchema, at: new Date().toISOString(), legacyItems: hasLegacyArrays ? threads.length : 0, unifiedItems: Array.isArray(source.threads) ? threads.length : 0 } : null),
-    updatedAt: cleanText(source.updatedAt, base.updatedAt),
+    migration: source.migration && typeof source.migration === 'object' ? deepClone(source.migration) : null,
+    updatedAt: now,
+    digest: '',
   };
-  for (const legacyKey of ['branches', 'npcIntents', 'agreements', 'hostilePlans']) delete world[legacyKey];
-  if (needsMigration) {
-    world.persistence = {
-      status: 'unverified', revision: world.revision, commitId: world.commitId,
-      digest: '', readbackAt: '', error: `世界状态已从v${fromSchema}升级到v${WORLD_SCHEMA_VERSION}，等待下一次保存读回证明`,
-    };
-  }
-  world.digest = needsMigration ? worldDigest(world) : cleanText(source.digest, worldDigest(world));
-  if (needsMigration) world.persistence.digest = world.digest;
+  world.digest = worldDigest(world);
   return world;
 }
 
-function mergeByStableId(previous, updates, normalizer, keyName = 'id') {
-  const result = new Map((previous || []).map((entry) => [entry[keyName], deepClone(entry)]));
-  for (let index = 0; index < (updates || []).length; index += 1) {
-    const normalized = normalizer(updates[index], index);
-    const prior = result.get(normalized[keyName]);
-    result.set(normalized[keyName], prior ? { ...prior, ...normalized } : normalized);
+export function seedWorldSubjectsFromProfiles(worldInput, profiles = {}, options = {}) {
+  const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
+  const turn = Math.max(world.turn, Number(options.turn || world.turn));
+  const excludedNames = new Set(cleanStringArray(options.excludedNames, 240).map((value) => value.toLocaleLowerCase()));
+  const profileList = Array.isArray(profiles) ? profiles : Object.values(profiles || {});
+  const excludedProfileIds = new Set(profileList
+    .filter((profile) => normalizedNames(profile).some((value) => excludedNames.has(value)))
+    .map((profile) => cleanText(profile?.profileId)).filter(Boolean));
+  const retainedSubjects = world.subjects.filter((subject) => !(subject.type === 'person'
+    && (excludedProfileIds.has(subject.profileId) || excludedNames.has(subject.name.toLocaleLowerCase()))));
+  let changed = world.subjects.length - retainedSubjects.length;
+  world.subjects = retainedSubjects;
+  const byProfile = new Map(world.subjects.filter((entry) => entry.profileId).map((entry) => [entry.profileId, entry]));
+  const peopleByName = new Map();
+  for (const subject of world.subjects.filter((entry) => entry.type === 'person')) {
+    const normalized = cleanText(subject.name).trim().toLocaleLowerCase();
+    if (!normalized) continue;
+    const matches = peopleByName.get(normalized) || [];
+    matches.push(subject);
+    peopleByName.set(normalized, matches);
   }
-  return [...result.values()];
-}
-
-export function parseWorldProposal(raw) {
-  const parsed = extractJsonObject(raw);
-  const legacy = ['branches', 'npcIntents', 'agreements', 'hostilePlans'].some((key) => Array.isArray(parsed?.[key]));
-  const threads = legacy ? legacyWorldRecords(parsed) : (Array.isArray(parsed.threads) ? parsed.threads : []);
-  return {
-    summary: cleanText(parsed.summary),
-    threads,
-    actorActions: Array.isArray(parsed.actorActions) ? parsed.actorActions : (Array.isArray(parsed.attempts) ? parsed.attempts : []),
-    adjudications: Array.isArray(parsed.adjudications) ? parsed.adjudications : [],
-    factions: Array.isArray(parsed.factions) ? parsed.factions : (Array.isArray(parsed?.lanes?.factions) ? parsed.lanes.factions : []),
-    environment: parsed.environment && typeof parsed.environment === 'object' ? parsed.environment : (parsed?.lanes?.environment || {}),
-    resolvedThreadIds: cleanStringArray(parsed.resolvedThreadIds),
-  };
-}
-
-function worldLinkKey(value) {
-  return cleanText(value).toLocaleLowerCase();
-}
-
-function proposalThreadCandidates(previousInput, proposal) {
-  const previous = normalizeWorldState(previousInput, { chatId: previousInput?.chatId });
-  const proposed = (proposal.threads || []).map((entry, index) => normalizeThread(entry, index));
-  const byId = new Map(previous.threads.map((thread) => [thread.id, thread]));
-  for (const thread of proposed) byId.set(thread.id, thread);
-  return { proposed, all: [...byId.values()] };
-}
-
-function exactThreadCandidates(threads, action) {
-  const explicitTitle = worldLinkKey(action?.threadTitle || action?.thread || action?.sourceThreadTitle);
-  if (explicitTitle) {
-    const titleMatches = threads.filter((thread) => worldLinkKey(thread.title) === explicitTitle);
-    if (titleMatches.length) return { matches: titleMatches, method: 'exact_title' };
-  }
-  const actor = worldLinkKey(action?.actorId || action?.actor || action?.actorName);
-  if (actor) {
-    const actorMatches = threads.filter((thread) => cleanStringArray(thread.actorIds).some((id) => worldLinkKey(id) === actor));
-    if (actorMatches.length) return { matches: actorMatches, method: 'unique_actor_thread' };
-  }
-  return { matches: [], method: '' };
-}
-
-/**
- * Repair only referential omissions that have one provable target. This is a
- * format-normalization step, not semantic guessing: ambiguous links remain
- * empty so strict validation can request a corrected model response.
- */
-export function repairWorldProposalLinks(previousInput = {}, proposalInput = {}) {
-  const proposal = deepClone(proposalInput && typeof proposalInput === 'object' ? proposalInput : {});
-  proposal.threads = Array.isArray(proposal.threads) ? proposal.threads : [];
-  proposal.actorActions = Array.isArray(proposal.actorActions) ? proposal.actorActions : [];
-  proposal.adjudications = Array.isArray(proposal.adjudications) ? proposal.adjudications : [];
-  const candidates = proposalThreadCandidates(previousInput, proposal);
-  const repairs = [];
-
-  proposal.actorActions = proposal.actorActions.map((entry, index) => {
-    const action = { ...(entry || {}) };
-    if (cleanText(action.threadId)) return action;
-    let inferred = exactThreadCandidates(candidates.proposed, action);
-    if (inferred.matches.length !== 1 && candidates.proposed.length === 1) {
-      inferred = { matches: candidates.proposed, method: 'only_proposed_thread' };
-    }
-    if (inferred.matches.length === 0) inferred = exactThreadCandidates(candidates.all, action);
-    if (inferred.matches.length === 1) {
-      action.threadId = inferred.matches[0].id;
-      repairs.push({ kind: 'actorAction.threadId', index, method: inferred.method });
-    } else if (inferred.matches.length === 0 && cleanText(action.actorId || action.actor || action.actorName) && cleanText(action.action || action.intent)) {
-      const actorId = cleanText(action.actorId || action.actor || action.actorName);
-      const actionText = cleanText(action.action, cleanText(action.intent));
-      const title = cleanText(action.goal, cleanText(action.intent, actionText));
-      const derived = normalizeThread({
-        kind: 'personal',
-        title,
-        stage: 'advancing',
-        actorIds: [actorId],
-        locations: action.locations || action.location,
-        keywords: action.keywords,
-        summary: actionText,
-        offscreenBeat: actionText,
-        publicTitle: cleanText(action.publicTitle),
-        publicSurface: cleanText(action.publicSurface),
-        publicClues: cleanStringArray(action.publicClues, 16),
-        nextBeat: actionText,
-        stakes: cleanText(action.risk, cleanStringArray(action.resourceCosts).join('；')),
-        knowledge: ['hidden', 'rumor', 'observed'].includes(action.threadKnowledge) ? action.threadKnowledge : 'hidden',
-      }, proposal.threads.length);
-      proposal.threads.push(derived);
-      candidates.proposed.push(derived);
-      candidates.all.push(derived);
-      action.threadId = derived.id;
-      repairs.push({ kind: 'thread.created', index: proposal.threads.length - 1, method: 'derived_from_unlinked_action' });
-      repairs.push({ kind: 'actorAction.threadId', index, method: 'derived_action_thread' });
-    }
-    return action;
-  });
-
-  proposal.adjudications = proposal.adjudications.map((entry, index) => {
-    const result = { ...(entry || {}) };
-    const actor = worldLinkKey(result.actorId || result.actor || result.actorName);
-    const threadId = cleanText(result.threadId);
-    const attemptId = cleanText(result.attemptId);
-    let actions = proposal.actorActions.filter((action) => {
-      if (actor && worldLinkKey(action.actorId || action.actor || action.actorName) !== actor) return false;
-      if (threadId && cleanText(action.threadId) !== threadId) return false;
-      if (attemptId && cleanText(action.attemptId) && cleanText(action.attemptId) !== attemptId) return false;
-      return Boolean(cleanText(action.threadId));
-    });
-    if (!actor && !threadId && !attemptId) actions = [];
-    if (!threadId && actions.length === 1) {
-      result.threadId = actions[0].threadId;
-      repairs.push({ kind: 'adjudication.threadId', index, method: 'unique_matching_action' });
-    }
-    if (!actor && actions.length === 1) {
-      result.actorId = cleanText(actions[0].actorId || actions[0].actor || actions[0].actorName);
-      repairs.push({ kind: 'adjudication.actorId', index, method: 'unique_matching_action' });
-    }
-    if (!attemptId && actions.length === 1 && cleanText(actions[0].attemptId)) {
-      result.attemptId = actions[0].attemptId;
-      repairs.push({ kind: 'adjudication.attemptId', index, method: 'unique_matching_action' });
-    }
-    return result;
-  });
-
-  return { proposal, repairs };
-}
-
-/**
- * Keep the model's private world work while failing closed on the much smaller
- * narrative projection. A projection defect is not evidence that the private
- * thread, actor attempt or adjudication is unusable, so it must not trigger a
- * full-model regeneration by itself.
- */
-export function sanitizeWorldProposalPublicProjection(previousInput = {}, proposalInput = {}, options = {}) {
-  const proposal = deepClone(proposalInput && typeof proposalInput === 'object' ? proposalInput : {});
-  const previous = normalizeWorldState(previousInput, { chatId: previousInput?.chatId });
-  const previousThreads = new Map(previous.threads.map((entry) => [cleanText(entry.id), entry]));
-  const acceptedText = String(options.acceptedText || '');
-  const repairs = [];
-  const clearUnsafeText = (entry, field, path) => {
-    if (!publicProjectionLeak(entry?.[field])) return;
-    entry[field] = '';
-    repairs.push({ path, action: 'cleared_unsafe_public_text' });
-  };
-  const filterUnsafeArray = (entry, field, path, limit = 16) => {
-    const before = cleanStringArray(entry?.[field], limit);
-    const after = before.filter((item) => !publicProjectionLeak(item));
-    entry[field] = after;
-    if (after.length !== before.length) repairs.push({ path, action: 'removed_unsafe_public_items', removed: before.length - after.length });
-  };
-
-  proposal.threads = (Array.isArray(proposal.threads) ? proposal.threads : []).map((source, index) => {
-    const entry = { ...(source || {}) };
-    clearUnsafeText(entry, 'publicTitle', `threads[${index}].publicTitle`);
-    clearUnsafeText(entry, 'publicSurface', `threads[${index}].publicSurface`);
-    filterUnsafeArray(entry, 'publicClues', `threads[${index}].publicClues`, 16);
-    filterUnsafeArray(entry, 'rumors', `threads[${index}].rumors`, 24);
-    if (entry.knowledge === 'rumor' && !entry.rumors.length) {
-      entry.knowledge = 'hidden';
-      repairs.push({ path: `threads[${index}].knowledge`, action: 'downgraded_empty_rumor_to_hidden' });
-    }
-    if (entry.knowledge === 'observed') {
-      const prior = previousThreads.get(cleanText(entry.id));
-      const alreadyObserved = prior?.knowledge === 'observed'
-        && cleanText(prior?.revealedSummary) === cleanText(entry.revealedSummary);
-      const hasExactEvidence = exactNarrativeEvidence(acceptedText, entry.revealEvidence);
-      if (!alreadyObserved && !hasExactEvidence) {
-        if (prior?.knowledge === 'observed') {
-          entry.knowledge = 'observed';
-          entry.revealedSummary = cleanText(prior.revealedSummary);
-          entry.revealEvidence = cleanText(prior.revealEvidence);
-          repairs.push({ path: `threads[${index}]`, action: 'restored_previous_observed_boundary' });
-        } else {
-          entry.knowledge = 'hidden';
-          entry.revealedSummary = '';
-          entry.revealEvidence = '';
-          repairs.push({ path: `threads[${index}]`, action: 'downgraded_unproven_observed_to_hidden' });
-        }
-      }
-    } else {
-      entry.revealedSummary = '';
-      entry.revealEvidence = '';
-    }
-    return entry;
-  });
-
-  proposal.actorActions = (Array.isArray(proposal.actorActions) ? proposal.actorActions : []).map((source, index) => {
-    const entry = { ...(source || {}) };
-    clearUnsafeText(entry, 'publicSurface', `actorActions[${index}].publicSurface`);
-    filterUnsafeArray(entry, 'publicClues', `actorActions[${index}].publicClues`, 12);
-    return entry;
-  });
-
-  proposal.adjudications = (Array.isArray(proposal.adjudications) ? proposal.adjudications : []).map((source, index) => {
-    const entry = { ...(source || {}) };
-    clearUnsafeText(entry, 'observableConsequence', `adjudications[${index}].observableConsequence`);
-    filterUnsafeArray(entry, 'publicClues', `adjudications[${index}].publicClues`, 12);
-    return entry;
-  });
-
-  return { proposal, repairs };
-}
-
-export function validateWorldProposal(proposal = {}, options = {}) {
-  const errors = [];
-  if (cleanText(proposal.summary).length < 6) errors.push('summary需要用完整句说明本轮世界总体变化');
-  const threads = Array.isArray(proposal.threads) ? proposal.threads : [];
-  const actions = Array.isArray(proposal.actorActions) ? proposal.actorActions : [];
-  const adjudications = Array.isArray(proposal.adjudications) ? proposal.adjudications : [];
-  const factions = Array.isArray(proposal.factions) ? proposal.factions : [];
-  const environment = proposal.environment && typeof proposal.environment === 'object' ? proposal.environment : {};
-  const previousWorld = normalizeWorldState(options.previous || {}, { chatId: options.previous?.chatId });
-  const linkedAction = (entry) => {
-    const attemptId = cleanText(entry?.attemptId);
-    if (attemptId) {
-      const exact = [...actions, ...previousWorld.attempts].find((action) => cleanText(action?.attemptId) === attemptId);
-      if (exact) return exact;
-    }
-    const actor = worldLinkKey(entry?.actorId || entry?.actor || entry?.actorName);
-    const threadId = cleanText(entry?.threadId);
-    const matching = (candidates) => candidates.filter((action) => {
-      if (threadId && cleanText(action?.threadId) !== threadId) return false;
-      if (actor && worldLinkKey(action?.actorId || action?.actor || action?.actorName) !== actor) return false;
-      return Boolean(threadId || actor);
-    });
-    const currentMatches = matching(actions);
-    if (currentMatches.length === 1) return currentMatches[0];
-    const previousMatches = matching(previousWorld.attempts);
-    return previousMatches.length === 1 ? previousMatches[0] : null;
-  };
-  const environmentHasContent = [environment.summary, environment.economy, ...(environment.incidents || []), ...(environment.trends || []), ...(environment.winds || [])].some((item) => cleanText(item));
-  if (!threads.length && !actions.length && !adjudications.length && !factions.length && !environmentHasContent && !(proposal.resolvedThreadIds || []).length) {
-    errors.push('本轮没有任何连续性、人物、阵营、环境或解决历史变化');
-  }
-  threads.forEach((entry, index) => {
-    const old = previousWorld.threads.find((thread) => cleanText(thread.id) === cleanText(entry?.id));
-    const merged = old ? { ...old, ...entry } : entry;
-    if (!cleanText(entry?.title)) errors.push(`threads[${index}]缺少title`);
-    if (![entry?.summary, entry?.offscreenBeat, entry?.nextBeat, entry?.stakes, entry?.intent, entry?.consequence].some((item) => cleanText(item))) {
-      errors.push(`threads[${index}]没有可用的进展、下一步或代价`);
-    }
-    const publicLeak = publicProjectionLeak([merged?.publicTitle, merged?.publicSurface, ...(Array.isArray(merged?.publicClues) ? merged.publicClues : [])]);
-    if (publicLeak) errors.push(`threads[${index}]公开投影含有不可直接公开的隐秘叙述：${publicLeak.slice(0, 80)}`);
-    if (merged?.knowledge === 'rumor' && publicProjectionLeak(merged?.rumors)) {
-      errors.push(`threads[${index}]传闻字段写成了确定的隐秘事实`);
-    }
-    if (merged?.knowledge === 'observed') {
-      const alreadyObserved = old?.knowledge === 'observed' && cleanText(old?.revealedSummary) === cleanText(merged?.revealedSummary);
-      if (!alreadyObserved && !exactNarrativeEvidence(options.acceptedText, merged?.revealEvidence)) {
-        errors.push(`threads[${index}]声明已揭示但revealEvidence不是本轮最终正文的精确原文`);
-      }
-      if (!cleanText(merged?.revealedSummary)) errors.push(`threads[${index}]已揭示但缺少只覆盖已公开范围的revealedSummary`);
-    }
-  });
-  actions.forEach((entry, index) => {
-    if (!cleanText(entry?.actorId || entry?.actor || entry?.actorName)) errors.push(`actorActions[${index}]缺少人物标识`);
-    if (!cleanText(entry?.threadId)) errors.push(`actorActions[${index}]缺少threadId`);
-    if (!cleanText(entry?.action || entry?.intent)) errors.push(`actorActions[${index}]缺少具体行动尝试`);
-    if (!cleanText(entry?.expectedDuration)) errors.push(`actorActions[${index}]缺少预计耗时`);
-    if (!cleanText(entry?.risk)) errors.push(`actorActions[${index}]缺少风险`);
-    const publicLeak = publicProjectionLeak([entry?.publicSurface, ...(Array.isArray(entry?.publicClues) ? entry.publicClues : [])]);
-    if (publicLeak) errors.push(`actorActions[${index}]公开投影含有不可直接公开的隐秘叙述：${publicLeak.slice(0, 80)}`);
-  });
-  adjudications.forEach((entry, index) => {
-    const status = cleanText(entry?.status);
-    const action = linkedAction(entry);
-    const visibility = ['hidden', 'rumor', 'observable'].includes(action?.visibility) ? action.visibility : 'hidden';
-    const stateChanges = cleanStringArray(entry?.appliedStateChanges);
-    if (!cleanText(entry?.threadId) && !cleanText(entry?.attemptId)) errors.push(`adjudications[${index}]缺少threadId或attemptId`);
-    if (!['success', 'partial', 'failure', 'delayed', 'blocked'].includes(status)) errors.push(`adjudications[${index}]缺少有效status`);
-    if (!cleanText(entry?.resultSummary || entry?.consequence)) errors.push(`adjudications[${index}]缺少私有裁决结果摘要`);
-    if (!cleanText(entry?.actualDuration)) errors.push(`adjudications[${index}]缺少实际耗时`);
-    if (['success', 'partial'].includes(status) && !stateChanges.length) {
-      errors.push(`adjudications[${index}]声称${status}但没有任何实际状态变化`);
-    }
-    if (stateChanges.some((item) => cleanText(item).length < 4)) errors.push(`adjudications[${index}]的实际状态变化不是完整可读内容`);
-    if (['success', 'partial'].includes(status) && visibility === 'observable' && !cleanText(entry?.observableConsequence)) {
-      errors.push(`adjudications[${index}]的公开行动缺少可观察后果`);
-    }
-    if (['success', 'partial'].includes(status) && visibility !== 'observable'
-      && !cleanText(entry?.observableConsequence) && !cleanText(entry?.revealPath)) {
-      errors.push(`adjudications[${index}]的隐秘结果既没有安全表象也没有未来发现路径`);
-    }
-    const publicLeak = publicProjectionLeak([entry?.observableConsequence, ...(Array.isArray(entry?.publicClues) ? entry.publicClues : [])]);
-    if (publicLeak) errors.push(`adjudications[${index}]可观察后果泄露了隐秘原因：${publicLeak.slice(0, 80)}`);
-  });
-  return { ok: errors.length === 0, errors };
-}
-
-function adjudicationSettlementReady(attempt, result) {
-  if (!cleanText(result?.resultSummary) || !cleanText(result?.actualDuration)) return false;
-  if (['success', 'partial'].includes(result?.status) && !cleanStringArray(result?.appliedStateChanges).length) return false;
-  if (['success', 'partial'].includes(result?.status) && attempt?.visibility === 'observable' && !cleanText(result?.observableConsequence)) return false;
-  if (['success', 'partial'].includes(result?.status) && attempt?.visibility !== 'observable'
-    && !cleanText(result?.observableConsequence) && !cleanText(result?.revealPath)) return false;
-  return true;
-}
-
-function profileIdentityMap(profiles = []) {
-  const map = new Map();
-  for (const profile of Array.isArray(profiles) ? profiles : Object.values(profiles || {})) {
-    const id = cleanText(profile?.profileId);
+  for (const profile of profileList) {
+    const profileId = cleanText(profile?.profileId);
     const name = cleanText(profile?.name);
-    if (id) map.set(id.toLocaleLowerCase(), profile);
-    if (name) map.set(name.toLocaleLowerCase(), profile);
-    for (const alias of cleanStringArray(profile?.aliases)) map.set(alias.toLocaleLowerCase(), profile);
+    if (!profileId || !name || normalizedNames(profile).some((value) => excludedNames.has(value))) continue;
+    const personality = profile.personality || {};
+    const identity = profile.identity || {};
+    const currentState = profile.currentState || {};
+    const anchor = [
+      [identity.species, identity.occupation, identity.affiliation].filter(Boolean).join(' / '),
+      [personality.temperament, personality.coreDesire, personality.values, personality.thinking, personality.moralBoundary].filter(Boolean).join('；'),
+    ].filter(Boolean).join('。');
+    const current = [currentState.location, currentState.condition, currentState.emotion].filter(Boolean).join('；');
+    const legacyMatches = [...new Map(normalizedNames(profile)
+      .flatMap((normalized) => peopleByName.get(normalized) || [])
+      .map((subject) => [subject.id, subject])).values()];
+    const existing = byProfile.get(profileId) || (legacyMatches.length === 1 ? legacyMatches[0] : null);
+    if (!byProfile.has(profileId) && legacyMatches.length > 1) {
+      world.failures.push({
+        subjectId: '', code: 'legacy_person_identity_ambiguous',
+        detail: `人物档案“${name}”同时匹配多个旧人物主体，已拒绝重复建主体并等待身份消歧`,
+        turn, at: cleanText(options.at, new Date().toISOString()), sourceKey: '',
+      });
+      changed += 1;
+      continue;
+    }
+    if (existing) {
+      let touched = false;
+      const hasWorldHistory = Math.max(0, Number(existing.lastAdvancedTurn || 0)) > 0
+        || (existing.recentModes || []).length > 0
+        || world.changes.some((change) => (change.subjectIds || []).includes(existing.id));
+      if (!existing.profileId) {
+        existing.profileId = profileId;
+        byProfile.set(profileId, existing);
+        touched = true;
+      }
+      if (anchor && !existing.anchor) {
+        existing.anchor = anchor;
+        touched = true;
+      }
+      if (current && !existing.current && !hasWorldHistory) {
+        existing.current = current;
+        touched = true;
+      }
+      const profileGoal = cleanText(currentState.goal);
+      if (profileGoal && !existing.goal && !hasWorldHistory) {
+        existing.goal = profileGoal;
+        touched = true;
+      }
+      const profileKnowledge = cleanStringArray(profile.knowledge, 32);
+      if (!existing.knowledge?.length && !hasWorldHistory && profileKnowledge.length) {
+        existing.knowledge = profileKnowledge;
+        touched = true;
+      }
+      const profileResources = cleanStringArray(profile.resources, 24);
+      if (!existing.resources?.length && !hasWorldHistory && profileResources.length) {
+        existing.resources = profileResources;
+        touched = true;
+      }
+      if (touched) {
+        existing.updatedTurn = turn;
+        existing.source = normalizeWorldSource(options.source, {
+          chatId: world.chatId,
+          messageId: options.messageId,
+          sourceKey: options.sourceKey,
+          excerpt: options.acceptedText,
+          at: options.at,
+        });
+        changed += 1;
+      }
+      continue;
+    }
+    const subject = normalizeSubject({
+      id: stableWorldId('subject-person', profileId), type: 'person', name, profileId,
+      anchor, current, goal: currentState.goal,
+      knowledge: profile.knowledge, resources: profile.resources,
+      constraints: ['只能依据本人已知信息、实际能力、当前位置和可调用资源行动', '不得替玩家决定行动、感受、同意或结果'],
+      nextAction: currentState.goal, nextCheckTurn: turn, status: 'active', createdTurn: turn, updatedTurn: turn,
+      source: normalizeWorldSource(options.source, {
+        chatId: world.chatId, messageId: options.messageId, sourceKey: options.sourceKey,
+        excerpt: options.acceptedText, at: options.at,
+      }),
+    }, world.subjects.length, { chatId: world.chatId, turn, at: options.at });
+    world.subjects.push(subject);
+    byProfile.set(profileId, subject);
+    peopleByName.set(name.toLocaleLowerCase(), [subject]);
+    changed += 1;
   }
-  return map;
+  if (changed) {
+    world.updatedAt = cleanText(options.at, new Date().toISOString());
+    world.digest = worldDigest(world);
+  }
+  return { world, changed };
+}
+
+export function applyAcceptedWorldObservations(worldInput, observations = [], options = {}) {
+  const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
+  const turn = Math.max(world.turn, Number(options.turn || world.turn));
+  const at = cleanText(options.at, new Date().toISOString());
+  const acceptedText = cleanText(options.acceptedText);
+  const source = normalizeWorldSource(options.source, {
+    chatId: world.chatId,
+    messageId: options.messageId,
+    sourceKey: options.sourceKey,
+    excerpt: acceptedText,
+    at,
+  });
+  const applied = [];
+  const confirmed = [];
+  for (const observation of Array.isArray(observations) ? observations : []) {
+    const subject = world.subjects.find((entry) => entry.id === cleanText(observation?.subjectId));
+    const fact = cleanText(observation?.fact);
+    if (!subject || !fact || fact.length < 3 || !acceptedText.includes(fact)) continue;
+    const provenPublicEffect = subject.publicEffect === fact || world.changes.some((change) =>
+      (change.subjectIds || []).includes(subject.id) && change.publicChannel !== 'none' && change.publicEffect === fact);
+    const requestedEpistemic = normalizeObservationEpistemic(observation?.epistemic);
+    const epistemic = requestedEpistemic === 'confirmed_public_effect' && provenPublicEffect
+      ? 'confirmed_public_effect'
+      : requestedEpistemic === 'confirmed_public_effect' ? 'unverified' : requestedEpistemic;
+    const duplicate = (subject.observations || []).some((entry) => entry?.source?.sourceKey === source.sourceKey
+      && entry.fact === fact && entry.epistemic === epistemic);
+    if (duplicate) continue;
+    subject.observations = [
+      ...(subject.observations || []),
+      normalizeSubjectObservation({ fact, epistemic, turn, source }, { chatId: world.chatId, turn, at }),
+    ].filter(Boolean).slice(-48);
+    if (epistemic === 'confirmed_public_effect') {
+      subject.observedFacts = cleanStringArray([...(subject.observedFacts || []), fact], 32).slice(-32);
+      confirmed.push(subject.id);
+    }
+    applied.push(subject.id);
+  }
+  if (applied.length) {
+    world.changes = world.changes.slice(-480);
+    world.updatedAt = at;
+    world.digest = worldDigest(world);
+  }
+  return { world, applied, confirmed };
+}
+
+export function ensureWorldObserverSubject(worldInput, options = {}) {
+  const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
+  const id = stableWorldId('subject-process', world.chatId, 'world-observer');
+  const observerIds = new Set(world.subjects
+    .filter((entry) => entry.id === id || cleanText(entry.name) === '世界背景与未归属进程')
+    .map((entry) => entry.id));
+  if (!observerIds.size) return { world, changed: 0 };
+  const beforeSubjects = world.subjects.length;
+  const beforeChanges = world.changes.length;
+  const beforeFailures = world.failures.length;
+  world.subjects = world.subjects.filter((entry) => !observerIds.has(entry.id));
+  world.changes = world.changes.filter((entry) => !(entry.subjectIds || []).some((subjectId) => observerIds.has(subjectId)));
+  world.failures = world.failures.filter((entry) => !observerIds.has(entry.subjectId));
+  const changed = (beforeSubjects - world.subjects.length) + (beforeChanges - world.changes.length) + (beforeFailures - world.failures.length);
+  world.updatedAt = cleanText(options.at, new Date().toISOString());
+  world.digest = worldDigest(world);
+  return { world, changed };
+}
+
+function subjectRelevance(subject, userInput) {
+  const source = recallSelectionInput(userInput).toLocaleLowerCase();
+  if (!source) return 0;
+  const values = [subject.name, subject.goal, subject.current, subject.nextAction, ...subject.threadKeys]
+    .map((item) => cleanText(item).toLocaleLowerCase()).filter(Boolean);
+  return values.some((item) => source.includes(item) || item.includes(source)) ? 4 : 0;
+}
+
+export function selectDueWorldSubjects(worldInput, options = {}) {
+  const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
+  const turn = Math.max(world.turn + 1, Number(options.turn || 0));
+  const budget = Math.max(1, Math.min(12, Number(options.limit || 6)));
+  const active = world.subjects.filter((entry) => entry.status !== 'done');
+  const due = active.filter((entry) => entry.nextCheckTurn <= turn || entry.silenceTurns >= 2);
+  const pool = due.length ? due : active.filter((entry) => entry.silenceTurns > 0);
+  const scored = pool.map((subject) => ({
+    subject,
+    score: Math.max(0, turn - subject.nextCheckTurn) * 5 + subject.silenceTurns * 3 + subjectRelevance(subject, options.userInput),
+  })).sort((left, right) => right.score - left.score || left.subject.lastAdvancedTurn - right.subject.lastAdvancedTurn || left.subject.id.localeCompare(right.subject.id));
+  const queues = new Map(['person', 'faction', 'process'].map((type) => [type, scored.filter((entry) => entry.subject.type === type)]));
+  const order = ['person', 'faction', 'process'];
+  const rotated = order.slice(turn % order.length).concat(order.slice(0, turn % order.length));
+  const selected = [];
+  while (selected.length < budget && rotated.some((type) => queues.get(type).length)) {
+    for (const type of rotated) {
+      const item = queues.get(type).shift();
+      if (item) selected.push(item.subject);
+      if (selected.length >= budget) break;
+    }
+  }
+  return selected.map(deepClone);
+}
+
+function choose(pool, random) {
+  const value = Math.max(0, Math.min(0.999999999, Number(random()) || 0));
+  return pool[Math.floor(value * pool.length)];
+}
+
+function deterministicRandom(seed) {
+  const source = cleanText(seed, 'mvu-world-ticket');
+  let state = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    state ^= source.charCodeAt(index);
+    state = Math.imul(state, 16777619);
+  }
+  return () => {
+    state += 0x6D2B79F5;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function feasibleWorldResults(subject, advanceMode, intensity) {
+  const resources = cleanStringArray(subject?.resources, 24);
+  const constraints = cleanStringArray(subject?.constraints, 24);
+  const status = normalizeSubjectStatus(subject?.status);
+  const reasons = [];
+  let results;
+  if (advanceMode === 'wait_condition') {
+    results = ['delayed', 'blocked', 'partial'];
+    reasons.push('本轮只等待或核对条件，不能在条件尚未被世界事实证明满足时直接宣告成功');
+  } else if (status === 'waiting' && ['act', 'evolve', 'threshold_check'].includes(advanceMode)) {
+    results = ['partial', 'blocked', 'delayed'];
+    reasons.push('主体仍处于等待或受阻状态，直接行动只能形成有限进展、继续受阻或延迟');
+  } else if (!resources.length && constraints.length && ['act', 'evolve', 'threshold_check'].includes(advanceMode)) {
+    results = ['partial', 'blocked', 'delayed'];
+    reasons.push('主体有明确约束却没有已记录可调用资源，不能凭空完整成功');
+  } else if (constraints.length > Math.max(1, resources.length) && intensity === 'high') {
+    results = ['partial', 'blocked', 'delayed'];
+    reasons.push('高强度推进面对的已知约束多于可用资源，完整成功不在本轮合理范围');
+  } else if (['prepare', 'observe', 'change_plan', 'accumulate'].includes(advanceMode)) {
+    results = ['success', 'partial', 'delayed'];
+    reasons.push('本轮目标是可验证的小步准备、观察、改案或积累；成功只表示这一步落地，不代表总目标完成');
+  } else {
+    results = ['success', 'partial', 'blocked', 'delayed'];
+    reasons.push('现有事实没有排除任何常规结算方向；随机只在这些同样可解释的范围内破同分');
+  }
+  return { results, reasons };
+}
+
+function advanceModeFromCommittedNextAction(subject) {
+  const action = cleanText(subject?.nextAction);
+  if (/(?:等待|等候|等到|待.+(?:出现|完成|到达)|条件满足|时机成熟|冷却)/u.test(action)) return 'wait_condition';
+  if (/(?:观察|监视|侦察|调查|核对|查阅|确认|打听|搜集情报|记录)/u.test(action)) return 'observe';
+  if (/(?:准备|筹备|布置|采购|召集|搭建|预备|安排)/u.test(action)) return 'prepare';
+  if (/(?:改换|调整|重拟|重新计划|改变计划|另寻|转而)/u.test(action)) return 'change_plan';
+  if (subject?.type === 'process' && /(?:积累|增长|扩散|蔓延|沉积|酝酿|恢复|消退)/u.test(action)) return 'accumulate';
+  if (subject?.type === 'process') return 'evolve';
+  return 'act';
+}
+
+function trustedCommittedActorPlan(subject) {
+  const receipt = normalizeActorPlanReceipt(subject?.planReceipt, { subjectId: subject?.id, turn: subject?.updatedTurn });
+  if (!receipt || receipt.phase !== 'next' || receipt.subjectId !== cleanText(subject?.id)) return null;
+  if (!receipt.nextAction || receipt.nextAction !== cleanText(subject?.nextAction)) return null;
+  if (!receipt.nextCheckTurn || receipt.nextCheckTurn !== Math.max(0, Number(subject?.nextCheckTurn || 0))) return null;
+  return receipt;
+}
+
+export function createWorldAdvanceTickets(subjects, options = {}) {
+  const random = typeof options.random === 'function'
+    ? options.random
+    : cleanText(options.seed) ? deterministicRandom(options.seed) : Math.random;
+  const turn = Math.max(0, Number(options.turn || 0));
+  const actorPlanMap = new Map((Array.isArray(options.actorPlans) ? options.actorPlans : [])
+    .filter((entry) => entry?.subjectId).map((entry) => [cleanText(entry.subjectId), normalizeActorPlanReceipt(entry, { turn })]));
+  return (Array.isArray(subjects) ? subjects : []).map((subject, index) => {
+    const subjectRandom = cleanText(options.seed) ? deterministicRandom(`${options.seed}|${subject.id}`) : random;
+    const suppliedPlan = actorPlanMap.get(cleanText(subject.id));
+    const committedPlan = suppliedPlan?.phase === 'bootstrap' && suppliedPlan.subjectId === cleanText(subject.id)
+      ? suppliedPlan
+      : trustedCommittedActorPlan(subject);
+    const frozenAttempt = cleanText(committedPlan?.attempt, cleanText(committedPlan?.nextAction));
+    const actionSubject = frozenAttempt ? { ...subject, nextAction: frozenAttempt } : subject;
+    const advanceMode = advanceModeFromCommittedNextAction(actionSubject);
+    const intensity = choose(['low', 'low', 'medium', 'medium', 'medium', 'high'], subjectRandom);
+    const feasibility = feasibleWorldResults(subject, advanceMode, intensity);
+    const weightedResults = feasibility.results.flatMap((result) => result === 'partial' ? [result, result] : [result]);
+    const resultEnvelope = choose(weightedResults, subjectRandom);
+    const reachability = options.publicReachability?.[subject.id];
+    const reachabilityEvidence = cleanText(reachability?.evidence);
+    const requestedChannel = normalizePublicChannel(reachability?.publicChannel);
+    const publicChannel = reachabilityEvidence ? requestedChannel : 'none';
+    const userRelation = publicChannel === 'none'
+      ? 'unrelated'
+      : ['named_action', 'direct_consequence'].includes(publicChannel) ? 'observable_now' : 'possible_intersection';
+    return {
+      ticketId: cleanText(options.seed)
+        ? stableWorldId('advance', options.seed, subject.id, turn)
+        : stableWorldId('advance', subject.id, turn, index, Math.floor(subjectRandom() * 0xffffff)),
+      subjectId: subject.id,
+      actorPlanId: cleanText(committedPlan?.planId),
+      attemptDirective: frozenAttempt || cleanText(subject.nextAction, cleanText(subject.goal)),
+      advanceMode,
+      intensity,
+      feasibleResults: feasibility.results,
+      feasibilityReasons: feasibility.reasons,
+      resultEnvelope,
+      userRelation,
+      publicChannel,
+      publicEvidence: publicChannel === 'none' ? '' : reachabilityEvidence,
+      biasGuard: [
+        '不得无因黑化、极端化、灾难化或制造不可逆升级',
+        '不得无因信任玩家、免费让利、主动服务玩家或把世界重新围绕玩家运转',
+        '必须服从角色卡、世界书、已接受事实、有限知识、资源、地点和时间成本',
+      ],
+    };
+  });
+}
+
+const WORLD_FIELD_ALIASES = new Map([
+  ['类型', 'type'], ['type', 'type'], ['名称', 'name'], ['名字', 'name'], ['name', 'name'],
+  ['正文称谓', 'aliases'], ['称谓', 'aliases'], ['别名', 'aliases'], ['aliases', 'aliases'],
+  ['稳定锚点', 'anchor'], ['锚点', 'anchor'], ['anchor', 'anchor'], ['现状', 'current'], ['当前状态', 'current'], ['current', 'current'],
+  ['目标', 'goal'], ['驱动', 'goal'], ['goal', 'goal'], ['已知', 'knowledge'], ['新增已知', 'knowledge'], ['认知', 'knowledge'], ['新增认知', 'knowledge'], ['knowledge', 'knowledge'],
+  ['资源', 'resources'], ['resources', 'resources'], ['约束', 'constraints'], ['限制', 'constraints'], ['constraints', 'constraints'],
+  ['尝试', 'attempt'], ['行动', 'attempt'], ['attempt', 'attempt'], ['结果', 'outcome'], ['结算', 'outcome'], ['outcome', 'outcome'],
+  ['代价', 'cost'], ['成本', 'cost'], ['cost', 'cost'], ['状态变化', 'stateChange'], ['真实变化', 'stateChange'], ['statechange', 'stateChange'],
+  ['下一步', 'nextAction'], ['后续', 'nextAction'], ['nextaction', 'nextAction'], ['下次检查', 'nextCheckTurn'], ['再检查回合', 'nextCheckTurn'], ['nextcheckturn', 'nextCheckTurn'],
+  ['状态', 'status'], ['status', 'status'], ['支线', 'threadKeys'], ['主题', 'threadKeys'], ['threadkeys', 'threadKeys'],
+  ['公开影响', 'publicEffect'], ['可见影响', 'publicEffect'], ['publiceffect', 'publicEffect'], ['公开渠道', 'publicChannel'], ['publicchannel', 'publicChannel'],
+  ['正文锚点', 'sourceAnchor'], ['来源锚点', 'sourceAnchor'], ['sourceanchor', 'sourceAnchor'],
+]);
+
+function worldFieldKey(value) {
+  return WORLD_FIELD_ALIASES.get(cleanText(value).replace(/[\s_-]+/gu, '').toLocaleLowerCase()) || '';
+}
+
+function cleanWorldList(value, limit) {
+  const rawItems = Array.isArray(value) ? value : [value];
+  const nonempty = rawItems.map((entry) => cleanText(entry)).filter(Boolean);
+  if (!nonempty.length || nonempty.every((entry) => /^(?:无|没有|已耗尽|已用尽|已解除|不适用|none|null|\[\])$/iu.test(entry))) return [];
+  return cleanStringArray(value, limit);
+}
+
+function parseWorldBlock(body) {
+  const fields = {};
+  let currentKey = '';
+  for (const rawLine of String(body || '').replace(/\r\n?/gu, '\n').split('\n')) {
+    const line = rawLine.trim();
+    if (!line || /^\[\/(?:SUBJECT|主体)\]$/iu.test(line)) continue;
+    const match = line.match(/^([^：:]{1,20})\s*[：:]\s*(.*)$/u);
+    if (match) {
+      const key = worldFieldKey(match[1]);
+      if (key) {
+        fields[key] = cleanText(match[2]);
+        currentKey = key;
+        continue;
+      }
+    }
+    if (currentKey) fields[currentKey] = cleanText(`${fields[currentKey]}\n${line}`);
+  }
+  for (const key of ['aliases', 'knowledge', 'resources', 'constraints', 'threadKeys']) {
+    if (fields[key] !== undefined) fields[key] = cleanWorldList(fields[key], key === 'threadKeys' ? 16 : 32);
+  }
+  if (fields.nextCheckTurn !== undefined) fields.nextCheckTurn = optionalInteger(String(fields.nextCheckTurn).match(/\d+/u)?.[0]);
+  return fields;
+}
+
+export function parseWorldProposal(raw, options = {}) {
+  const source = String(raw || '').replace(/^\s*```(?:text|markdown|md)?\s*/iu, '').replace(/\s*```\s*$/u, '').trim();
+  const scheduled = Array.isArray(options.subjects) ? options.subjects : [];
+  const scheduledByName = new Map();
+  for (const subject of scheduled) {
+    const key = cleanText(subject?.name).toLocaleLowerCase();
+    if (!key) continue;
+    const matches = scheduledByName.get(key) || [];
+    matches.push(subject);
+    scheduledByName.set(key, matches);
+  }
+  const markerPattern = /^\s*\[(?:(?:SUBJECT|主体)\s*[:#]?\s*)?([^\]\r\n]+)\]\s*$/gimu;
+  const markers = [...source.matchAll(markerPattern)].filter((match) => {
+    const id = cleanText(match[1]);
+    return id && !/^\//u.test(id) && !/^(?:WORLD|世界|SUMMARY|摘要)$/iu.test(id);
+  });
+  const updates = [];
+  const errors = [];
+  for (let index = 0; index < markers.length; index += 1) {
+    const marker = markers[index];
+    const bodyStart = Number(marker.index || 0) + marker[0].length;
+    const bodyEnd = index + 1 < markers.length ? Number(markers[index + 1].index || source.length) : source.length;
+    const fields = parseWorldBlock(source.slice(bodyStart, bodyEnd));
+    const markerId = cleanText(marker[1]).trim();
+    const wantsNew = /^NEW(?:$|[-_:：#\s])/iu.test(markerId);
+    const rawExcerpt = source.slice(Number(marker.index || 0), bodyEnd).slice(0, 2000);
+    const discoverySignature = wantsNew
+      ? stableWorldId('discovery', cleanText(fields.sourceAnchor) || cleanText(fields.name) || `${markerId}:${index}`)
+      : '';
+    const exactSubject = wantsNew ? null : scheduled.find((entry) => entry.id === markerId);
+    const nameMatches = wantsNew || exactSubject ? [] : scheduledByName.get(markerId.toLocaleLowerCase()) || [];
+    if (!wantsNew && !exactSubject && nameMatches.length > 1) {
+      errors.push({ subjectId: markerId, code: 'ambiguous_subject_id', detail: `主体名称“${markerId}”同时对应多个到期主体；必须使用稳定ID，已拒绝按顺序猜测` });
+      continue;
+    }
+    const scheduledSubject = exactSubject || (nameMatches.length === 1 ? nameMatches[0] : null);
+    const subjectId = scheduledSubject?.id || (wantsNew ? discoverySignature : markerId);
+    if (!wantsNew && !scheduledSubject) {
+      errors.push({ subjectId, code: 'unknown_subject_id', detail: `主体块 ${markerId || index + 1} 未匹配本轮任何到期主体，已局部跳过，绝不按位置串写` });
+      continue;
+    }
+    const meaningful = ['name', 'current', 'goal', 'attempt', 'outcome', 'stateChange', 'nextAction', 'publicEffect'].some((key) => cleanText(fields[key]));
+    if (!meaningful) {
+      errors.push({
+        subjectId,
+        discoverySignature: wantsNew && (cleanText(fields.sourceAnchor) || cleanText(fields.name)) ? discoverySignature : '',
+        discoveryAnchor: wantsNew ? cleanText(fields.sourceAnchor) : '',
+        discoveryName: wantsNew ? cleanText(fields.name) : '',
+        code: 'empty_subject_block',
+        detail: `主体块 ${markerId || index + 1} 没有可用内容`,
+      });
+      continue;
+    }
+    updates.push({ subjectId, ...fields, isNewDiscovery: wantsNew, discoverySignature, rawExcerpt });
+  }
+  const summary = cleanText(source.match(/^\s*(?:世界摘要|本轮摘要|summary)\s*[：:]\s*(.+)$/imu)?.[1]);
+  if (!markers.length) errors.push({ subjectId: '', code: 'no_subject_blocks', detail: '模型回复中没有找到主体分块' });
+  return { summary, updates, errors, raw: source };
+}
+
+export function parseActorPlan(raw, options = {}) {
+  const source = String(raw || '').replace(/^\s*```(?:text|markdown|md)?\s*/iu, '').replace(/\s*```\s*$/u, '').trim();
+  const subjectId = cleanText(options.subjectId, cleanText(options.subject?.id));
+  const phase = cleanText(options.phase) === 'bootstrap' ? 'bootstrap' : 'next';
+  const turn = Math.max(0, Number(options.turn || 0));
+  const marker = source.match(/^\s*\[(?:ACTOR_PLAN|主体计划)\s*[:#]?\s*([^\]\r\n]+)\]\s*$/imu);
+  if (!marker) return { ok: false, error: 'actor_plan_marker_missing', detail: '隔离主体规划没有返回绑定主体标记' };
+  const returnedId = cleanText(marker[1]);
+  if (!subjectId || returnedId !== subjectId) {
+    return { ok: false, error: 'actor_plan_subject_mismatch', detail: `隔离主体规划返回了 ${returnedId || '空ID'}，预期 ${subjectId || '空ID'}` };
+  }
+  const bodyStart = Number(marker.index || 0) + marker[0].length;
+  const closePattern = new RegExp(`^\\s*\\[\\/(?:ACTOR_PLAN|主体计划)\\]\\s*$`, 'imu');
+  const tail = source.slice(bodyStart);
+  const close = tail.match(closePattern);
+  const fields = parseWorldBlock(close ? tail.slice(0, Number(close.index || 0)) : tail);
+  const attempt = cleanText(fields.attempt);
+  const nextAction = cleanText(fields.nextAction);
+  const nextCheckTurn = Math.max(0, optionalInteger(fields.nextCheckTurn) ?? 0);
+  if (phase === 'bootstrap' && !attempt) {
+    return { ok: false, error: 'actor_plan_attempt_missing', detail: '隔离主体bootstrap没有形成具体本轮尝试' };
+  }
+  if (phase === 'next' && (!nextAction || nextCheckTurn <= turn)) {
+    return { ok: false, error: 'actor_plan_next_missing', detail: '隔离主体没有形成具体下一步或大于本轮的检查回合' };
+  }
+  const ticketId = cleanText(options.ticketId);
+  const basedOnAttempt = cleanText(options.basedOnAttempt);
+  const plan = normalizeActorPlanReceipt({
+    planId: stableWorldId('actor-plan', cleanText(options.sourceKey), subjectId, phase, ticketId, basedOnAttempt, attempt, nextAction, nextCheckTurn),
+    subjectId,
+    phase,
+    attempt,
+    goal: cleanText(fields.goal),
+    knowledge: cleanStringArray(fields.knowledge, 32),
+    nextAction,
+    nextCheckTurn,
+      basedOnTicketId: ticketId,
+      basedOnAttempt,
+      basedOnAdjudicationDigest: cleanText(options.adjudicationDigest),
+    plannedTurn: turn,
+    sourceKey: cleanText(options.sourceKey),
+    at: cleanText(options.at, new Date().toISOString()),
+  }, { subjectId, turn, sourceKey: options.sourceKey, at: options.at });
+  return { ok: true, plan, raw: source };
+}
+
+function mergeExplicitText(previous, update, key) {
+  return Object.prototype.hasOwnProperty.call(update, key) && cleanText(update[key]) ? cleanText(update[key]) : previous;
+}
+
+function mergeExplicitList(previous, update, key, limit) {
+  return Object.prototype.hasOwnProperty.call(update, key)
+    ? cleanWorldList(update[key], limit)
+    : previous;
+}
+
+function concreteWorldUpdate(update, ticket) {
+  const attempt = cleanText(update.attempt);
+  const outcome = cleanText(update.outcome);
+  let stateChange = cleanText(update.stateChange);
+  const resultType = normalizeResultType(ticket?.resultEnvelope || update.resultType || update.status);
+  if (!stateChange && outcome) stateChange = ['blocked', 'delayed', 'waiting'].includes(resultType) ? `尚未完成：${outcome}` : outcome;
+  const concrete = Boolean(attempt && (outcome || stateChange));
+  return { concrete, attempt, outcome, stateChange, resultType };
+}
+
+export function worldAdjudicationDigest(update = {}) {
+  return stableWorldId('adjudication', JSON.stringify({
+    attempt: cleanText(update.attempt),
+    outcome: cleanText(update.outcome),
+    cost: cleanText(update.cost),
+    stateChange: cleanText(update.stateChange),
+    current: cleanText(update.current),
+    resources: cleanWorldList(update.resources, 24),
+    constraints: cleanWorldList(update.constraints, 24),
+  }));
+}
+
+function completionClaimSupported(update, settlement) {
+  if (settlement.resultType !== 'success') return false;
+  const evidence = `${cleanText(update.outcome)}\n${cleanText(update.stateChange)}\n${cleanText(update.current)}`;
+  if (/(?:尚未|仍未|还未|没有|并未|未能|无法|不能|尚不能).{0,20}(?:完成|达成|解决|终结|关闭|兑现)|(?:只|仅|只是|仅仅).{0,16}(?:完成|达成|解决).{0,16}(?:准备|前置|局部|部分|阶段|一步)|(?:完成|达成).{0,12}(?:准备|前置工作|阶段性工作)/u.test(evidence)) return false;
+  return /(?:总目标|整体目标|全部目标|整个任务|全部任务|整项计划|整个过程|整座工程).{0,24}(?:已经|已|彻底|全部|正式)?(?:完成|达成|解决|终结|关闭|兑现)|(?:彻底|全部|整体|正式).{0,12}(?:完成|达成|解决|终结|关闭|兑现).{0,20}(?:目标|任务|计划|过程|危机|工程|调查|交易|谈判|行动)|(?:目标|任务|计划|过程|危机|工程|调查|交易|谈判|行动).{0,20}(?:已经|已)(?:全部|彻底|正式)?(?:完成|达成|解决|终结|关闭|兑现)/u.test(evidence);
+}
+
+function actionFollowsDirective(attempt, directive) {
+  const actual = cleanText(attempt);
+  const expected = cleanText(directive);
+  if (!expected) return true;
+  if (!actual) return false;
+  if (actual.includes(expected) || expected.includes(actual)) return true;
+  const meaningfulLength = expected.replace(/[^\p{Script=Han}\p{L}\p{N}]/gu, '').length;
+  const required = Math.max(2, Math.min(10, Math.ceil(Math.max(1, meaningfulLength - 1) * 0.55)));
+  return sharedCjkBigrams(actual, expected) >= required;
+}
+
+function settlementEnvelopeConflict(settlement, update) {
+  const evidence = [update.outcome, update.stateChange, update.current].map((value) => cleanText(value)).filter(Boolean).join('；');
+  if (settlement.resultType === 'success') {
+    return /^(?:未能|无法|失败|受阻|没有成功)|(?:本轮|本次|这一步|该行动|尝试|行动).{0,18}(?:未能|无法|失败|受阻|没有成功)/u.test(evidence);
+  }
+  if (settlement.resultType === 'partial') {
+    const wholeCompletion = /(?:总目标|整体目标|全部目标|整个任务|全部任务|整项计划|整个过程|整座工程|所有阶段).{0,24}(?:已经|已|彻底|全部|完全|正式)?(?:完成|达成|解决|终结|关闭|兑现)|(?:彻底|全部|整体|完全).{0,12}(?:完成|达成|解决|终结|关闭|兑现).{0,20}(?:目标|任务|计划|过程|危机|工程|调查|交易|谈判|行动|阶段)/u.test(evidence);
+    if (wholeCompletion) return true;
+    const stateChange = cleanText(update.stateChange);
+    const noProgress = !stateChange
+      || /^(?:尚未完成[:：]?|未能|无法|失败|受阻|没有成功|没有变化|毫无进展|零进展|保持原状|仍然原样|依旧原样)/u.test(stateChange)
+      || /(?:没有|未|毫无|零).{0,8}(?:实际|有效|任何)?(?:推进|进展|变化|成果)/u.test(stateChange)
+      || /(?:完全|彻底)?(?:失败|受阻).{0,16}(?:保持原状|没有变化|毫无进展|零进展)/u.test(stateChange);
+    if (noProgress) return true;
+  }
+  if (['blocked', 'delayed', 'waiting'].includes(settlement.resultType)) {
+    return /(?:本轮|本次|这一步|该行动|尝试|行动).{0,18}(?:已经|已|彻底|完全)?(?:成功完成|全部完成|达成目标|彻底成功)|(?:总目标|整体目标|全部目标).{0,16}(?:已经|已)?(?:完成|达成)/u.test(evidence);
+  }
+  return false;
+}
+
+function privateWorldFragments(subject = {}) {
+  const fragments = [];
+  const add = (field, value) => {
+    for (const item of (Array.isArray(value) ? value : [value])) {
+      const text = cleanText(item);
+      if (!text) continue;
+      const candidates = [text, ...text.split(/[；;。！!？?，,、\n]/u).map((entry) => cleanText(entry))];
+      for (const candidate of candidates) {
+        if (candidate.length < 5 || /^(?:正常|稳定|活跃|等待|未知|无|没有|进行中|已完成|受阻)$/u.test(candidate)) continue;
+        fragments.push({ field, text: candidate });
+      }
+    }
+  };
+  add('current', subject.current);
+  add('resources', subject.resources);
+  add('constraints', subject.constraints);
+  add('threadKeys', subject.threadKeys);
+  return fragments;
+}
+
+function privateWorldHistoryFragments(history = []) {
+  const fragments = [];
+  const add = (field, value) => {
+    const text = cleanText(value);
+    if (!text) return;
+    const candidates = [text, ...text.split(/[；;。！!？?，,、\n]/u).map((entry) => cleanText(entry))];
+    for (const candidate of candidates) {
+      if (candidate.length < 5 || /^(?:正常|稳定|活跃|等待|未知|无|没有|进行中|已完成|受阻)$/u.test(candidate)) continue;
+      fragments.push({ field, text: candidate });
+    }
+  };
+  for (const entry of Array.isArray(history) ? history : []) {
+    if (!entry || typeof entry !== 'object') continue;
+    for (const field of ['attempt', 'outcome', 'cost', 'stateChange']) add(`history.${field}`, entry[field]);
+  }
+  return fragments;
+}
+
+export function sanitizeWorldAdjudication(updateInput = {}, subject = {}, options = {}) {
+  const update = deepClone(updateInput && typeof updateInput === 'object' ? updateInput : {});
+  const subjectId = cleanText(subject.id);
+  const subjects = Array.isArray(options.subjects) ? options.subjects : [];
+  const publicEvidence = [options.acceptedText, options.publicEvidence, options.knowledgeEvidence]
+    .map((value) => typeof value === 'string' ? value : JSON.stringify(value || ''))
+    .join('\n');
+  const subjectHistories = options.subjectHistories && typeof options.subjectHistories === 'object'
+    ? options.subjectHistories
+    : {};
+  const historyFor = (id) => Object.prototype.hasOwnProperty.call(subjectHistories, id) && Array.isArray(subjectHistories[id])
+    ? subjectHistories[id]
+    : [];
+  const ownPrivate = [
+    cleanText(update.attempt),
+    subject.current,
+    ...(subject.resources || []),
+    ...(subject.constraints || []),
+    ...(subject.threadKeys || []),
+    ...privateWorldHistoryFragments(historyFor(subjectId)).map((fragment) => fragment.text),
+  ]
+    .map((value) => cleanText(value)).filter(Boolean).join('\n');
+  const forbidden = [];
+  for (const other of subjects) {
+    if (!other || cleanText(other.id) === subjectId) continue;
+    const otherFragments = [
+      ...privateWorldFragments(other),
+      ...privateWorldHistoryFragments(historyFor(cleanText(other.id))),
+    ];
+    for (const fragment of otherFragments) {
+      if (ownPrivate.includes(fragment.text) || publicEvidence.includes(fragment.text)) continue;
+      forbidden.push({ ownerId: cleanText(other.id), ...fragment });
+    }
+  }
+  const contaminatedFields = [];
+  for (const field of ['outcome', 'cost', 'stateChange', 'current', 'publicEffect']) {
+    const text = cleanText(update[field]);
+    const leak = text && forbidden.find((fragment) => text.includes(fragment.text));
+    if (leak) contaminatedFields.push({ field, ...leak });
+  }
+  for (const field of ['resources', 'constraints']) {
+    for (const item of cleanWorldList(update[field], field === 'resources' ? 24 : 24)) {
+      const leak = forbidden.find((fragment) => item.includes(fragment.text));
+      if (leak) contaminatedFields.push({ field, ...leak });
+    }
+  }
+  if (contaminatedFields.length) {
+    return {
+      ok: false,
+      code: 'cross_subject_private_leak',
+      detail: `全局裁决块把其他主体的私密片段写入 ${[...new Set(contaminatedFields.map((entry) => entry.field))].join('、')}；该主体块已局部拒绝，未交给后续规划器`,
+      update: null,
+      stripped: [],
+    };
+  }
+  const stripped = [];
+  for (const field of ['goal', 'knowledge', 'nextAction', 'nextCheckTurn']) {
+    if (!Object.prototype.hasOwnProperty.call(update, field)) continue;
+    delete update[field];
+    stripped.push({ code: 'adjudicator_owned_field_removed', field });
+  }
+  const existingThreadKeys = cleanStringArray(subject.threadKeys, 16);
+  const proposedThreadKeys = cleanWorldList(update.threadKeys, 16);
+  const ownResultEvidence = [update.outcome, update.stateChange, update.current, update.publicEffect].map((value) => cleanText(value)).join('\n');
+  const acceptedThreadKeys = [];
+  for (const key of proposedThreadKeys) {
+    if (existingThreadKeys.includes(key)) continue;
+    const privateLeak = forbidden.find((fragment) => fragment.field === 'threadKeys' && (key.includes(fragment.text) || fragment.text.includes(key)));
+    const exactEvidence = `${publicEvidence}\n${ownResultEvidence}`.includes(key);
+    if (privateLeak || !exactEvidence) {
+      stripped.push({ code: privateLeak ? 'cross_subject_thread_key_removed' : 'unproven_thread_key_removed', field: 'threadKeys', value: key });
+      continue;
+    }
+    acceptedThreadKeys.push(key);
+  }
+  update.threadKeys = cleanStringArray([...existingThreadKeys, ...acceptedThreadKeys], 16);
+  update.subjectId = subjectId || cleanText(update.subjectId);
+  return { ok: true, update, stripped };
+}
+
+export function validateWorldAdjudication(update = {}, ticket = {}, options = {}) {
+  const settlement = concreteWorldUpdate(update, ticket);
+  if (!settlement.concrete) return { ok: false, code: 'no_concrete_settlement', detail: '主体块没有同时说明具体尝试与结果/变化' };
+  if (cleanText(ticket.attemptDirective) && settlement.attempt !== cleanText(ticket.attemptDirective)) {
+    return { ok: false, code: 'attempt_exact_mismatch', detail: '全局裁决器改写了脚本冻结的主体attempt' };
+  }
+  if (cleanText(ticket.attemptDirective) && !actionFollowsDirective(settlement.attempt, ticket.attemptDirective)) {
+    return { ok: false, code: 'attempt_directive_mismatch', detail: '主体尝试没有执行本轮冻结行动' };
+  }
+  if (!options.observationOnly && settlementEnvelopeConflict(settlement, update)) {
+    return { ok: false, code: 'result_envelope_conflict', detail: `主体文字结算与本地票据的${settlement.resultType}方向明确冲突` };
+  }
+  return { ok: true, settlement };
+}
+
+function boundNextActorPlan(planInput, ticket, subject, turn, adjudication) {
+  const plan = normalizeActorPlanReceipt(planInput, { subjectId: subject?.id, turn });
+  if (!plan) return { ok: false, code: 'actor_plan_missing', detail: '世界裁决后没有收到该主体自己的隔离下一计划' };
+  if (plan.phase !== 'next' || plan.subjectId !== subject.id) {
+    return { ok: false, code: 'actor_plan_subject_mismatch', detail: '隔离下一计划没有绑定到当前稳定主体' };
+  }
+  if (!ticket?.ticketId || !ticket?.actorPlanId || plan.basedOnTicketId !== ticket.ticketId
+    || plan.basedOnAttempt !== cleanText(ticket.attemptDirective)) {
+    return { ok: false, code: 'actor_plan_receipt_mismatch', detail: '隔离下一计划没有绑定本轮冻结ticket与逐字attempt' };
+  }
+  if (!plan.basedOnAdjudicationDigest || plan.basedOnAdjudicationDigest !== worldAdjudicationDigest(adjudication)) {
+    return { ok: false, code: 'actor_plan_adjudication_mismatch', detail: '隔离下一计划没有绑定本轮实际裁决内容，不能复用其他结果生成的旧计划' };
+  }
+  if (!plan.nextAction || plan.nextCheckTurn <= turn) {
+    return { ok: false, code: 'actor_plan_next_missing', detail: '隔离下一计划缺少具体下一步或大于本轮的检查回合' };
+  }
+  return { ok: true, plan };
 }
 
 export function applyWorldProposal(previousInput, proposalInput, options = {}) {
-  const previous = normalizeWorldState(previousInput, { chatId: options.chatId });
-  const proposal = proposalInput && typeof proposalInput === 'object' ? proposalInput : {};
+  const previous = normalizeWorldState(previousInput, { chatId: options.chatId || previousInput?.chatId });
+  const proposal = proposalInput && typeof proposalInput === 'object' ? proposalInput : { updates: [], errors: [] };
+  const requestedTurn = Number(options.turn || 0);
+  const turn = options.sameTurn
+    ? Math.max(previous.turn, requestedTurn)
+    : Math.max(previous.turn + 1, requestedTurn);
   const now = cleanText(options.at, new Date().toISOString());
-  const turn = Math.max(Number(previous.observedThrough?.turn) + 1, Number(options.turn) || 0);
-  const sourceRef = normalizeSourceRef(options.sourceRef, { chatId: options.chatId || previous.chatId, turn, at: now });
-  const priorThreads = new Map(previous.threads.map((thread) => [cleanText(thread.id), thread]));
-  const normalizedUpdates = (proposal.threads || []).map((entry, index) => {
-    const prior = priorThreads.get(cleanText(entry?.id));
-    return normalizeThread(prior ? { ...prior, ...entry } : entry, index, sourceRef);
-  });
-  const resolvedIds = new Set(cleanStringArray(proposal.resolvedThreadIds));
-  for (const thread of normalizedUpdates) if (thread.stage === 'resolved') resolvedIds.add(thread.id);
-  const mergedThreads = mergeByStableId(previous.threads, normalizedUpdates, (entry, index) => normalizeThread(entry, index, sourceRef));
-  const activeThreads = [];
-  const archive = new Map((previous.resolvedArchive || []).map((entry) => [entry.id, entry]));
-  for (const thread of mergedThreads) {
-    if (resolvedIds.has(thread.id) || thread.stage === 'resolved') archive.set(thread.id, { ...thread, stage: 'resolved', updatedAt: now });
-    else activeThreads.push(thread);
+  const source = normalizeWorldSource(options.source, { chatId: previous.chatId, messageId: options.messageId, sourceKey: options.sourceKey, excerpt: options.acceptedText, at: now });
+  const ticketMap = new Map((Array.isArray(options.tickets) ? options.tickets : []).map((entry) => [entry.subjectId, entry]));
+  const actorPlanMap = new Map((Array.isArray(options.actorPlans) ? options.actorPlans : [])
+    .filter((entry) => entry?.subjectId).map((entry) => [cleanText(entry.subjectId), entry]));
+  const requireActorPlans = Boolean(options.requireActorPlans);
+  const scheduledIds = new Set((Array.isArray(options.scheduledSubjects) ? options.scheduledSubjects : []).map((entry) => entry.id));
+  const world = deepClone(previous);
+  const subjectIndex = new Map(world.subjects.map((entry, index) => [entry.id, index]));
+  const byName = new Map();
+  for (const [index, entry] of world.subjects.entries()) {
+    const key = entry.name.toLocaleLowerCase();
+    const indexes = byName.get(key) || [];
+    indexes.push(index);
+    byName.set(key, indexes);
   }
+  const applied = [];
+  const appliedSet = new Set();
+  const skipped = [];
+  const profileDiscoveries = [];
+  const resolvedDiscoverySignatures = new Set();
 
-  const identities = profileIdentityMap(options.profiles);
-  const newAttempts = [];
-  const newResults = [];
-  const actorLaneUpdates = [];
-  for (let index = 0; index < (proposal.actorActions || []).length; index += 1) {
-    const raw = proposal.actorActions[index] || {};
-    const identity = identities.get(cleanText(raw.actorId || raw.actor || raw.actorName).toLocaleLowerCase());
-    const actorId = cleanText(identity?.profileId, cleanText(raw.actorId, cleanText(raw.actor)));
-    const attempt = normalizeAttempt({ ...raw, actorId, actorName: identity?.name || raw.actorName || raw.actor }, index, sourceRef);
-    if (!identity) {
-      actorLaneUpdates.push(normalizeActorLane({ actorId: attempt.actorId || `unready-${index + 1}`, name: attempt.actorName, goal: raw.goal || raw.intent, status: 'blocked_unready', sourceThreadIds: [attempt.threadId] }, index));
+  for (const proposalUpdate of Array.isArray(proposal.updates) ? proposal.updates : []) {
+    let rawUpdate = proposalUpdate;
+    const requestedId = cleanText(rawUpdate.subjectId);
+    const discoverySignature = cleanText(rawUpdate.discoverySignature);
+    const discoveryFailure = (code, detail) => ({
+      subjectId: discoverySignature || requestedId,
+      discoverySignature,
+      discoveryAnchor: cleanText(rawUpdate.sourceAnchor),
+      discoveryName: cleanText(rawUpdate.name),
+      code,
+      detail,
+    });
+    let index = subjectIndex.get(requestedId);
+    if (index === undefined && requestedId) {
+      const matches = byName.get(requestedId.toLocaleLowerCase()) || [];
+      if (matches.length > 1) {
+        skipped.push({ subjectId: requestedId, code: 'ambiguous_subject_id', detail: `主体名称“${requestedId}”对应多个稳定主体；必须使用稳定ID，未写入任何一个主体` });
+        continue;
+      }
+      if (matches.length === 1) index = matches[0];
+    }
+    let subject = index === undefined ? null : world.subjects[index];
+    let subjectWasNew = false;
+    if (subject && rawUpdate.isNewDiscovery) {
+      const sameDiscovery = discoverySignature && subject.discoverySignature === discoverySignature;
+      if (sameDiscovery) {
+        resolvedDiscoverySignatures.add(discoverySignature);
+        continue;
+      }
+      skipped.push(discoveryFailure('duplicate_new_subject', `NEW主体稳定ID“${subject.id}”已经存在且不属于本次发现签名；未重复创建或覆盖`));
       continue;
     }
-    attempt.status = 'pending_world';
-    newAttempts.push(attempt);
-    const rawActorKey = cleanText(raw.actorId || raw.actor || raw.actorName).toLocaleLowerCase();
-    const rawResult = (proposal.adjudications || []).find((item) => {
-      if (cleanText(item?.attemptId) === attempt.attemptId) return true;
-      const resultActorKey = cleanText(item?.actorId || item?.actor || item?.actorName).toLocaleLowerCase();
-      return Boolean(rawActorKey && resultActorKey === rawActorKey && cleanText(item?.threadId) === attempt.threadId);
-    });
-    if (rawResult) {
-      const result = normalizeAdjudication({ ...rawResult, attemptId: attempt.attemptId, actorId }, index, sourceRef);
-      if (adjudicationSettlementReady(attempt, result)) {
-        newResults.push(result);
-        attempt.status = 'settled';
+    if (!subject) {
+      const newType = explicitSubjectType(rawUpdate.type);
+      if (!newType) {
+        skipped.push(discoveryFailure('new_subject_type_required', 'NEW主体必须显式填写有效类型（faction或process；人物需转交人物医师），该块未写入世界权威'));
+        continue;
+      }
+      if (newType === 'person') {
+        const discoveryName = cleanText(rawUpdate.name);
+        const acceptedNarrative = cleanText(options.acceptedText);
+        const sourceAnchor = cleanText(rawUpdate.sourceAnchor);
+        if (sourceAnchor.length < 3 || !acceptedNarrative.includes(sourceAnchor)) {
+          skipped.push(discoveryFailure('new_subject_missing_accepted_anchor', 'NEW人物发现也必须提供最终接受正文中的逐字“正文锚点”；仅名称命中不能触发人物补档'));
+          continue;
+        }
+        const exactNarrativeNames = cleanStringArray([discoveryName, ...(Array.isArray(rawUpdate.aliases) ? rawUpdate.aliases : [])], 12)
+          .filter((name) => name.length >= 2 && acceptedNarrative.includes(name));
+        if (!exactNarrativeNames.length && sourceAnchor.length >= 2 && sourceAnchor.length <= 32
+          && !/[。！？!?，,；;：:\n]/u.test(sourceAnchor) && acceptedNarrative.includes(sourceAnchor)) exactNarrativeNames.push(sourceAnchor);
+        if (discoveryName && exactNarrativeNames.length) {
+          profileDiscoveries.push({
+            label: discoveryName,
+            names: cleanStringArray([discoveryName, ...exactNarrativeNames], 12),
+            evidence: sourceAnchor.slice(0, 1200),
+            code: 'new_person_requires_profile',
+          });
+        }
+        skipped.push(discoveryFailure(
+          'new_person_requires_profile',
+          exactNarrativeNames.length
+            ? '世界引擎不能创建没有完整人物档案的新人物；正文逐字称谓已转交人物医师'
+            : '世界引擎提出了新人物，但没有提供正文逐字名称、正文称谓或稳定短锚点；已拒绝并等待定向重试',
+        ));
+        continue;
+      }
+      const discoveryName = cleanText(rawUpdate.name);
+      const acceptedNarrative = cleanText(options.acceptedText);
+      const sourceAnchor = cleanText(rawUpdate.sourceAnchor);
+      const quotedSourceAnchor = sourceAnchor.length >= 3 && acceptedNarrative.includes(sourceAnchor);
+      if (!discoveryName || !quotedSourceAnchor) {
+        skipped.push(discoveryFailure(
+          'new_subject_missing_accepted_anchor',
+          'NEW势力或过程必须提供最终接受正文中的逐字“正文锚点”；名称命中不能替代正文证据，已拒绝无因增殖',
+        ));
+        continue;
+      }
+      if (!cleanText(rawUpdate.name)) {
+        skipped.push(discoveryFailure('new_subject_incomplete', '新主体缺少名称，已跳过该块'));
+        continue;
+      }
+      const duplicateIndexes = byName.get(cleanText(rawUpdate.name).toLocaleLowerCase()) || [];
+      if (duplicateIndexes.length) {
+        const duplicate = world.subjects[duplicateIndexes[0]];
+        const sameDiscovery = discoverySignature && duplicate.discoverySignature === discoverySignature;
+        if (sameDiscovery) {
+          resolvedDiscoverySignatures.add(discoverySignature);
+          continue;
+        }
+        skipped.push(discoveryFailure('duplicate_new_subject', `NEW主体名称“${duplicate.name}”已经存在；请使用现有稳定ID更新，未重复创建或伪造变化`));
+        continue;
+      }
+      const discoveryShell = Boolean(rawUpdate.isNewDiscovery || requireActorPlans);
+      const discoveredFields = discoveryShell
+        ? {
+          type: newType,
+          name: discoveryName,
+          anchor: sourceAnchor,
+          current: sourceAnchor,
+          goal: '',
+          knowledge: [],
+          resources: [],
+          constraints: [],
+          threadKeys: [],
+          publicEffect: '',
+          publicChannel: 'none',
+          nextAction: '',
+          nextCheckTurn: turn + 1,
+          status: 'waiting',
+          planReceipt: null,
+          discoverySignature,
+        }
+        : rawUpdate;
+      subject = normalizeSubject({ ...discoveredFields, type: newType, id: requestedId || undefined, createdTurn: turn, updatedTurn: turn, nextCheckTurn: turn + 1, source }, world.subjects.length, { chatId: previous.chatId, turn, at: now });
+      subjectWasNew = true;
+      if (subjectIndex.has(subject.id)) {
+        skipped.push(discoveryFailure('duplicate_new_subject', `NEW主体稳定ID“${subject.id}”已经存在；请使用现有稳定ID更新，未重复创建或伪造变化`));
+        continue;
+      }
+      index = world.subjects.length;
+      world.subjects.push(subject);
+      subjectIndex.set(subject.id, index);
+      const nameIndexes = byName.get(subject.name.toLocaleLowerCase()) || [];
+      nameIndexes.push(index);
+      byName.set(subject.name.toLocaleLowerCase(), nameIndexes);
+      if (discoveryShell) {
+        applied.push(subject.id);
+        appliedSet.add(subject.id);
+        if (discoverySignature) resolvedDiscoverySignatures.add(discoverySignature);
+        continue;
       }
     }
-    actorLaneUpdates.push(normalizeActorLane({ actorId, name: identity.name, goal: raw.goal || identity?.currentState?.goal, planSteps: raw.planSteps, nextActionTurn: Number(raw.nextActionTurn) || turn + 1, lastActionTurn: turn, silenceTurns: 0, status: 'ready', lastAction: attempt.action, sourceThreadIds: [attempt.threadId] }, index));
+    const ticket = ticketMap.get(subject.id);
+    const observationOnly = Boolean(ticket?.observationOnly || ticket?.advanceMode === 'accepted_observation');
+    if (scheduledIds.has(subject.id) && requireActorPlans && !observationOnly) {
+      const sanitized = sanitizeWorldAdjudication(rawUpdate, subject, {
+        subjects: previous.subjects,
+        subjectHistories: options.subjectHistories,
+        acceptedText: options.acceptedText,
+        publicEvidence: options.publicEvidence?.[subject.id],
+        knowledgeEvidence: options.knowledgeEvidence?.[subject.id],
+      });
+      if (!sanitized.ok) {
+        skipped.push({ subjectId: subject.id, code: sanitized.code, detail: sanitized.detail });
+        continue;
+      }
+      rawUpdate = sanitized.update;
+      for (const item of sanitized.stripped || []) {
+        skipped.push({
+          subjectId: subject.id,
+          code: item.code,
+          detail: item.field === 'threadKeys'
+            ? `全局裁决返回的支线键“${cleanText(item.value)}”没有本主体或公开证据；已局部剥离，既有支线键保持不变`
+            : `全局裁决无权写入 ${item.field}；该字段已剥离并由主体隔离规划器独占`,
+        });
+      }
+    }
+    const settlement = concreteWorldUpdate(rawUpdate, ticket);
+    let boundPlan = null;
+    if (scheduledIds.has(subject.id) && !settlement.concrete) {
+      skipped.push({ subjectId: subject.id, code: 'no_concrete_settlement', detail: '主体块没有同时说明具体尝试与结果/变化，旧状态已保留并等待重试' });
+      continue;
+    }
+    if (scheduledIds.has(subject.id) && !observationOnly && requireActorPlans) {
+      if (!ticket?.actorPlanId || !cleanText(ticket?.attemptDirective)) {
+        skipped.push({ subjectId: subject.id, code: 'actor_plan_missing', detail: '本轮没有该主体独立生成并冻结的行动计划；该主体保持原状，其他主体仍可提交' });
+        continue;
+      }
+      if (settlement.attempt !== cleanText(ticket.attemptDirective)) {
+        skipped.push({ subjectId: subject.id, code: 'attempt_exact_mismatch', detail: '全局裁决器改写了脚本冻结的主体attempt；该主体局部拒绝，不能用近义词匹配放行' });
+        continue;
+      }
+      const binding = boundNextActorPlan(actorPlanMap.get(subject.id), ticket, subject, turn, rawUpdate);
+      if (!binding.ok) {
+        skipped.push({ subjectId: subject.id, code: binding.code, detail: `${binding.detail}；该主体保持原状，其他主体仍可提交` });
+        continue;
+      }
+      boundPlan = binding.plan;
+    }
+    if (scheduledIds.has(subject.id) && !(ticket?.observationOnly || ticket?.advanceMode === 'accepted_observation')
+      && settlementEnvelopeConflict(settlement, rawUpdate)) {
+      skipped.push({
+        subjectId: subject.id,
+        code: 'result_envelope_conflict',
+        detail: `主体文字结算与本地票据的${settlement.resultType}方向明确冲突；旧状态已保留，只重试该主体`,
+      });
+      continue;
+    }
+    const observationAnchor = cleanText(rawUpdate.sourceAnchor, cleanText(ticket?.acceptedAnchor));
+    const observationEvidence = [rawUpdate.current, rawUpdate.outcome, rawUpdate.stateChange]
+      .map((value) => cleanText(value)).filter(Boolean).join('；');
+    if (scheduledIds.has(subject.id) && observationOnly
+      && (!observationAnchor || !cleanText(options.acceptedText).includes(observationAnchor)
+        || sharedCjkBigrams(observationAnchor, observationEvidence) < 2)) {
+      skipped.push({
+        subjectId: subject.id,
+        code: 'accepted_observation_unproven',
+        detail: '既有主体的正文事实调和缺少逐字正文锚点，或锚点与状态变化不是同一事实；旧状态保留并只重试该主体',
+      });
+      continue;
+    }
+    if (scheduledIds.has(subject.id) && !observationOnly && !actionFollowsDirective(settlement.attempt, ticket?.attemptDirective)) {
+      skipped.push({
+        subjectId: subject.id,
+        code: 'attempt_directive_mismatch',
+        detail: `主体尝试没有执行本轮已绑定的下一步“${cleanText(ticket?.attemptDirective)}”；旧状态已保留，只重试该主体，结算票据没有被反编行动消费`,
+      });
+      continue;
+    }
+    const proposedNextAction = boundPlan ? cleanText(boundPlan.nextAction) : cleanText(rawUpdate.nextAction);
+    const proposedNextTurn = boundPlan ? optionalInteger(boundPlan.nextCheckTurn) : optionalInteger(rawUpdate.nextCheckTurn);
+    const requestedStatus = rawUpdate.status ? normalizeSubjectStatus(rawUpdate.status) : subject.status;
+    const supportedCompletion = requestedStatus === 'done' && completionClaimSupported(rawUpdate, settlement);
+    if (scheduledIds.has(subject.id) && !observationOnly && !supportedCompletion
+      && (!proposedNextAction || !proposedNextTurn || proposedNextTurn <= turn)) {
+      skipped.push({
+        subjectId: subject.id,
+        code: 'next_action_missing',
+        detail: '主体推进没有给出结算后的具体下一步和大于本轮的检查回合；旧状态已保留，只重试该主体',
+      });
+      continue;
+    }
+    if (scheduledIds.has(subject.id) && !observationOnly && !supportedCompletion && ['success', 'partial'].includes(settlement.resultType)
+      && actionFollowsDirective(proposedNextAction, ticket?.attemptDirective)) {
+      skipped.push({
+        subjectId: subject.id,
+        code: 'next_action_repeats_completed_step',
+        detail: '主体本轮已成功或部分完成行动，但下一步仍重复同一行动；旧状态已保留，需给出基于结算的新一步',
+      });
+      continue;
+    }
+    const merged = deepClone(subject);
+    // Stable identity belongs to the profile/subject creation chain. A single
+    // world proposal may change state, knowledge and resources, never identity.
+    merged.type = subject.type;
+    merged.name = subject.name;
+    merged.profileId = subject.profileId;
+    merged.anchor = subject.anchor;
+    merged.goal = observationOnly || (requireActorPlans && subjectWasNew)
+      ? subject.goal
+      : boundPlan ? cleanText(boundPlan.goal, subject.goal) : mergeExplicitText(merged.goal, rawUpdate, 'goal');
+    const priorKnowledge = subjectWasNew ? [] : cleanStringArray(subject.knowledge, 32);
+    const proposedKnowledge = boundPlan
+      ? cleanStringArray(boundPlan.knowledge, 32)
+      : requireActorPlans && subjectWasNew ? []
+        : Object.prototype.hasOwnProperty.call(rawUpdate, 'knowledge')
+          ? cleanStringArray(rawUpdate.knowledge, 32)
+          : [];
+    if (proposedKnowledge.length) {
+      const priorKnowledgeSet = new Set(priorKnowledge.map((entry) => JSON.stringify(entry)));
+      const observedThisTurn = ticket?.advanceMode === 'observe'
+        && ['success', 'partial'].includes(settlement.resultType)
+        ? `${subject.name}经本轮调查亲历记录得知：${cleanText(rawUpdate.outcome)}；${cleanText(rawUpdate.stateChange)}`
+        : '';
+      const ownEvidence = [
+        `${subject.name}经自身既有记录得知：${cleanText(subject.current)}；${priorKnowledge.join('；')}`,
+        cleanText(options.knowledgeEvidence?.[subject.id]),
+        observedThisTurn,
+      ].filter(Boolean).join('。');
+      const acceptedEvidence = boundPlan ? '' : cleanText(options.acceptedText);
+      const newKnowledge = proposedKnowledge.filter((entry) => !priorKnowledgeSet.has(JSON.stringify(entry)));
+      const reachable = newKnowledge.filter((entry) => knowledgeEntryHasReachableSource(entry, { name: subject.name, aliases: [] }, `${ownEvidence}；${acceptedEvidence}`));
+      const rejectedKnowledge = newKnowledge.filter((entry) => !reachable.includes(entry));
+      merged.knowledge = cleanStringArray([...priorKnowledge, ...reachable], 32);
+      if (rejectedKnowledge.length) {
+        skipped.push({
+          subjectId: subject.id,
+          code: 'knowledge_source_unreachable',
+          detail: `主体新增知识缺少可核对的亲历、获告知、调查、公开资料或自身行动结果来源；已只拒绝知识字段并保留其他有效推进：${rejectedKnowledge.slice(0, 3).join('；')}`,
+        });
+      }
+    } else merged.knowledge = priorKnowledge;
+    merged.resources = mergeExplicitList(merged.resources, rawUpdate, 'resources', 24);
+    merged.constraints = mergeExplicitList(merged.constraints, rawUpdate, 'constraints', 24);
+    merged.threadKeys = observationOnly ? subject.threadKeys : mergeExplicitList(merged.threadKeys, rawUpdate, 'threadKeys', 16);
+    merged.current = cleanText(rawUpdate.current, settlement.stateChange || merged.current);
+    merged.nextAction = observationOnly || (requireActorPlans && subjectWasNew)
+      ? subject.nextAction
+      : boundPlan ? boundPlan.nextAction : mergeExplicitText(merged.nextAction, rawUpdate, 'nextAction');
+    merged.status = observationOnly ? subject.status : requireActorPlans && subjectWasNew ? 'waiting' : ['blocked', 'delayed', 'waiting'].includes(settlement.resultType)
+      ? 'waiting'
+      : supportedCompletion ? 'done' : 'active';
+    const interval = ticket?.advanceMode === 'wait_condition' ? 2 : ticket?.intensity === 'high' ? 2 : 1;
+    const requestedNext = boundPlan ? optionalInteger(boundPlan.nextCheckTurn) : optionalInteger(rawUpdate.nextCheckTurn);
+    merged.nextCheckTurn = observationOnly ? subject.nextCheckTurn : requireActorPlans && subjectWasNew
+      ? turn + 1
+      : Math.max(turn + 1, Math.min(turn + 12, requestedNext && requestedNext > turn ? requestedNext : turn + interval));
+    merged.lastAdvancedTurn = observationOnly ? subject.lastAdvancedTurn : turn;
+    merged.updatedTurn = turn;
+    merged.silenceTurns = 0;
+    merged.recentModes = cleanStringArray([...(merged.recentModes || []), ticket?.advanceMode || 'model_update'], 8).slice(-8);
+    merged.planReceipt = boundPlan || (requireActorPlans && subjectWasNew ? null : merged.planReceipt);
+    const proposedPublic = observationOnly ? '' : cleanText(rawUpdate.publicEffect);
+    const ticketChannel = normalizePublicChannel(ticket?.publicChannel || rawUpdate.publicChannel);
+    const projectionIssue = publicProjectionIssue(proposedPublic, ticketChannel, subject);
+    let changePublicEffect = '';
+    let changePublicChannel = 'none';
+    const changeId = settlement.concrete
+      ? stableWorldId('change', subject.id, turn, source.sourceKey, settlement.attempt, settlement.stateChange)
+      : '';
+    if (proposedPublic && ticketChannel !== 'none' && !projectionIssue) {
+      merged.publicEffect = proposedPublic;
+      merged.publicChannel = ticketChannel;
+      merged.publicEffectTurn = turn;
+      merged.publicEffectSourceChangeId = changeId;
+      merged.offeredTurn = 0;
+      merged.lastOfferedTurn = 0;
+      merged.lastOfferedSourceKey = '';
+      merged.offerCount = 0;
+      merged.shownTurn = subjectWasNew && publicEffectAppears(proposedPublic, cleanText(options.acceptedText), { ...merged, publicChannel: ticketChannel }) ? turn : 0;
+      changePublicEffect = proposedPublic;
+      changePublicChannel = ticketChannel;
+    } else {
+      if (proposedPublic) skipped.push({ subjectId: subject.id, code: 'private_leak_removed', detail: `公开影响不符合 ${ticketChannel} 渠道（${projectionIssue || 'ticket未允许公开'}）；只清空公开字段，私密推进仍已保留` });
+      merged.publicEffect = '';
+      merged.publicChannel = 'none';
+      merged.publicEffectTurn = 0;
+      merged.publicEffectSourceChangeId = '';
+      merged.offeredTurn = 0;
+      merged.lastOfferedTurn = 0;
+      merged.lastOfferedSourceKey = '';
+      merged.offerCount = 0;
+      merged.shownTurn = 0;
+    }
+    merged.source = source;
+    world.subjects[index] = normalizeSubject(merged, index, { chatId: previous.chatId, turn, at: now });
+
+    if (settlement.concrete) {
+      const change = normalizeChange({
+        id: changeId,
+        subjectIds: [subject.id], threadKeys: world.subjects[index].threadKeys,
+        turn, mode: observationOnly ? 'accepted_observation' : ticket?.advanceMode || 'model_update', resultType: settlement.resultType,
+        attempt: settlement.attempt, outcome: settlement.outcome, cost: rawUpdate.cost,
+        stateChange: settlement.stateChange,
+        publicEffect: changePublicEffect,
+        publicChannel: changePublicChannel,
+        shownTurn: subjectWasNew && changePublicEffect && publicEffectAppears(changePublicEffect, cleanText(options.acceptedText), { ...merged, publicChannel: changePublicChannel }) ? turn : 0,
+        source, at: now,
+      }, world.changes.length, { chatId: previous.chatId, turn, at: now, subject: world.subjects[index] });
+      world.changes.push(change);
+    }
+    applied.push(subject.id);
+    appliedSet.add(subject.id);
   }
 
-  const actors = mergeByStableId(previous.lanes.actors, actorLaneUpdates, normalizeActorLane, 'actorId').slice(-120);
-  const acted = new Set(actorLaneUpdates.map((entry) => entry.actorId));
-  for (const lane of actors) if (!acted.has(lane.actorId)) lane.silenceTurns = Math.max(0, Number(lane.silenceTurns) || 0) + 1;
-  const factions = mergeByStableId(previous.lanes.factions, proposal.factions || [], normalizeFactionLane).slice(-80);
-  const environment = {
-    summary: cleanText(proposal?.environment?.summary, previous.lanes.environment.summary),
-    economy: cleanText(proposal?.environment?.economy, previous.lanes.environment.economy),
-    incidents: cleanStringArray([...(previous.lanes.environment.incidents || []), ...(proposal?.environment?.incidents || [])], 40),
-    trends: cleanStringArray([...(previous.lanes.environment.trends || []), ...(proposal?.environment?.trends || [])], 40),
-    winds: cleanStringArray([...(previous.lanes.environment.winds || []), ...(proposal?.environment?.winds || [])], 40),
-  };
-  const revision = previous.revision + 1;
-  const commitId = stableWorldId('commit', previous.chatId, revision, sourceRef.sourceKey, now);
-  const candidate = normalizeWorldState({
-    ...previous,
-    revision,
-    commitId,
-    observedThrough: { turn, sourceKey: sourceRef.sourceKey, at: now },
-    simulatedThrough: { turn, sourceKey: sourceRef.sourceKey, at: now },
-    summary: cleanText(proposal.summary, previous.summary || '世界连续性已推进。'),
-    threads: activeThreads,
-    lanes: { actors, factions, environment },
-    attempts: [...previous.attempts, ...newAttempts].slice(-160),
-    adjudications: [...previous.adjudications, ...newResults].slice(-160),
-    resolvedArchive: [...archive.values()].slice(-160),
-    tombstoneThroughTurn: resolvedIds.size ? turn : previous.tombstoneThroughTurn,
-    checkpoint: { state: 'world_committed', candidate: null, candidateDigest: '', preparedAt: '', committedAt: now },
-    persistence: { status: 'unverified', revision, commitId, digest: '', readbackAt: '', error: '' },
-    updatedAt: now,
-  }, { chatId: options.chatId || previous.chatId });
-  candidate.digest = worldDigest(candidate);
-  candidate.persistence.digest = candidate.digest;
-  return candidate;
-}
-
-export function prepareWorldTransaction(previousInput, candidateInput, at = new Date().toISOString()) {
-  const previous = normalizeWorldState(previousInput, { chatId: previousInput?.chatId });
-  const candidate = normalizeWorldState(candidateInput, { chatId: previous.chatId });
-  if (candidate.revision !== previous.revision + 1) throw new Error(`世界候选版本不连续：当前${previous.revision}，候选${candidate.revision}`);
-  const prepared = deepClone(previous);
-  prepared.checkpoint = { state: 'world_candidate_prepared', candidate, candidateDigest: candidate.digest, preparedAt: at, committedAt: '' };
-  prepared.persistence = { ...prepared.persistence, status: 'prepared', error: '' };
-  prepared.updatedAt = at;
-  return prepared;
-}
-
-export function recoverPreparedWorldState(input, at = new Date().toISOString()) {
-  const prepared = normalizeWorldState(input, { chatId: input?.chatId });
-  if (prepared.checkpoint?.state !== 'world_candidate_prepared' || !prepared.checkpoint?.candidate) return { recovered: false, world: prepared };
-  const candidate = normalizeWorldState(prepared.checkpoint.candidate, { chatId: prepared.chatId });
-  if (candidate.digest !== prepared.checkpoint.candidateDigest || candidate.revision !== prepared.revision + 1) {
-    prepared.checkpoint = { state: 'world_committed', candidate: null, candidateDigest: '', preparedAt: '', committedAt: '' };
-    prepared.persistence = { ...prepared.persistence, status: 'error', error: '待提交世界候选校验失败，已保留旧权威状态' };
-    return { recovered: false, world: prepared, error: prepared.persistence.error };
+  for (const subject of world.subjects) {
+    if (scheduledIds.has(subject.id) && !appliedSet.has(subject.id)) subject.silenceTurns = Math.max(0, subject.silenceTurns) + 1;
   }
-  candidate.checkpoint = { state: 'world_committed', candidate: null, candidateDigest: '', preparedAt: prepared.checkpoint.preparedAt, committedAt: at };
-  candidate.persistence = { status: 'unverified', revision: candidate.revision, commitId: candidate.commitId, digest: candidate.digest, readbackAt: '', error: '' };
-  candidate.updatedAt = at;
-  return { recovered: true, world: candidate };
-}
-
-export function markWorldReadback(input, at = new Date().toISOString()) {
-  const world = normalizeWorldState(input, { chatId: input?.chatId });
-  world.persistence = { status: 'verified', revision: world.revision, commitId: world.commitId, digest: world.digest, readbackAt: at, error: '' };
-  return world;
-}
-
-export function verifyWorldReadback(readbackInput, candidateInput) {
-  const readback = normalizeWorldState(readbackInput, { chatId: candidateInput?.chatId });
-  const candidate = normalizeWorldState(candidateInput, { chatId: candidateInput?.chatId });
-  return readback.revision === candidate.revision && readback.commitId === candidate.commitId && readback.digest === candidate.digest && readback.checkpoint?.state === 'world_committed';
-}
-
-export function restoreWorldBaselineForCancelledCandidate(currentInput, baselineInput, candidateInput) {
-  const baseline = normalizeWorldState(baselineInput, { chatId: baselineInput?.chatId });
-  const current = normalizeWorldState(currentInput, { chatId: baseline.chatId });
-  const candidate = candidateInput ? normalizeWorldState(candidateInput, { chatId: baseline.chatId }) : null;
-  const preparedMatch = Boolean(candidate?.digest)
-    && current.revision === baseline.revision
-    && current.checkpoint?.state === 'world_candidate_prepared'
-    && current.checkpoint?.candidateDigest === candidate.digest;
-  const committedMatch = Boolean(candidate?.digest)
-    && current.revision === candidate.revision
-    && current.commitId === candidate.commitId
-    && current.digest === candidate.digest;
-  if (!preparedMatch && !committedMatch) return { restored: false, world: current, reason: 'no_owned_candidate' };
+  const parserErrors = (Array.isArray(proposal.errors) ? proposal.errors : []).map((entry) => ({
+    subjectId: cleanText(entry.subjectId), code: cleanText(entry.code, 'parse_error'), detail: cleanText(entry.detail), turn, at: now, sourceKey: source.sourceKey,
+    discoverySignature: cleanText(entry.discoverySignature),
+    discoveryAnchor: cleanText(entry.discoveryAnchor),
+    discoveryName: cleanText(entry.discoveryName),
+  }));
+  const failedSubjectIds = new Set([...parserErrors, ...skipped].map((entry) => cleanText(entry.subjectId)).filter(Boolean));
+  for (const subjectId of scheduledIds) {
+    if (!appliedSet.has(subjectId) && !failedSubjectIds.has(subjectId)) {
+      skipped.push({ subjectId, code: 'missing_subject_block', detail: '本轮到期主体没有收到对应分块，旧状态已保留并等待只重试该主体' });
+    }
+  }
+  const previousReceipt = (previous.receipts || []).find((entry) => entry.sourceKey === source.sourceKey);
+  const discoveryFailures = [...parserErrors, ...skipped]
+    .map((entry) => cleanText(entry.discoverySignature))
+    .filter(Boolean);
+  const unresolvedDiscoveries = [...new Set([
+    ...(previousReceipt?.unresolvedDiscoveries || []),
+    ...discoveryFailures,
+  ])].filter((signature) => !resolvedDiscoverySignatures.has(signature));
+  const clearDiscoverySourceFailures = scheduledIds.size === 0 && parserErrors.length === 0 && skipped.length === 0
+    && unresolvedDiscoveries.length === 0;
+  const retainedFailures = world.failures.filter((entry) => !(entry.sourceKey === source.sourceKey
+    && (appliedSet.has(entry.subjectId) || resolvedDiscoverySignatures.has(cleanText(entry.discoverySignature)) || clearDiscoverySourceFailures)));
+  world.failures = [
+    ...retainedFailures,
+    ...parserErrors,
+    ...skipped.map((entry) => ({ ...entry, turn, at: now, sourceKey: source.sourceKey })),
+  ].slice(-80);
+  world.turn = turn;
+  world.revision = previous.revision + 1;
+  world.summary = cleanText(proposal.summary, applied.length ? `本轮有 ${applied.length} 个世界主体完成了具体推进。` : previous.summary);
+  world.changes = world.changes.slice(-480);
+  world.updatedAt = now;
+  world.persistence = { status: 'pending_save', savedAt: '', readbackAt: '', error: '' };
+  const unresolvedSubjectIds = [...scheduledIds].filter((subjectId) => !appliedSet.has(subjectId));
+  if (source.sourceKey) {
+    const receiptSubjectIds = cleanStringArray([...(previousReceipt?.subjectIds || []), ...applied], 32);
+    const receipt = normalizeWorldReceipt({
+      sourceKey: source.sourceKey,
+      messageId: source.messageId,
+      turn,
+      status: unresolvedSubjectIds.length || unresolvedDiscoveries.length ? 'partial' : receiptSubjectIds.length ? 'applied' : 'noop',
+      subjectIds: receiptSubjectIds,
+      unresolvedSubjectIds,
+      unresolvedDiscoveries,
+      at: now,
+    });
+    world.receipts = [
+      ...(Array.isArray(world.receipts) ? world.receipts : []).filter((entry) => entry.sourceKey !== source.sourceKey),
+      receipt,
+    ].slice(-240);
+  }
+  world.digest = worldDigest(world);
   return {
-    restored: true,
-    world: deepClone(baseline),
-    reason: preparedMatch ? 'discarded_prepared_candidate' : 'rolled_back_cancelled_commit',
+    world: normalizeWorldState(world, { chatId: previous.chatId }),
+    applied,
+    skipped: [...parserErrors, ...skipped],
+    unresolvedSubjectIds,
+    unresolvedDiscoveries,
+    discoveryRetry: unresolvedDiscoveries.length > 0,
+    partial: (applied.length > 0 || (previousReceipt?.subjectIds || []).length > 0)
+      && (unresolvedSubjectIds.length > 0 || unresolvedDiscoveries.length > 0),
+    profileDiscoveries,
   };
+}
+
+function publicEffectAppears(effect, narrative, subject = null) {
+  const expected = cleanText(effect);
+  const actual = String(narrative || '');
+  if (!expected || !actual) return false;
+  if (actual.includes(expected)) return true;
+  if (subject?.publicChannel === 'named_action' && cleanText(subject.name) && !actual.includes(cleanText(subject.name))) return false;
+  const meaningfulLength = expected.replace(/[^\p{Script=Han}\p{L}\p{N}]/gu, '').length;
+  const required = Math.max(3, Math.min(8, Math.floor(meaningfulLength / 4)));
+  return sharedCjkBigrams(expected, actual) >= required;
+}
+
+export function markWorldEffectsShown(worldInput, effects = [], turn = 0, acceptedText = '', sourceKey = '') {
+  const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
+  const offeredTurn = Math.max(world.turn, Number(turn || world.turn));
+  const narrative = String(acceptedText || '');
+  const ids = new Set((Array.isArray(effects) ? effects : []).map((entry) => cleanText(entry.effectId || entry.id)).filter(Boolean));
+  const texts = new Set((Array.isArray(effects) ? effects : []).map((entry) => cleanText(entry.publicEffect)).filter(Boolean));
+  let changed = 0;
+  for (const subject of world.subjects) {
+    if (ids.has(`subject:${subject.id}`) || (subject.publicEffect && texts.has(subject.publicEffect))) {
+      if (!subject.offeredTurn) subject.offeredTurn = offeredTurn;
+      subject.lastOfferedTurn = offeredTurn;
+      const offerIdentity = cleanText(sourceKey, `turn:${offeredTurn}`);
+      if (subject.lastOfferedSourceKey !== offerIdentity) {
+        subject.lastOfferedSourceKey = offerIdentity;
+        subject.offerCount = Math.max(0, Number(subject.offerCount || 0)) + 1;
+        changed += 1;
+      }
+      if (publicEffectAppears(subject.publicEffect, narrative, subject) && subject.shownTurn < subject.publicEffectTurn) {
+        subject.shownTurn = offeredTurn;
+        changed += 1;
+      }
+    }
+  }
+  for (const change of world.changes) {
+    if (ids.has(`change:${change.id}`) || (change.publicEffect && texts.has(change.publicEffect))) {
+      if (!change.offeredTurn) change.offeredTurn = offeredTurn;
+      change.lastOfferedTurn = offeredTurn;
+      const offerIdentity = cleanText(sourceKey, `turn:${offeredTurn}`);
+      if (change.lastOfferedSourceKey !== offerIdentity) {
+        change.lastOfferedSourceKey = offerIdentity;
+        change.offerCount = Math.max(0, Number(change.offerCount || 0)) + 1;
+        changed += 1;
+      }
+      const changeSubject = world.subjects.find((entry) => (change.subjectIds || []).includes(entry.id));
+      const projectionSnapshot = { ...change, name: changeSubject?.name || '', type: changeSubject?.type || '' };
+      if (publicEffectAppears(change.publicEffect, narrative, projectionSnapshot) && change.shownTurn < change.turn) {
+        change.shownTurn = offeredTurn;
+        changed += 1;
+      }
+    }
+  }
+  if (changed) world.digest = worldDigest(world);
+  return { world, changed };
+}
+
+export function deriveWorldBranches(worldInput) {
+  const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
+  const groups = new Map();
+  for (const change of world.changes) {
+    const keys = change.threadKeys.length ? change.threadKeys : change.subjectIds.map((id) => world.subjects.find((entry) => entry.id === id)?.name || id);
+    for (const key of keys.length ? keys : ['未归类变化']) {
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(change);
+    }
+  }
+  return [...groups.entries()].map(([key, changes]) => {
+    const ordered = [...changes].sort((left, right) => left.turn - right.turn);
+    const subjectIds = cleanStringArray(ordered.flatMap((entry) => entry.subjectIds), 24);
+    const latest = ordered.at(-1);
+    const subjects = subjectIds.map((id) => world.subjects.find((entry) => entry.id === id)).filter(Boolean);
+    return {
+      id: stableWorldId('branch', key),
+      title: key,
+      subjectIds,
+      subjectNames: subjects.map((entry) => entry.name),
+      status: subjects.length && subjects.every((entry) => entry.status === 'done') ? 'done' : 'active',
+      changeCount: ordered.length,
+      lastTurn: latest?.turn || 0,
+      summary: latest?.stateChange || latest?.outcome || '',
+      latestChange: deepClone(latest),
+    };
+  }).sort((left, right) => right.lastTurn - left.lastTurn || left.title.localeCompare(right.title));
 }
 
 export function activeWorldCount(worldInput) {
+  return normalizeWorldState(worldInput, { chatId: worldInput?.chatId }).subjects.filter((entry) => entry.status !== 'done').length;
+}
+
+export function worldConsistencyReport(worldInput) {
   const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
-  const environment = world.lanes.environment;
-  const environmentActive = environment.summary || environment.economy || environment.incidents.length || environment.trends.length || environment.winds.length ? 1 : 0;
-  return world.threads.length
-    + world.lanes.actors.filter((entry) => entry.status !== 'inactive').length
-    + world.lanes.factions.filter((entry) => entry.status !== 'resolved' && entry.status !== 'inactive').length
-    + world.attempts.filter((entry) => entry.status === 'pending_world').length
-    + environmentActive;
-}
-
-export function recoverLatestLegacyWorld(currentInput, fullRuns = [], options = {}) {
-  let world = normalizeWorldState(currentInput, { chatId: options.chatId });
-  let best = null;
-  for (const run of Array.isArray(fullRuns) ? fullRuns : []) {
-    if (options.chatId && cleanText(run?.chatId) !== cleanText(options.chatId)) continue;
-    const candidates = [run?.outcome?.world?.world, ...(Array.isArray(run?.trace) ? run.trace.filter((item) => item?.stage === 'world:committed').map((item) => item.world) : [])];
-    for (const candidate of candidates) {
-      if (!candidate || Number(candidate.schemaVersion) === WORLD_SCHEMA_VERSION) continue;
-      const time = Date.parse(candidate.updatedAt || run.finishedAt || 0) || 0;
-      if (!best || time > best.time) best = { candidate, time, runId: run.runId || '' };
-    }
-  }
-  if (!best) return { changed: false, world };
-  const recoveredThreads = Array.isArray(best.candidate?.threads)
-    ? normalizeWorldState(best.candidate, { chatId: options.chatId }).threads
-    : legacyWorldRecords(best.candidate);
-  const merged = mergeByStableId(world.threads, recoveredThreads, (entry, index) => normalizeThread(entry, index, { chatId: options.chatId }));
-  if (merged.length <= world.threads.length) return { changed: false, world };
-  const recoveredItems = merged.length - world.threads.length;
-  world.threads = merged;
-  world.summary = cleanText(best.candidate.summary, world.summary);
-  world.migration = { ...(world.migration || {}), recoveredFromRunId: best.runId, recoveredItems, at: new Date().toISOString() };
-  world.digest = worldDigest(world);
-  return { changed: true, world };
-}
-
-export function worldConsistencyReport(worldInput, fullRuns = [], options = {}) {
-  const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
-  let latest = null;
-  for (const run of Array.isArray(fullRuns) ? fullRuns : []) {
-    if (options.chatId && cleanText(run?.chatId) !== cleanText(options.chatId)) continue;
-    const records = [run?.outcome?.world?.world, ...(Array.isArray(run?.trace) ? run.trace.filter((entry) => entry?.stage === 'world:committed').map((entry) => entry.world) : [])];
-    for (const candidate of records) {
-      if (!candidate) continue;
-      const at = Date.parse(candidate.updatedAt || run.finishedAt || 0) || 0;
-      if (!latest || at > latest.at) latest = { candidate, at, runId: run.runId || '' };
-    }
-  }
-  if (!latest) return { ok: true, status: 'no_report', detail: '当前聊天还没有可比较的世界提交报告。' };
-  if (Number(latest.candidate.schemaVersion) >= 4 || Array.isArray(latest.candidate?.threads)) {
-    const candidate = normalizeWorldState(latest.candidate, { chatId: world.chatId });
-    const ok = candidate.revision < world.revision || (candidate.revision === world.revision && candidate.digest === world.digest && candidate.commitId === world.commitId);
-    return ok
-      ? { ok: true, status: 'matched', detail: `权威状态与最近报告 ${latest.runId || '未命名运行'} 一致。` }
-      : { ok: false, status: 'split_brain', detail: `最近报告是修订${candidate.revision}/${candidate.digest}，权威存档是修订${world.revision}/${world.digest}` };
-  }
-  const reportIds = new Set(legacyWorldRecords(latest.candidate).map((entry) => entry.id));
-  const worldIds = new Set(world.threads.map((entry) => entry.id));
-  const missing = [...reportIds].filter((id) => !worldIds.has(id));
-  return missing.length
-    ? { ok: false, status: 'legacy_report_ahead', detail: `旧完整报告仍有 ${missing.length} 条世界项未进入权威存档。` }
-    : { ok: true, status: 'legacy_covered', detail: '旧完整报告中的世界项已被当前统一状态覆盖。' };
-}
-
-// Compatibility wrapper for older callers and reports. New runtime uses parseWorldProposal + applyWorldProposal.
-export function parseWorldState(raw, previous = {}) {
-  return applyWorldProposal(previous, parseWorldProposal(raw), { chatId: previous?.chatId });
-}
-
-function tokens(text) {
-  const stop = new Set(['继续', '然后', '这个', '那个', '现在', '已经', '可以', '一个', '我们', '你们', '他们', '她们', '自己', '进行', '一下']);
-  const result = new Set();
-  const segments = String(text || '').toLocaleLowerCase().match(/[\p{Script=Han}]+|[A-Za-z0-9_.-]{2,}/gu) || [];
-  for (const segment of segments) {
-    if (!/\p{Script=Han}/u.test(segment)) {
-      if (!stop.has(segment)) result.add(segment);
-      continue;
-    }
-    if (segment.length <= 8 && !stop.has(segment)) result.add(segment);
-    for (const size of [2, 3]) {
-      for (let index = 0; index <= segment.length - size && result.size < 512; index += 1) {
-        const term = segment.slice(index, index + size);
-        if (!stop.has(term)) result.add(term);
-      }
-    }
-  }
-  return [...result];
-}
-
-function safePublicText(value) {
-  const text = cleanText(value);
-  return publicProjectionLeak(text) ? '' : text;
-}
-
-function safePublicArray(value, limit = 16) {
-  return cleanStringArray(value, limit).filter((item) => !publicProjectionLeak(item));
-}
-
-function narrativeThreadProjection(entry) {
-  const knowledge = ['hidden', 'rumor', 'observed'].includes(entry?.knowledge) ? entry.knowledge : 'hidden';
-  const publicSurface = safePublicText(entry?.publicSurface);
-  const publicClues = safePublicArray(entry?.publicClues, 16);
-  const rumors = knowledge === 'rumor' ? safePublicArray(entry?.rumors, 12) : [];
-  const revealedSummary = knowledge === 'observed' ? cleanText(entry?.revealedSummary) : '';
-  if (!publicSurface && !publicClues.length && !rumors.length && !revealedSummary) return null;
-  const projection = {
-    recordType: knowledge === 'observed' ? 'revealed_continuity' : knowledge === 'rumor' ? 'unverified_rumor' : 'sensory_surface',
-    title: safePublicText(entry?.publicTitle) || (knowledge === 'observed' ? '已揭示事项' : ''),
-    publicSurface,
-    publicClues,
-    rumors,
-    revealedSummary,
-    instruction: knowledge === 'observed'
-      ? '这是已由正文证据揭示的事实。'
-      : knowledge === 'rumor'
-        ? '只能写成不确定传闻或可见线索，不得写成真相。'
-        : '只可使用表象与线索；隐藏原因、真实意图和镜头外行动不得出现在回复中。',
+  return {
+    ok: true,
+    status: 'single_authority',
+    detail: `当前聊天只有一份世界权威：${world.subjects.length} 个主体、${world.changes.length} 条真实变化；诊断报告不会反向覆盖。`,
   };
-  return projection;
 }
 
-function narrativeAttemptProjection(entry, adjudication) {
-  const visibility = ['hidden', 'rumor', 'observable'].includes(entry?.visibility) ? entry.visibility : 'hidden';
-  const publicSurface = safePublicText(entry?.publicSurface);
-  const publicClues = safePublicArray([...(entry?.publicClues || []), ...(adjudication?.publicClues || [])], 16);
-  const observableConsequence = safePublicText(adjudication?.observableConsequence);
-  const visibleAction = visibility === 'observable' ? safePublicText(entry?.action) : '';
-  if (!publicSurface && !publicClues.length && !observableConsequence && !visibleAction) return null;
-  const projection = {
-    recordType: visibility === 'observable' ? 'observable_actor_action' : visibility === 'rumor' ? 'unverified_action_rumor' : 'unattributed_observation',
-    visibleAction,
-    publicSurface,
-    publicClues,
-    observableConsequence,
-    instruction: visibility === 'observable'
-      ? '只写已经可观察的行动和后果。'
-      : '只写表象或无因果归属的可见后果；不得猜出行动者、目的、行动内容或成败。',
-  };
-  if (visibility === 'observable') {
-    projection.actorId = entry.actorId;
-    projection.actorName = entry.actorName;
-    projection.adjudicationStatus = cleanText(adjudication?.status);
-  }
-  return projection;
-}
-
-/**
- * Stitches and some presets wrap the actual current action together with history,
- * time and recall notes. Relevance must be decided from the action itself; using
- * the whole stitched payload makes old world records match their own wrapper.
- */
 export function recallSelectionInput(value) {
   const source = String(value || '').trim();
   const wrappers = [
@@ -2504,203 +3836,81 @@ export function recallSelectionInput(value) {
   const matches = [];
   for (const wrapper of wrappers) {
     for (const match of source.matchAll(wrapper)) {
-      const text = String(match[1] || '').trim();
+      const text = cleanText(match[1]);
       if (text) matches.push({ index: match.index ?? -1, text });
     }
   }
-  if (matches.length) return matches.sort((left, right) => left.index - right.index).at(-1).text;
-  return source;
+  return matches.length ? matches.sort((left, right) => left.index - right.index).at(-1).text : source;
 }
 
-function lowInformationContinuation(value) {
-  const compact = recallSelectionInput(value).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-  return new Set(['继续', '接着', '然后', '然后呢', '下一步', '继续推进', '等待', '观察', '看看', '先看看', '看看情况']).has(compact);
-}
-
-function recallProjectionSearchText(projection) {
-  return [
-    projection?.title,
-    projection?.actorName,
-    projection?.publicSurface,
-    ...(Array.isArray(projection?.publicClues) ? projection.publicClues : []),
-    ...(Array.isArray(projection?.rumors) ? projection.rumors : []),
-    projection?.revealedSummary,
-    projection?.visibleAction,
-    projection?.observableConsequence,
-  ].map((value) => String(value || '').trim()).filter(Boolean).join('\n');
-}
-
-export function selectWorldRecall(world, userInput, profiles = {}, limit = 8) {
-  if (Number(world?.schemaVersion) === WORLD_SCHEMA_VERSION || Array.isArray(world?.threads)) {
-    const normalized = normalizeWorldState(world, { chatId: world?.chatId });
-    const selectionInput = recallSelectionInput(userInput);
-    const needle = new Set(tokens(selectionInput));
-    for (const profile of Object.values(profiles || {})) {
-      if (selectionInput.includes(profile?.name || '\0')) for (const token of normalizedNames(profile)) needle.add(token);
-    }
-    const resultsByAttempt = new Map(normalized.adjudications.map((entry) => [entry.attemptId, entry]));
-    const records = [
-      ...normalized.threads.map((entry) => ({ ...entry, recordType: 'thread' })),
-      ...normalized.attempts.slice(-40).map((entry) => ({ ...entry, recordType: 'attempt', adjudication: resultsByAttempt.get(entry.attemptId) || null })),
-    ].map((entry) => {
-      const projection = entry.recordType === 'thread'
-        ? narrativeThreadProjection(entry)
-        : narrativeAttemptProjection(entry, entry.adjudication);
-      if (!projection) return null;
-      const haystack = tokens(recallProjectionSearchText(projection));
-      let score = Number(entry.urgency) || (entry.recordType === 'attempt' ? 3 : 2);
-      let relevance = 0;
-      for (const token of haystack) {
-        if (needle.has(token)) relevance += token.length >= 3 ? 5 : 2;
-      }
-      return { projection, score: score + relevance, relevance, updatedAt: entry.updatedAt || entry.sourceRef?.at || '' };
-    }).filter(Boolean).sort((a, b) => b.score - a.score || String(b.updatedAt).localeCompare(String(a.updatedAt)));
-    const relevant = records.filter((entry) => entry.relevance > 0);
-    const selected = relevant.length
-      ? relevant
-      : lowInformationContinuation(selectionInput)
-        ? records.slice(0, Math.min(1, records.length))
-        : [];
-    return selected.slice(0, Math.max(1, Math.min(16, Number(limit) || 8)))
-      .map((entry, index) => ({
-        ...entry.projection,
-        usage: index === 0 ? 'required_once' : 'optional',
-        score: entry.score,
-      }));
+function publicEffectCandidates(world, userInput) {
+  const action = recallSelectionInput(userInput).toLocaleLowerCase();
+  const candidates = [];
+  for (const subject of world.subjects) {
+    if (!subject.publicEffect || subject.publicChannel === 'none' || subject.shownTurn >= subject.publicEffectTurn) continue;
+    if (Number(subject.offerCount || 0) >= 3) continue;
+    if (subject.lastOfferedTurn > 0 && world.turn - subject.lastOfferedTurn < 2) continue;
+    const related = [subject.name, ...subject.threadKeys].some((value) => cleanText(value).toLocaleLowerCase() && action.includes(cleanText(value).toLocaleLowerCase()));
+    candidates.push({
+      effectId: `subject:${subject.id}`,
+      publicEffect: subject.publicEffect,
+      publicChannel: subject.publicChannel,
+      sourceTurn: subject.publicEffectTurn,
+      relatedToCurrentAction: related,
+      score: (related ? 8 : 0) + Math.max(1, world.turn - subject.shownTurn) + (subject.publicChannel === 'direct_consequence' ? 4 : 0),
+    });
   }
-  return selectWorldRecall(normalizeWorldState(world, { chatId: world?.chatId }), userInput, profiles, limit);
-}
-
-export function prepareRecallPackage(worldInput, userInput, profiles = {}, limit = 8, options = {}) {
-  const world = normalizeWorldState(worldInput, { chatId: options.chatId || worldInput?.chatId });
-  const selectionInput = recallSelectionInput(userInput);
-  const items = selectWorldRecall(world, selectionInput, profiles, limit).map(({ score, ...entry }) => ({
-    ...entry,
-    consumptionAnchors: recallConsumptionAnchors(entry),
-  }));
-  const packageId = stableWorldId('recall', world.chatId, world.revision, options.sourceKey, selectionInput, options.at || new Date().toISOString());
-  return { packageId, worldRevision: world.revision, worldCommitId: world.commitId, items, preparedAt: options.at || new Date().toISOString(), sourceKey: cleanText(options.sourceKey) };
-}
-
-export function reserveRecallPackage(worldInput, recallPackage) {
-  const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
-  world.recall.pending = { ...deepClone(recallPackage), itemsDigest: stableWorldId('items', JSON.stringify(recallPackage?.items || [])) };
-  return world;
-}
-
-function recallComparableText(value) {
-  return String(value || '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-}
-
-function recallPublicFragments(item) {
-  return [
-    item?.publicSurface,
-    ...(Array.isArray(item?.publicClues) ? item.publicClues : []),
-    ...(Array.isArray(item?.rumors) ? item.rumors : []),
-    item?.revealedSummary,
-    item?.visibleAction,
-    item?.observableConsequence,
-  ].map((value) => String(value || '').trim()).filter(Boolean);
-}
-
-function recallConsumptionAnchors(item) {
-  const anchors = [];
-  for (const fragment of recallPublicFragments(item)) {
-    const clauses = String(fragment).split(/[，。！？；、,:;!?\n]+/u)
-      .map((value) => recallComparableText(value)).filter((value) => value.length >= 6);
-    const selected = clauses[0] || recallComparableText(fragment);
-    if (selected.length >= 6) anchors.push(selected.slice(0, 18));
-    if (anchors.length >= 3) break;
+  for (const change of world.changes) {
+    if (!change.publicEffect || change.publicChannel === 'none' || change.shownTurn >= change.turn) continue;
+    if (Number(change.offerCount || 0) >= 3) continue;
+    if (change.lastOfferedTurn > 0 && world.turn - change.lastOfferedTurn < 2) continue;
+    const subjectNames = change.subjectIds.map((id) => world.subjects.find((entry) => entry.id === id)?.name).filter(Boolean);
+    const related = [...subjectNames, ...change.threadKeys].some((value) => cleanText(value).toLocaleLowerCase() && action.includes(cleanText(value).toLocaleLowerCase()));
+    candidates.push({
+      effectId: `change:${change.id}`,
+      publicEffect: change.publicEffect,
+      publicChannel: change.publicChannel,
+      sourceTurn: change.turn,
+      relatedToCurrentAction: related,
+      score: (related ? 8 : 0) + Math.max(1, world.turn - change.shownTurn) + (change.publicChannel === 'direct_consequence' ? 4 : 0),
+    });
   }
-  return [...new Set(anchors)];
-}
-
-function recallExactFragmentAppears(narrative, fragment) {
-  const body = recallComparableText(narrative);
-  const target = recallComparableText(fragment);
-  if (target.length < 4) return false;
-  return body.includes(target);
-}
-
-/** Verifies that a one-turn public recall projection actually surfaced in the accepted narrative. */
-export function assessRecallConsumption(narrative, recallPackage) {
-  const items = Array.isArray(recallPackage?.items) ? recallPackage.items : [];
-  const itemResults = items.map((item, index) => {
-    const fragments = recallPublicFragments(item);
-    const anchors = cleanStringArray(item?.consumptionAnchors, 3)
-      .map((value) => recallComparableText(value)).filter((value) => value.length >= 6);
-    const matchedAnchors = anchors.filter((anchor) => recallExactFragmentAppears(narrative, anchor));
-    const matchedFragments = anchors.length
-      ? []
-      : fragments.filter((fragment) => recallExactFragmentAppears(narrative, fragment));
-    return {
-      index,
-      usage: item?.usage === 'required_once' ? 'required_once' : 'optional',
-      consumed: matchedAnchors.length > 0 || matchedFragments.length > 0,
-      matchedAnchorCount: matchedAnchors.length,
-      matchedFragmentCount: matchedFragments.length,
-    };
+  const seen = new Set();
+  return candidates.filter((entry) => {
+    const signature = `${entry.publicChannel}|${entry.publicEffect}`;
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
   });
-  const consumedItemCount = itemResults.filter((item) => item.consumed).length;
-  const requiredItems = itemResults.filter((item) => item.usage === 'required_once');
-  const consumedRequiredItemCount = requiredItems.filter((item) => item.consumed).length;
-  const requiredSatisfied = requiredItems.length < 1 || consumedRequiredItemCount === requiredItems.length;
-  const consumed = requiredItems.length ? requiredSatisfied : consumedItemCount > 0;
-  return {
-    consumed,
-    consumedItemCount,
-    totalItemCount: items.length,
-    requiredItemCount: requiredItems.length,
-    consumedRequiredItemCount,
-    itemResults,
-    reason: items.length < 1
-      ? '本轮没有可注入的公开世界召回项'
-      : requiredItems.length && !requiredSatisfied
-        ? `最终正文没有采用${requiredItems.length - consumedRequiredItemCount}条required_once公开召回投影，不能记为已消费`
-        : consumedItemCount > 0
-          ? `最终正文可核对地采用了${consumedItemCount}/${items.length}条公开召回投影`
-          : '最终正文没有出现任何可核对的公开召回投影，不能记为已消费',
-  };
 }
 
-export function settleRecallPackage(worldInput, packageId, status, options = {}) {
+export function selectWorldRecall(worldInput, userInput, _profiles = {}, limit = 8) {
   const world = normalizeWorldState(worldInput, { chatId: worldInput?.chatId });
-  const pending = world.recall.pending;
-  if (!pending || pending.packageId !== packageId) return { changed: false, world };
-  world.recall.receipts.push({
-    packageId,
-    status: ['consumed', 'released'].includes(status) ? status : 'released',
-    sourceKey: cleanText(options.sourceKey),
-    messageId: optionalInteger(options.messageId),
-    consumedItemCount: Math.max(0, Number(options.consumedItemCount) || 0),
-    totalItemCount: Math.max(0, Number(options.totalItemCount) || 0),
-    reason: cleanText(options.reason),
-    at: options.at || new Date().toISOString(),
-  });
-  world.recall.receipts = world.recall.receipts.slice(-80);
-  world.recall.pending = null;
-  world.digest = worldDigest(world);
-  return { changed: true, world };
+  return publicEffectCandidates(world, userInput)
+    .sort((left, right) => right.score - left.score || left.sourceTurn - right.sourceTurn)
+    .slice(0, Math.max(1, Math.min(16, Number(limit) || 8)))
+    .map(({ score, ...entry }) => entry);
 }
 
 export function formatGenerationInjection({ tickets, recall, profileDigest = [], currentAction = '' }) {
-  const recallItems = Array.isArray(recall) ? recall : [];
-  const requiredCount = recallItems.filter((item) => item?.usage === 'required_once').length;
+  const publicEffects = (Array.isArray(recall) ? recall : []).map((entry) => ({
+    effectId: entry.effectId,
+    publicEffect: entry.publicEffect,
+    publicChannel: entry.publicChannel,
+    relatedToCurrentAction: Boolean(entry.relatedToCurrentAction),
+  }));
   return [
     '<MVUDoctorRuntime>',
     '本轮玩家明确动作（这是玩家侧唯一授权边界；只执行其字面动作，不补写输入外动机、对白、同意、感受或下一步）：',
     JSON.stringify(recallSelectionInput(currentAction)),
     'characterCreationTicket（按首次出现顺序使用；有权威设定或已有档案者跳过）：',
     JSON.stringify(tickets || []),
-    'worldRecallPackage_publicProjection（仅供本次生成消费一次；这是医生私有世界状态生成的公开投影，不含可直接公开的隐藏真相）：',
-    JSON.stringify(recallItems),
-    requiredCount
-      ? `召回执行要求：先服从本轮玩家动作，再把每条usage=required_once投影自然写入当前因果波且只出现一次；共${requiredCount}条。每条被采用的required_once必须在不展示字段名的前提下，逐字保留其consumptionAnchors中的至少一个自然短语，供脚本确定性结算；仅改写成近义句不会被算作消费。若立刻转场，先写转场前可见反应，或在转场后写其已经造成的可观察后果。usage=optional只有自然相关时才使用，可以完全不写。`
-      : '召回执行要求：本轮没有required_once投影；usage=optional只有自然相关时才使用，可以完全不写。',
-    '只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction、observableConsequence与作为逐字结算依据的consumptionAnchors。不得从recordType、空白字段、标签或线索反推出隐藏动机、真实身份、镜头外行动及其成败；传闻不得写成事实。',
-    '正文不得展示usage、recordType、调度说明或任何Doctor标签；它们只决定如何自然续接公开因果。',
-    '召回包不得覆盖玩家当前指令、角色卡、世界书、已接受事实或MVU当前状态。任何平行事件详情、NPC私密心理与未揭示真相都由医生继续在私有世界状态中推进，主回复不得输出。',
-    '已有人物档案公开身份句柄（只表示不得重复随机，不代表其档案中的隐藏资料可被叙事者知道）：',
+    '世界后台已经造成、现在可能进入正文的公开影响：',
+    JSON.stringify(publicEffects),
+    '公开影响不要求逐字照抄，也不要求全部出现。先服从玩家当前动作；在时间、地点和因果上自然到达时，才通过相应渠道写成环境痕迹、未证实传闻、具名公开行动或直接可见后果。',
+    '不得从公开影响反推出行动者的私密动机、未公开身份、镜头外步骤、知识来源或完整真相；没有公开影响时，不得自行泄露后台世界。',
+    '世界后台可能推进与玩家完全无关的事项；不要为了让玩家成为中心而强行把所有影响送到玩家面前，也不要替玩家决定任何行动、感受、同意或结果。',
+    '已有人物档案公开身份句柄（只表示不得重复随机，不代表叙事者知道私密档案）：',
     JSON.stringify(profileDigest || []),
     '</MVUDoctorRuntime>',
   ].join('\n');
@@ -2708,10 +3918,10 @@ export function formatGenerationInjection({ tickets, recall, profileDigest = [],
 
 export function profileDigestFromData(data, limit = 60) {
   return Object.values(existingProfilesFromData(data)).slice(0, limit).map((profile) => {
-    const knownNames = cleanStringArray(profile?.narrativeKnownNames, 24);
+    const explicitNarrativeNames = cleanStringArray(profile?.narrativeKnownNames, 24);
     return {
       profileHandle: stableWorldId('profile-public', profile?.profileId, profile?.name),
-      knownNames,
+      knownNames: explicitNarrativeNames,
       doNotRerandomize: true,
     };
   });

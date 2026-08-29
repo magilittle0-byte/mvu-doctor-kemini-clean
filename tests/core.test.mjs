@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  WORLD_SCHEMA_VERSION,
   assessOriginalMvuReplay,
   assessVariableBaseline,
   assessVariableWriteAuthority,
@@ -9,8 +10,10 @@ import {
   buildVariableAuditChecklist,
   capturePathSnapshot,
   chatCompletionText,
+  createFrozenProfileMatcher,
   diagnosticAdvice,
   discoverProfileSubjects,
+  ensureWorldObserverSubject,
   generateTicketBatch,
   openAiChatEndpoint,
   openAiModelsEndpoint,
@@ -19,10 +22,13 @@ import {
   mergeUpdateVariableBlocks,
   normalizeVariableOperations,
   normalizeProfileCandidates,
+  parseProfileDiscoveryReceipt,
   parseProfileReceipt,
   parseUpdateVariableBlock,
   partitionVariableOperationsByApplication,
+  applyAcceptedWorldObservations,
   applyWorldProposal,
+  authorityProtectedProfileNamesFromEntries,
   parseWorldProposal,
   prepareProfileBatch,
   profileCompletenessReport,
@@ -33,6 +39,7 @@ import {
   restoreTouchedData,
   removeApiFromExport,
   repairAcceptedNarrativeEnvelope,
+  seedWorldSubjectsFromProfiles,
   selectWorldRecall,
   semanticJsonEqual,
   statDataOf,
@@ -54,7 +61,7 @@ function completeProfile(ticket) {
     history: '在南街长大，学徒期结束后留在本地工作。',
     currentState: { location: '南街药房', condition: '身体健康但略显疲惫', emotion: '对来客保持谨慎好奇', goal: '完成今日配药并查清短缺原因' },
     relationships: ['与药房老板保持互相信任的雇佣关系'],
-    knowledge: ['熟悉常见药材和南街居民'], capabilities: ['能够辨认与调配常见药剂'], resources: ['可使用药房工具和基础库存'],
+    knowledge: ['通过职业训练掌握：常见药材辨识与南街居民基础情况'], capabilities: ['能够辨认与调配常见药剂'], resources: ['可使用药房工具和基础库存'],
     evidence: ['正文明确她正在药房工作'], inferences: ['成长经历根据地点和职业补全，可随新证据修订'],
   };
 }
@@ -192,6 +199,48 @@ test('人物发现器只把显式结构ID作为机械锚点，不把英文标签
   assert.deepEqual(subjects.map((subject) => subject.label), ['NPC-7']);
 });
 
+test('独立人物发现回执只接受最终正文逐字姓名与包含该姓名的逐字锚点', () => {
+  const narrative = '白露把纸页压在掌下，又若无其事地向柜台后的店员笑了笑。';
+  const parsed = parseProfileDiscoveryReceipt('<人物发现>\n人物：白露\n锚点：白露把纸页压在掌下\n</人物发现>', narrative);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.kind, 'subjects');
+  assert.equal(parsed.subjects.length, 1);
+  assert.equal(parsed.subjects[0].label, '白露');
+  assert.equal(parsed.subjects[0].sourceAnchor, '白露把纸页压在掌下');
+  assert.deepEqual(parsed.subjects[0].names, ['白露']);
+});
+
+test('独立人物发现明确NONE正常闭合，幻觉姓名或改写锚点整批拒绝且不落空壳', () => {
+  const narrative = '雨水沿着空荡的石阶向下流去。';
+  assert.deepEqual(parseProfileDiscoveryReceipt('<人物发现>NONE</人物发现>', narrative), {
+    ok: true, kind: 'none', subjects: [], error: '',
+  });
+  const hallucinated = parseProfileDiscoveryReceipt('<人物发现>\n人物：白露\n锚点：白露站在石阶上\n</人物发现>', narrative);
+  assert.equal(hallucinated.ok, false);
+  assert.deepEqual(hallucinated.subjects, []);
+  assert.match(hallucinated.error, /不是最终正文逐字出现/);
+
+  const rewrittenAnchor = parseProfileDiscoveryReceipt('<人物发现>\n人物：林澄\n锚点：林澄正在整理药材\n</人物发现>', '林澄在柜台后把新送来的药材逐一归档。');
+  assert.equal(rewrittenAnchor.ok, false);
+  assert.deepEqual(rewrittenAnchor.subjects, []);
+  assert.match(rewrittenAnchor.error, /锚点不是最终正文连续逐字原文/);
+});
+
+test('独立人物发现过滤已有完整权威身份，不把再次出现变成原创随机人物', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const existing = completeProfile(ticket);
+  existing.name = '白露';
+  existing.profileId = 'authority-bailu';
+  delete existing.ticketId;
+  const parsed = parseProfileDiscoveryReceipt(
+    '<人物发现>\n人物：白露\n锚点：白露把纸页压在掌下\n</人物发现>',
+    '白露把纸页压在掌下。',
+    { existingProfiles: { existing } },
+  );
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(parsed.subjects, []);
+});
+
 test('人物观察剥离Izumi的htmlcontent与隐藏摘要，但保留其后的真实正文', () => {
   const source = `<content>
 <htmlcontent><div class="status-panel">白露：状态卡说明。</div></htmlcontent>
@@ -255,6 +304,33 @@ test('变量医生解析无限回廊UpdateVariable并把原更新与纠错合并
   assert.equal((merged.message.match(/<UpdateVariable/g) || []).length, 1);
 });
 
+test('变量医生完整替换唯一有界的坏JSON区块，边界缺失或多义时失败关闭', () => {
+  const broken = '<UpdateVariable><Analysis>旧区块不可解析</Analysis><JSONPatch>[{"op":"delta","path":"/玩家/金钱","value":???}]</JSONPatch></UpdateVariable>';
+  const correction = '<UpdateVariable><Analysis>只保留经医生验证的新操作。</Analysis><JSONPatch>[{"op":"replace","path":"/玩家/金钱","value":7}]</JSONPatch></UpdateVariable>';
+  assert.equal(parseUpdateVariableBlock(broken).ok, false);
+
+  const replaced = mergeUpdateVariableBlocks(`正文\n${broken}\n尾声`, correction);
+  assert.equal(replaced.ok, true, replaced.error);
+  assert.equal(replaced.mode, 'replace-invalid-bounded');
+  assert.deepEqual(replaced.operations, [{ op: 'replace', path: '/玩家/金钱', value: 7 }]);
+  assert.equal((replaced.message.match(/<UpdateVariable\b/g) || []).length, 1);
+  assert.equal((replaced.message.match(/<\/UpdateVariable\s*>/g) || []).length, 1);
+  assert.doesNotMatch(replaced.message, /旧区块不可解析|\?\?\?/);
+
+  const missingClose = mergeUpdateVariableBlocks(
+    '正文\n<UpdateVariable><JSONPatch>[{"op":"delta","path":"/玩家/金钱","value":-3}]</JSONPatch>',
+    correction,
+  );
+  assert.equal(missingClose.ok, false);
+  assert.equal(missingClose.code, 'ambiguous-original-envelope');
+  assert.deepEqual(missingClose.operations, []);
+
+  const multiple = mergeUpdateVariableBlocks(`${broken}\n${broken}`, correction);
+  assert.equal(multiple.ok, false);
+  assert.equal(multiple.code, 'ambiguous-original-envelope');
+  assert.deepEqual(multiple.operations, []);
+});
+
 test('变量区块只接受单一写入源，并保留模型分析但不要求伪证式回执', () => {
   const one = parseUpdateVariableBlock('<UpdateVariable><Analysis>逐项核对后无需修复。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>');
   assert.equal(one.ok, true);
@@ -272,19 +348,26 @@ test('变量区块按无限回廊真实MVU的分行结构输出', () => {
 
 test('变量医生从角色卡权威规则拒绝脚本托管字段但保留可直写字段', () => {
   const state = { stat_data: { 契约者: { 衍生属性: { HP_当前: 105, HP_最大: 105, 防御: 3, 负重_当前: 0, 负重_上限: 30 }, 经济: { UP: 0 } }, 当前敌人: { 守卫: { 衍生属性: { 防御: 6 } } } } };
-  const rules = `契约者.衍生属性:\n- 【完全禁止修改】HP_最大、防御、负重_上限等所有计算结果均由前端自动完成。\n契约者.经济:\n- UP在获得或支付时允许直接修改。`;
+  const rules = `契约者.衍生属性:\n- 【完全禁止修改】HP_最大、防御、负重_上限等所有计算结果均由前端自动完成。\n负重_当前：前端自动计算，禁止修改。\n/当前敌人/守卫/衍生属性/防御：只读。\n契约者.经济:\n- UP在获得或支付时允许直接修改。`;
   const authority = assessVariableWriteAuthority(state, rules, [
     { op: 'replace', path: '/契约者/衍生属性/HP_最大', value: 120 },
     { op: 'replace', path: '/契约者/衍生属性/HP_当前', value: 90 },
+    { op: 'replace', path: '/契约者/衍生属性/负重_当前', value: 9 },
     { op: 'delta', path: '/契约者/经济/UP', value: 5 },
     { op: 'replace', path: '/当前敌人/守卫/衍生属性/防御', value: 7 },
   ]);
   assert.equal(authority.ok, false);
-  assert.deepEqual(authority.allowedOperations.map((item) => item.path), ['/契约者/衍生属性/HP_当前', '/契约者/经济/UP', '/当前敌人/守卫/衍生属性/防御']);
-  assert.deepEqual(authority.rejectedOperations.map((item) => item.operation.path), ['/契约者/衍生属性/HP_最大']);
+  assert.deepEqual(authority.allowedOperations.map((item) => item.path), ['/契约者/衍生属性/HP_当前', '/契约者/经济/UP']);
+  assert.deepEqual(authority.rejectedOperations.map((item) => item.operation.path), [
+    '/契约者/衍生属性/HP_最大',
+    '/契约者/衍生属性/负重_当前',
+    '/当前敌人/守卫/衍生属性/防御',
+  ]);
   assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/HP_最大'));
   assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/防御'));
   assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/负重_上限'));
+  assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/负重_当前'));
+  assert.ok(authority.hostManagedPaths.includes('/当前敌人/守卫/衍生属性/防御'));
   assert.ok(!authority.hostManagedPaths.includes('/契约者/衍生属性/HP_当前'));
 });
 
@@ -315,6 +398,21 @@ test('变量操作在脚本侧确定性修复常见MVU写法而不猜不存在�
     { op: 'remove', path: '/契约者/背包/旧物' },
   ]);
   assert.equal(normalizeVariableOperations(currentData, [{ op: 'replace', path: '/完全不存在', value: 1 }]).operations[0].path, '/完全不存在');
+});
+
+test('变量操作归一化与最终校验都拒绝人物档案根路径的两种写法', () => {
+  const currentData = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: {} } } };
+  for (const path of ['/人物档案', '/stat_data/人物档案']) {
+    const operation = { op: 'replace', path, value: { schemaVersion: 1, byActorId: {} } };
+    const normalized = normalizeVariableOperations(currentData, [operation]);
+    assert.equal(normalized.ok, false, `${path}不应通过归一化`);
+    assert.equal(normalized.code, 'profile-root-owned-by-profile-doctor');
+    assert.deepEqual(normalized.operations, []);
+
+    const validated = validatePatchOperations(currentData, [operation]);
+    assert.equal(validated.ok, false, `${path}不应通过最终校验`);
+    assert.equal(validated.code, 'profile-root-owned-by-profile-doctor');
+  }
 });
 
 test('变量基线用真实前后状态识别死区块与已落地原更新', () => {
@@ -510,6 +608,18 @@ test('完整新档案绑定同一票据并编译为单根原子补丁', () => {
   assert.equal(verifyCommittedProfiles(mergeProfileRootDirect(current, prepared.profiles), prepared.profiles), true);
 });
 
+test('原创人物的十四个骰轴是生成前事实，模型返回不得覆盖其中任何一轴', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const profile = completeProfile(ticket);
+  profile.personality = Object.fromEntries(Object.keys(ticket.axes).map((key) => [key, `模型试图覆盖-${key}`]));
+
+  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} });
+
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.deepEqual(prepared.profiles[0].personality, ticket.axes);
+  assert.equal(Object.keys(prepared.profiles[0].personality).length, 14);
+});
+
 test('合法的单字物种与性别不会被误判为空字段', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const profile = completeProfile(ticket);
@@ -519,14 +629,23 @@ test('合法的单字物种与性别不会被误判为空字段', () => {
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
 });
 
-test('权威人物设定覆盖冲突骰轴，骰票只补尚未给出的轴', () => {
+test('权威人物使用完整权威人格且绝不混入随机票据', () => {
   const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
   const profile = completeProfile(ticket);
-  profile.personality = { temperament: '角色卡明确设定为热情直率' };
-  const prepared = prepareProfileBatch([profile], [ticket], { stat_data: {} });
+  profile.name = '角色卡原著人物';
+  profile.personality = Object.fromEntries(Object.keys(ticket.axes).map((key) => [key, `角色卡权威-${key}`]));
+  const prepared = prepareProfileBatch(
+    [profile],
+    [ticket],
+    { stat_data: {} },
+    '',
+    null,
+    { authorityProtectedNames: ['角色卡原著人物'] },
+  );
   assert.equal(prepared.ok, true, prepared.errors.join('\n'));
-  assert.equal(prepared.profiles[0].personality.temperament, '角色卡明确设定为热情直率');
-  assert.equal(prepared.profiles[0].personality.coreDesire, ticket.axes.coreDesire);
+  assert.deepEqual(prepared.profiles[0].personality, profile.personality);
+  assert.equal(prepared.profiles[0].ticketId, undefined);
+  assert.equal(prepared.profiles[0].authoritySource, 'character-card-or-worldbook');
 });
 
 test('人物修复保留最佳候选并只归一化缺项，不重新生成整张档案', () => {
@@ -553,6 +672,36 @@ test('人物修复保留最佳候选并只归一化缺项，不重新生成整�
   assert.deepEqual(prepared.profiles[0].relationships, firstCandidate.relationships);
   assert.deepEqual(prepared.profiles[0].narrativeKnownNames, ['林澄']);
   assert.match(prepared.profiles[0].inferences[0], /‘草稿’/);
+});
+
+test('完整新候选替换人物快照数组，只有别名与证据保留历史并集', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const previous = completeProfile(ticket);
+  previous.aliases = ['旧称'];
+  previous.relationships = ['旧关系快照'];
+  previous.knowledge = ['旧知识快照'];
+  previous.capabilities = ['旧能力快照'];
+  previous.resources = ['旧资源快照'];
+  previous.evidence = ['旧正文证据'];
+  previous.inferences = ['旧推断快照'];
+
+  const incoming = completeProfile(ticket);
+  incoming.aliases = ['新称'];
+  incoming.relationships = ['新关系快照'];
+  incoming.knowledge = ['新知识快照'];
+  incoming.capabilities = ['新能力快照'];
+  incoming.resources = ['新资源快照'];
+  incoming.evidence = ['新正文证据'];
+  incoming.inferences = ['新推断快照'];
+
+  const [merged] = mergeProfileCandidates([previous], [incoming]);
+  assert.deepEqual(merged.relationships, ['新关系快照']);
+  assert.deepEqual(merged.knowledge, ['新知识快照']);
+  assert.deepEqual(merged.capabilities, ['新能力快照']);
+  assert.deepEqual(merged.resources, ['新资源快照']);
+  assert.deepEqual(merged.inferences, ['新推断快照']);
+  assert.deepEqual(merged.aliases, ['旧称', '新称']);
+  assert.deepEqual(merged.evidence, ['旧正文证据', '新正文证据']);
 });
 
 test('多人物候选的占位缺项可定向补全并整体通过，而不重写已有内容', () => {
@@ -595,6 +744,314 @@ test('旧人物的局部更新自动继承完整持久档案', () => {
   assert.equal(prepared.profiles[0].currentState.goal, '查清今晚药材失窃的来源');
 });
 
+test('partial重试不得复用已提交人物的ticket或profileId覆盖冻结档案', () => {
+  const tickets = generateTicketBatch(2, () => 0.25, 1700000000000);
+  const committed = completeProfile(tickets[0]);
+  committed.profileId = tickets[0].ticketId;
+  const current = {
+    stat_data: {
+      人物档案: {
+        schemaVersion: 1,
+        byActorId: { [committed.profileId]: committed },
+      },
+    },
+  };
+  const retryCandidate = completeProfile(tickets[1]);
+  retryCandidate.name = '周遥';
+  retryCandidate.aliases = ['小遥'];
+  retryCandidate.profileId = committed.profileId;
+  retryCandidate.ticketId = committed.ticketId;
+
+  const retried = prepareProfileBatch(
+    [retryCandidate],
+    [tickets[1]],
+    current,
+    '周遥推门进入药房，把斗篷上的雨水抖落在门外。',
+  );
+
+  assert.equal(retried.ok, false);
+  assert.equal(retried.profiles.length, 0);
+  assert.match(retried.errors.join('；'), /冻结|已提交|profileId|票据|ticket/u);
+  assert.equal(current.stat_data.人物档案.byActorId[committed.profileId].name, '林澄');
+});
+
+test('共享称谓命中多个既有人物时局部拒绝消歧，不按插入顺序串档', () => {
+  const tickets = generateTicketBatch(3, () => 0.25, 1700000000000);
+  const first = completeProfile(tickets[0]);
+  first.profileId = 'actor-first-captain';
+  first.name = '林澄';
+  first.aliases = ['队长'];
+  const second = completeProfile(tickets[1]);
+  second.profileId = 'actor-second-captain';
+  second.name = '周遥';
+  second.aliases = ['队长'];
+  const ambiguous = completeProfile(tickets[2]);
+  ambiguous.profileId = '';
+  ambiguous.ticketId = '';
+  ambiguous.name = '队长';
+  ambiguous.aliases = [];
+  const current = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: {
+    [first.profileId]: first,
+    [second.profileId]: second,
+  } } } };
+
+  const prepared = prepareProfileBatch([ambiguous], [tickets[2]], current, '队长站在门口检查了两遍名单。');
+
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.profiles.length, 0);
+  assert.match(prepared.errors.join('；'), /同时命中多个既有人物|共享称谓/u);
+  const mergedCandidates = mergeProfileCandidates([
+    { name: '林澄', aliases: ['队长'] },
+  ], [{ name: '周遥', aliases: ['队长'] }]);
+  assert.equal(mergedCandidates.length, 2);
+});
+
+test('冻结人物只按精确ID、有效票据或唯一主名匹配，共享alias不能吞掉待修复候选', () => {
+  const tickets = generateTicketBatch(3, () => 0.25, 1700000000000);
+  const first = completeProfile(tickets[0]);
+  first.profileId = tickets[0].ticketId;
+  first.name = '林澄';
+  first.aliases = ['队长', '药师'];
+  const second = completeProfile(tickets[1]);
+  second.profileId = tickets[1].ticketId;
+  second.name = '周遥';
+  second.aliases = ['队长'];
+  const matcher = createFrozenProfileMatcher(
+    [first, second],
+    { [first.profileId]: first, [second.profileId]: second },
+    tickets,
+  );
+
+  assert.equal(matcher({ profileId: first.profileId, name: '完全错误的名字' }), true);
+  assert.equal(matcher({ ticketId: second.ticketId, name: '完全错误的名字' }), true);
+  assert.equal(matcher({ name: '林澄', aliases: [] }), true);
+  assert.equal(matcher({ name: '队长', aliases: [] }), false);
+  assert.equal(matcher({ name: '新来的传令员', aliases: ['队长'] }), false);
+  assert.equal(matcher({ name: '新来的采药人', aliases: ['药师'] }), false);
+  assert.equal(matcher({ name: '', aliases: ['药师'] }), false);
+  assert.equal(matcher({ ticketId: '模型伪造的票据', name: '陌生人物' }), false);
+});
+
+test('未提交候选重复票据时保留两张档案，并按正文出场顺序重分未占用票据', () => {
+  const tickets = generateTicketBatch(3, () => 0.25, 1700000000000);
+  const first = completeProfile(tickets[0]);
+  first.name = '林澄';
+  first.aliases = [];
+  const second = completeProfile(tickets[0]);
+  second.name = '周遥';
+  second.aliases = [];
+  const reserved = completeProfile(tickets[1]);
+  reserved.name = '白露';
+  reserved.aliases = [];
+
+  const merged = mergeProfileCandidates([first], [second, reserved]);
+  assert.equal(merged.length, 3);
+  const prepared = prepareProfileBatch(
+    merged,
+    tickets,
+    { stat_data: {} },
+    '周遥先走进药房。白露随后把伞收好。林澄最后从库房回来。',
+  );
+
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.deepEqual(prepared.profiles.map((profile) => profile.name), ['周遥', '白露', '林澄']);
+  assert.deepEqual(prepared.profiles.map((profile) => profile.ticketId), [
+    tickets[0].ticketId,
+    tickets[1].ticketId,
+    tickets[2].ticketId,
+  ]);
+  assert.equal(prepared.normalizationRepairs.some((repair) => repair.code === 'uncommitted_ticket_reassigned'), true);
+});
+
+test('世界书权威只接受结构化ID、唯一精确key或label，不从正文子串和通用alias推断', () => {
+  const candidates = [
+    { name: '白露', aliases: ['护士'] },
+    { name: '黑羽', aliases: [] },
+    { name: '队长', aliases: [] },
+    { name: '洛青', aliases: [], authorityEntryId: 'entry-luoqing' },
+    { name: '角色卡本人', aliases: [] },
+  ];
+  const entries = [
+    { uid: 'entry-background', keys: ['背景'], comment: '医院背景', content: '正文描述中偶然提到白露与她的秘密。' },
+    { uid: 'entry-bailu', keys: ['白露'], comment: '白露', content: '人物设定。' },
+    { uid: 'entry-heiyu-a', keys: ['黑羽'], comment: '黑羽', content: '第一份重名条目。' },
+    { uid: 'entry-heiyu-b', keys: ['黑羽'], comment: '其他记录', content: '第二份重名条目。' },
+    { uid: 'entry-captain', keys: ['队长'], comment: '队长', content: '通用职务称谓。' },
+    { uid: 'entry-luoqing', keys: ['洛青'], comment: '洛青', content: '结构化来源选中的人物条目。' },
+    { uid: 'entry-luoqing-duplicate', keys: ['洛青'], comment: '旁支洛青', content: '同名触发词的另一条记录。' },
+  ];
+
+  const protectedNames = authorityProtectedProfileNamesFromEntries(candidates, ['角色卡本人'], entries);
+
+  assert.deepEqual(protectedNames, ['白露', '洛青', '角色卡本人']);
+  assert.equal(protectedNames.includes('黑羽'), false);
+  assert.equal(protectedNames.includes('队长'), false);
+
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const unrelated = completeProfile(ticket);
+  unrelated.name = '赵宁';
+  unrelated.aliases = ['白露'];
+  const prepared = prepareProfileBatch(
+    [unrelated],
+    [ticket],
+    { stat_data: {} },
+    '赵宁走进病房，有人误把她喊成白露。',
+    null,
+    { authorityProtectedNames: protectedNames },
+  );
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.equal(prepared.profiles[0].ticketId, ticket.ticketId);
+  assert.equal(prepared.profiles[0].authoritySource, undefined);
+});
+
+test('既有档案回传只能更新正文支持的动态字段，不得改写身份、人格、票据或凭空覆盖现状资源', () => {
+  const tickets = generateTicketBatch(2, () => 0.25, 1700000000000);
+  const existing = completeProfile(tickets[0]);
+  existing.profileId = 'actor-existing-immutable';
+  const current = {
+    stat_data: {
+      人物档案: {
+        schemaVersion: 1,
+        byActorId: { [existing.profileId]: structuredClone(existing) },
+      },
+    },
+  };
+  const incoming = {
+    profileId: existing.profileId,
+    ticketId: tickets[1].ticketId,
+    name: existing.name,
+    identity: { species: '精灵', occupation: '王室密探', affiliation: '敌对王庭' },
+    personality: Object.fromEntries(Object.keys(existing.personality).map((key) => [key, `模型覆盖-${key}`])),
+    currentState: { location: '敌军地堡', condition: '毫发无损', emotion: '绝对忠诚', goal: '执行未公开密令' },
+    resources: ['可调用敌军全部兵力'],
+  };
+
+  const prepared = prepareProfileBatch(
+    [incoming],
+    [tickets[1]],
+    current,
+    '林澄仍在南街药房整理常见药材。',
+  );
+
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  const saved = prepared.profiles[0];
+  assert.equal(saved.ticketId, existing.ticketId);
+  assert.deepEqual(saved.identity, existing.identity);
+  assert.deepEqual(saved.personality, existing.personality);
+  assert.deepEqual(saved.currentState, existing.currentState);
+  assert.deepEqual(saved.resources, existing.resources);
+});
+
+test('既有人物的资源、关系和能力只按同一人物正文中的明确变化局部退休旧项', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const existing = completeProfile(ticket);
+  existing.profileId = 'actor-existing-dynamic';
+  existing.relationships = ['林澄与药房老板保持盟友关系'];
+  existing.capabilities = ['林澄的右手可以稳定调配药剂'];
+  existing.resources = ['林澄随身持有最后一瓶解毒剂'];
+  const incoming = structuredClone(existing);
+  incoming.relationships = ['林澄与药房老板已经决裂并转为敌对'];
+  incoming.capabilities = ['林澄右手受伤后暂时无法调配药剂'];
+  incoming.resources = ['林澄把最后一瓶解毒剂交给老板，当前不再持有解毒剂'];
+  const current = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: { [existing.profileId]: existing } } } };
+  const narrative = '林澄与药房老板已经决裂并转为敌对。林澄右手受伤后暂时无法调配药剂。林澄把最后一瓶解毒剂交给老板，当前不再持有解毒剂。';
+
+  const prepared = prepareProfileBatch([incoming], [], current, narrative);
+
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.deepEqual(prepared.profiles[0].relationships, incoming.relationships);
+  assert.deepEqual(prepared.profiles[0].capabilities, incoming.capabilities);
+  assert.deepEqual(prepared.profiles[0].resources, incoming.resources);
+});
+
+test('既有人物动态集合被正文明确耗尽至空时保存可读空状态，不让旧项复活', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const existing = completeProfile(ticket);
+  existing.profileId = 'actor-existing-empty-resource';
+  existing.resources = ['林澄随身持有唯一一把库房钥匙'];
+  const incoming = structuredClone(existing);
+  incoming.resources = [];
+  const current = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: { [existing.profileId]: existing } } } };
+
+  const prepared = prepareProfileBatch([incoming], [], current, '林澄把唯一一把库房钥匙交给守卫，当前不再持有钥匙。');
+
+  assert.equal(prepared.ok, true, prepared.errors.join('\n'));
+  assert.equal(prepared.profiles[0].resources.length, 1);
+  assert.match(prepared.profiles[0].resources[0], /没有可调用.*资源/u);
+  assert.doesNotMatch(prepared.profiles[0].resources[0], /随身持有/u);
+});
+
+test('正文对白和未证实传闻只进入带可信度的观察材料，不冒充世界成功变化', () => {
+  const baseline = {
+    schemaVersion: WORLD_SCHEMA_VERSION,
+    chatId: 'chat-observation', turn: 3, revision: 2, subjects: [{
+      id: 'faction-tower', type: 'faction', name: '黑塔', anchor: '黑塔按自身组织目标运行',
+      current: '黑塔仍在内部运作', goal: '维持组织活动', knowledge: [], observedFacts: [], resources: ['既有成员'],
+      constraints: [], nextAction: '复核成员动向', nextCheckTurn: 4, status: 'active',
+      publicEffect: '黑塔门前张贴了临时闭馆告示。', publicChannel: 'named_action',
+    }], changes: [], receipts: [], failures: [],
+  };
+  const acceptedText = '有人说黑塔已解散，但无人证实。黑塔门前张贴了临时闭馆告示。';
+  const first = applyAcceptedWorldObservations(baseline, [
+    { subjectId: 'faction-tower', fact: '有人说黑塔已解散，但无人证实。', epistemic: 'rumor' },
+    { subjectId: 'faction-tower', fact: '黑塔门前张贴了临时闭馆告示。', epistemic: 'confirmed_public_effect' },
+  ], { chatId: 'chat-observation', turn: 4, sourceKey: 'reply-1', acceptedText });
+  const tower = first.world.subjects[0];
+
+  assert.equal(tower.current, '黑塔仍在内部运作');
+  assert.deepEqual(tower.resources, ['既有成员']);
+  assert.equal(tower.nextAction, '复核成员动向');
+  assert.deepEqual(tower.observedFacts, ['黑塔门前张贴了临时闭馆告示。']);
+  assert.deepEqual(tower.observations.map((entry) => entry.epistemic), ['rumor', 'confirmed_public_effect']);
+  assert.equal(first.world.changes.length, 0);
+
+  const repeated = applyAcceptedWorldObservations(first.world, [
+    { subjectId: 'faction-tower', fact: '有人说黑塔已解散，但无人证实。', epistemic: 'rumor' },
+  ], { chatId: 'chat-observation', turn: 4, sourceKey: 'reply-1', acceptedText });
+  assert.equal(repeated.applied.length, 0);
+  assert.equal(repeated.world.subjects[0].observations.length, 2);
+});
+
+test('人物知识以人物可达来源为边界：旧知识可保留，新增无来源知识必须拒绝', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const fresh = completeProfile(ticket);
+  fresh.knowledge = ['仓库门锁昨晚被换过'];
+  const rejectedFresh = prepareProfileBatch([fresh], [ticket], { stat_data: {} });
+  assert.equal(rejectedFresh.ok, false);
+  assert.match(rejectedFresh.errors.join('；'), /knowledge|知识|来源|可达/u);
+
+  fresh.knowledge = ['经亲眼查看得知：仓库门锁昨晚被换过'];
+  const acceptedFresh = prepareProfileBatch(
+    [fresh],
+    [ticket],
+    { stat_data: {} },
+    '林澄亲眼查看了仓库门锁，确认门锁昨晚被换过。',
+  );
+  assert.equal(acceptedFresh.ok, true, acceptedFresh.errors.join('\n'));
+
+  const existing = completeProfile(ticket);
+  existing.profileId = 'actor-existing-knowledge';
+  existing.knowledge = ['旧版档案遗留的知识快照'];
+  const current = { stat_data: { 人物档案: { schemaVersion: 1, byActorId: { [existing.profileId]: existing } } } };
+  const inherited = prepareProfileBatch([
+    { profileId: existing.profileId, name: existing.name, currentState: { goal: '继续整理药材' } },
+  ], [], current, '林澄继续整理药材。');
+  assert.equal(inherited.ok, true, inherited.errors.join('\n'));
+  assert.deepEqual(inherited.profiles[0].knowledge, ['旧版档案遗留的知识快照']);
+
+  const leaked = prepareProfileBatch([
+    { profileId: existing.profileId, name: existing.name, knowledge: [...existing.knowledge, '敌对势力尚未公开的密令内容'] },
+  ], [], current, '林澄继续整理药材。');
+  assert.equal(leaked.ok, false);
+  assert.match(leaked.errors.join('；'), /knowledge|知识|来源|可达/u);
+
+  const reachable = prepareProfileBatch([
+    { profileId: existing.profileId, name: existing.name, knowledge: [...existing.knowledge, '经同伴当面告知得知：北门将在日落后关闭'] },
+  ], [], current, '同伴把北门关闭的消息当面告诉林澄。');
+  assert.equal(reachable.ok, true, reachable.errors.join('\n'));
+  assert.deepEqual(reachable.profiles[0].knowledge, [...existing.knowledge, '经同伴当面告知得知：北门将在日落后关闭']);
+});
+
 test('人物证据只取最终叙事，不把规划和选项冒充已发生事实', () => {
   const candidate = { name: '林澄', aliases: '小澄' };
   const normalized = normalizeProfileCandidates(
@@ -624,6 +1081,20 @@ test('占位词后追加外观解释仍不是完整人物字段', () => {
   assert.match(report.errors.join('；'), /identity\.age/);
   profile.identity.age = '青年期，按本世界人类寿命约二十至二十五岁';
   assert.equal(profileCompletenessReport(profile).ok, true);
+});
+
+test('人物档案必填数组只有未知占位或空对象时仍判定不完整', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const requiredArrays = ['relationships', 'knowledge', 'capabilities', 'resources', 'evidence', 'inferences'];
+  for (const field of requiredArrays) {
+    for (const placeholder of [['未知'], [{}]]) {
+      const profile = completeProfile(ticket);
+      profile[field] = placeholder;
+      const report = profileCompletenessReport(profile);
+      assert.equal(report.ok, false, `${field}=${JSON.stringify(placeholder)}不应算完整`);
+      assert.match(report.errors.join('；'), new RegExp(field));
+    }
+  }
 });
 
 test('人物档案只保留脚本锚点或既有身份支持的别名，不用正文子串制造别名', () => {
@@ -702,22 +1173,192 @@ test('多新人即使模型返回顺序颠倒，也按最终正文首次出现�
   assert.equal(byName.周遥.personality.temperament, tickets[0].axes.temperament);
 });
 
-test('世界引擎JSON归一化且召回当前相关人物', () => {
-  const proposal = parseWorldProposal(`\`\`\`json
-  {"summary":"南街出现药材短缺。","threads":[{"id":"b1","title":"药材短缺","actorIds":["林澄"],"locations":["南街"],"keywords":["药房"],"stage":"advancing","summary":"林澄暗中调查货源","publicTitle":"南街药房的限购","publicSurface":"南街药房门口贴出了限购告示。","knowledge":"hidden"},{"id":"b2","title":"北港修船","actorIds":["赵石"],"locations":["北港"],"stage":"dormant","summary":"船工等待木料","knowledge":"hidden"}]}
-  \`\`\``);
-  const world = applyWorldProposal({}, proposal, { chatId: 'chat-world', turn: 1 });
-  const recalled = selectWorldRecall(world, '我去南街药房找林澄', {}, 1);
-  assert.equal(recalled.length, 1);
-  assert.equal(recalled[0].recordType, 'sensory_surface');
-  assert.equal(recalled[0].publicSurface, '南街药房门口贴出了限购告示。');
-  assert.equal('id' in recalled[0], false);
+test('人物医生与世界主体播种都防御性排除user和当前角色卡主体', () => {
+  const tickets = generateTicketBatch(3, () => 0.25, 1700000000000);
+  const userProfile = completeProfile(tickets[0]);
+  userProfile.profileId = 'profile-user';
+  userProfile.name = 'user';
+  const cardProfile = completeProfile(tickets[1]);
+  cardProfile.profileId = 'profile-card';
+  cardProfile.name = '当前角色卡主角';
+  const npcProfile = completeProfile(tickets[2]);
+  npcProfile.profileId = 'profile-npc';
+  npcProfile.name = '林澄';
+  const excludedNames = ['user', '当前角色卡主角'];
+
+  const prepared = prepareProfileBatch(
+    [userProfile, cardProfile],
+    tickets,
+    { stat_data: {} },
+    '',
+    null,
+    { excludedNames },
+  );
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.profiles.length, 0);
+  assert.equal(prepared.rejected.length, 2);
+  assert.match(prepared.errors.join('；'), /user/);
+  assert.match(prepared.errors.join('；'), /当前角色卡主角/);
+
+  const seeded = seedWorldSubjectsFromProfiles({
+    schemaVersion: 7,
+    chatId: 'chat-excluded-subjects',
+    turn: 1,
+    subjects: [
+      { id: 'subject-user', type: 'person', name: 'user', profileId: 'profile-user' },
+      { id: 'subject-card', type: 'person', name: '当前角色卡主角', profileId: 'profile-card' },
+    ],
+    changes: [],
+  }, [userProfile, cardProfile, npcProfile], { excludedNames });
+  assert.equal(seeded.world.subjects.some((subject) => subject.profileId === 'profile-user'), false);
+  assert.equal(seeded.world.subjects.some((subject) => subject.profileId === 'profile-card'), false);
+  assert.equal(seeded.world.subjects.some((subject) => subject.name.toLocaleLowerCase() === 'user'), false);
+  assert.equal(seeded.world.subjects.some((subject) => subject.name === '当前角色卡主角'), false);
+  assert.equal(seeded.world.subjects.some((subject) => subject.profileId === 'profile-npc'), true);
 });
 
-test('世界引擎可修复裸键、单引号、缺逗号和尾逗号', () => {
-  const proposal = parseWorldProposal("{summary:'继续推进', branches:[{id:'b1', title:'线索'}] npcIntents:[], agreements:[], hostilePlans:[],}");
-  assert.equal(proposal.summary, '继续推进');
-  assert.equal(proposal.threads[0].id, 'b1');
+test('旧人物主体按规范化姓名或档案别名绑定profileId，不重复创建第二个主体', () => {
+  const [ticket] = generateTicketBatch(1, () => 0.25, 1700000000000);
+  const profile = completeProfile(ticket);
+  profile.profileId = 'profile-lin-legacy-bind';
+  profile.name = '林澄';
+  profile.aliases = ['小澄'];
+  const legacy = {
+    schemaVersion: 7,
+    chatId: 'chat-legacy-bind',
+    turn: 4,
+    subjects: [{
+      id: 'legacy-person-xiaocheng',
+      type: 'person',
+      name: '  小澄  ',
+      profileId: '',
+      current: '已经在北门核对通行记录',
+      goal: '查清一份缺页登记',
+      status: 'active',
+    }],
+    changes: [],
+  };
+
+  const seeded = seedWorldSubjectsFromProfiles(legacy, { [profile.profileId]: profile }, { turn: 4 });
+  const people = seeded.world.subjects.filter((subject) => subject.type === 'person');
+  assert.equal(people.length, 1);
+  assert.equal(people[0].id, 'legacy-person-xiaocheng');
+  assert.equal(people[0].profileId, profile.profileId);
+  assert.equal(people[0].current, '已经在北门核对通行记录');
+});
+
+test('无主体世界只进行临时发现扫描，不持久化伪造的世界观察者主体', () => {
+  const empty = {
+    schemaVersion: 7,
+    chatId: 'chat-no-observer',
+    turn: 3,
+    subjects: [],
+    changes: [],
+  };
+  const ensured = ensureWorldObserverSubject(empty, { chatId: empty.chatId });
+
+  assert.equal(ensured.world.subjects.length, 0);
+  assert.equal(ensured.world.subjects.some((subject) => subject.name === '世界背景与未归属进程'), false);
+  assert.equal(ensured.changed, 0);
+});
+
+test('世界发现分块只以逐字锚点建立waiting shell，不把发现器意图或公开影响当成已发生变化', () => {
+  const proposal = parseWorldProposal(`世界摘要：南街药材供应出现了持续变化。
+
+[SUBJECT NEW]
+类型：process
+名称：南街药材供应
+正文锚点：两种常用药材的到货量连续下降
+稳定锚点：药材供应受上游运输、库存和药房需求共同影响
+现状：两种常用药材的到货量连续下降
+目标：在库存与运输条件变化时继续演化供需状态
+尝试：核对本日到货与剩余库存
+结果：药房开始限制两种短缺药材的出售数量
+状态变化：南街药房已经执行新的限购规则
+下一步：检查上游运输是否恢复
+下次检查：2
+支线：药材短缺
+公开影响：南街药房门口贴出了新的限购告示。
+公开渠道：environment_trace
+[/SUBJECT]`);
+  const merged = applyWorldProposal({}, proposal, {
+    chatId: 'chat-world',
+    turn: 1,
+    acceptedText: '两种常用药材的到货量连续下降。',
+  });
+  const recalled = selectWorldRecall(merged.world, '我留在旅店整理背包', {}, 1);
+
+  assert.equal(proposal.errors.length, 0);
+  assert.equal(merged.applied.length, 1);
+  assert.equal(merged.world.subjects[0].name, '南街药材供应');
+  assert.equal(merged.world.subjects[0].anchor, '两种常用药材的到货量连续下降');
+  assert.equal(merged.world.subjects[0].current, '两种常用药材的到货量连续下降');
+  assert.equal(merged.world.subjects[0].status, 'waiting');
+  assert.equal(merged.world.subjects[0].goal, '');
+  assert.deepEqual(merged.world.subjects[0].resources, []);
+  assert.deepEqual(merged.world.subjects[0].threadKeys, []);
+  assert.equal(merged.world.subjects[0].publicEffect, '');
+  assert.equal(merged.world.changes.length, 0);
+  assert.equal(recalled.length, 0);
+});
+
+test('既有主体泄密投影仍被剥离，混合NEW只建waiting shell且不会伪造公开影响', () => {
+  const baseline = {
+    schemaVersion: 7,
+    chatId: 'chat-world',
+    turn: 0,
+    subjects: [{
+      id: 'person-bailu', type: 'person', name: '白露',
+      anchor: '平常以柔弱形象与队伍相处，但有自己的观察目标',
+      current: '私人记录仍未被旁人发现', goal: '验证自己对同行者的判断',
+      nextCheckTurn: 1, status: 'active',
+    }],
+    changes: [],
+  };
+  const proposal = parseWorldProposal(`[SUBJECT person-bailu]
+尝试：在无人注意时整理此前观察到的细节
+结果：她完成了第一轮分类
+状态变化：私人记录已经按风险高低完成分类
+现状：私人记录仍未被旁人发现
+下一步：等待可验证其中一条判断的机会
+公开影响：她其实在伪装柔弱并暗中记录所有人的弱点
+公开渠道：direct_consequence
+[/SUBJECT]
+
+[SUBJECT NEW]
+类型：process
+名称：旧水门水位
+正文锚点：下游石阶开始积水
+稳定锚点：水位随上游降雨和闸门流量变化
+现状：下游石阶开始积水
+目标：按水压与流量继续演化
+尝试：累积上游来水
+结果：第二级石阶出现新的水痕
+状态变化：旧水门下游水位升至第二级石阶
+下一步：继续检查水压
+公开影响：旧水门下游的第二级石阶多出一圈新水痕。
+公开渠道：environment_trace
+[/SUBJECT]`, { subjects: baseline.subjects });
+  const merged = applyWorldProposal(baseline, proposal, {
+    chatId: 'chat-world',
+    turn: 1,
+    acceptedText: '白露仍未公开私人记录；下游石阶开始积水。',
+  });
+  const recalled = selectWorldRecall(merged.world, '继续自己的行程', {}, 8);
+  const bailu = merged.world.subjects.find((entry) => entry.name === '白露');
+  const water = merged.world.subjects.find((entry) => entry.name === '旧水门水位');
+
+  assert.equal(merged.applied.length, 2);
+  assert.match(bailu.current, /未被旁人发现/);
+  assert.equal(bailu.publicEffect, '');
+  assert.equal(merged.skipped.some((entry) => entry.code === 'private_leak_removed'), true);
+  assert.equal(water.anchor, '下游石阶开始积水');
+  assert.equal(water.current, '下游石阶开始积水');
+  assert.equal(water.status, 'waiting');
+  assert.equal(water.publicEffect, '');
+  assert.equal(merged.world.changes.length, 1);
+  assert.equal(recalled.length, 0);
+  assert.doesNotMatch(JSON.stringify(recalled), /伪装柔弱|暗中记录|所有人的弱点/);
 });
 
 test('完整报告只移除API字段和实际凭据，保留正文与变量', () => {
@@ -728,14 +1369,24 @@ test('完整报告只移除API字段和实际凭据，保留正文与变量', ()
   assert.doesNotMatch(report.raw, /secret-1234/);
 });
 
-test('完整报告清理器可序列化循环引用、BigInt、日期、Map、Set和异常', () => {
-  const source = { count: 12n, when: new Date('2026-08-23T00:00:00.000Z'), map: new Map([['正文', '保留']]), set: new Set(['支线']), error: new Error('读取失败') };
+test('完整报告清理器可序列化循环引用、BigInt、日期、Map、Set、函数、控制器和异常', () => {
+  const source = {
+    count: 12n,
+    when: new Date('2026-08-23T00:00:00.000Z'),
+    map: new Map([['正文', '保留']]),
+    set: new Set(['支线']),
+    callback() { return '不可调用'; },
+    controller: new AbortController(),
+    error: new Error('读取失败'),
+  };
   source.self = source;
   const report = removeApiFromExport(source);
   assert.equal(report.count, '12n');
   assert.equal(report.when, '2026-08-23T00:00:00.000Z');
   assert.equal(report.map.entries[0][1], '保留');
   assert.deepEqual(report.set.values, ['支线']);
+  assert.match(report.callback, /^\[Function/);
+  assert.equal(typeof report.controller, 'object');
   assert.equal(report.error.message, '读取失败');
   assert.match(report.self, /^\[Circular/);
   assert.doesNotThrow(() => JSON.stringify(report));

@@ -5,8 +5,9 @@
   "optional": ["MagVarUpdate"],
   "js": "index.js",
   "css": "style.css",
+  "generate_interceptor": "mvuDoctorKeminiGenerateInterceptor",
   "author": "magilittle0-byte & Codex",
-  "version": "0.6.20",
+  "version": "0.7.0",
   "homePage": "https://github.com/magilittle0-byte/mvu-doctor-kemini-clean",
   "auto_update": true
 }

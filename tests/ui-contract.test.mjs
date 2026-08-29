@@ -6,12 +6,12 @@ const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('控制台包含变量、连接、人物、世界、诊断与独立手动复检入口', () => {
+test('控制台包含变量、连接、人物、世界、诊断与两个互不串线的手动复检入口', () => {
   for (const tab of ['overview', 'connection', 'profiles', 'world', 'diagnostics']) {
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
   }
-  for (const role of ['variableDoctor', 'variableTokens', 'apiEndpoint', 'apiKey', 'apiModel', 'additionalPrompt', 'models', 'testApi', 'profile-select', 'world-list', 'world-persistence', 'diagnostic-list', 'retry', 'manualVariableAudit', 'undoVariableRepair', 'cancel', 'exportFullReport']) {
+  for (const role of ['variableDoctor', 'variableTokens', 'apiEndpoint', 'apiKey', 'apiModel', 'additionalPrompt', 'models', 'testApi', 'profile-select', 'world-list', 'world-persistence', 'diagnostic-list', 'retry', 'manualVariableAudit', 'manualWorldAdvance', 'undoVariableRepair', 'cancel', 'exportFullReport']) {
     assert.match(source, new RegExp(`data-role=["']${role}["']`));
   }
   assert.match(source, /openAiChatEndpoint/);
@@ -30,7 +30,7 @@ test('控制台包含变量、连接、人物、世界、诊断与独立手动�
   assert.match(source, /variable:authority-rejected/);
   assert.match(source, /variable:dry-run-rejected-operations-separated/);
   assert.match(source, /authority_rejected_nochange/);
-  assert.match(source, /人物档案与世界不会在变量未闭合时继续/);
+  assert.match(source, /MVU本轮失败但不阻断其他模块/);
   assert.doesNotMatch(source, /schemaRejected:\s*true/);
   assert.match(source, /manualVariableRecheck/);
   assert.match(source, /本次只处理变量；人物档案与世界引擎未运行/);
@@ -47,33 +47,71 @@ test('控制台包含变量、连接、人物、世界、诊断与独立手动�
   assert.match(source, /stage: 'accepted-structure'/);
   assert.match(source, /hasMainGenerationEvidence/);
   assert.doesNotMatch(source, /visibleMainStop/);
-  assert.match(source, /releaseSessionRecall/);
-  const release = source.slice(source.indexOf('function releaseSessionRecall'), source.indexOf('async function acceptFinal'));
-  assert.match(release, /totalItemCount = Array\.isArray\(session\.recallPackage\.items\)/);
-  assert.match(release, /consumedItemCount: 0/);
-  assert.match(release, /totalItemCount,/);
+  assert.doesNotMatch(source, /releaseSessionRecall|reserveRecallPackage|settleRecallPackage/);
   assert.match(source, /insert_missing_content_open_before_first_narrative_anchor/);
   assert.match(source, /正文结构无法安全修复\|正文结构修复未能持久化/);
   assert.match(source, /未知（外观像青年）/);
   assert.match(source, /unsupported_aliases_removed/);
-  assert.match(source, /assessRecallConsumption/);
-  assert.match(source, /正文未采用/);
+  assert.doesNotMatch(source, /assessRecallConsumption|consumptionAnchors|required_once/);
+  assert.match(source, /未采用项冷却后可再次召回/);
+  assert.match(source, /只有最终接受正文确实包含同一公开文本时才记为已呈现/);
   assert.match(source, /recallSelectionInput/);
-  assert.match(source, /required_once/);
   assert.match(source, /本轮玩家明确动作/);
   assert.match(source, /不补写输入外动机/);
+  const manualWorld = source.slice(source.indexOf('async function manualWorldRecheck'), source.indexOf('async function undoLastVariableRepair'));
+  assert.match(manualWorld, /advanceWorld/);
+  assert.doesNotMatch(manualWorld, /auditVariables|commitProfiles/);
+  assert.match(manualWorld, /不运行MVU变量或人物生成/);
 });
 
 test('仍有阶段待处理时运行态优先于完成措辞且恢复与手动入口共用同一忙碌门', () => {
   const helper = source.slice(source.indexOf('function runtimeHasPendingWork'), source.indexOf('function statusPresentation'));
   assert.match(helper, /\['pending', 'ready', 'running'\]/);
-  assert.match(helper, /runtime\.active \|\| runtime\.timer \|\| runtime\.requestControllers\.size \|\| runtime\.requestController \|\| runtime\.retrying \|\| progressBusy/);
+  for (const busySignal of [
+    'runtime.preparation',
+    'runtime.active',
+    'runtime.processingSession',
+    'runtime.timer',
+    'runtime.requestControllers.size',
+    'runtime.requestController',
+    'runtime.retrying',
+    'runtime.internalGenerationDepth > 0',
+    'progressBusy',
+  ]) assert.ok(helper.includes(busySignal), `忙碌门遗漏 ${busySignal}`);
+  assert.match(helper, /return Boolean\([\s\S]*runtime\.preparation[\s\S]*runtime\.internalGenerationDepth > 0[\s\S]*progressBusy\)/);
 
   const presentation = source.slice(source.indexOf('function statusPresentation'), source.indexOf('function setStatus'));
   assert.ok(presentation.indexOf('runtimeHasPendingWork()') < presentation.indexOf('/完成|就绪|已确认|已恢复|已撤销|处理完成/'));
   assert.match(source, /root\.dataset\.state = advice\?\.severity === 'error'[\s\S]*advice\?\.severity === 'success' \? 'ready' : 'busy'/);
   assert.match(source, /const busy = runtimeHasPendingWork\(\)/);
-  assert.match(source, /if \(!runtimeHasPendingWork\(\)\) \{\s*setStatus\('医生已就绪'/);
+  const idleReloadStart = source.indexOf('if (!runtimeHasPendingWork())');
+  const idleReload = source.slice(idleReloadStart, source.indexOf('})().catch', idleReloadStart));
+  assert.ok(idleReloadStart >= 0);
+  assert.ok(idleReload.indexOf('doctorStateQuarantine') < idleReload.indexOf('runtime.retry'));
+  assert.ok(idleReload.indexOf('runtime.retry') < idleReload.indexOf("setStatus('医生已就绪'"));
+  const progress = source.slice(source.indexOf('function progressForPhase'), source.indexOf('function runtimeHasPendingWork'));
+  assert.match(progress, /\['pending', 'ready', 'running'\]\.includes\(value\) \? 'cancelled'/);
+});
+
+test('重试、手动变量和手动世界入口同时服从新生成busy与持久隔离状态', () => {
+  const render = source.slice(source.indexOf('function renderRetryControl'), source.indexOf('function showTab'));
+  assert.match(render, /doctorStateQuarantine/);
+  assert.match(render, /\[data-role=["']manualWorldAdvance["']\]/);
+  assert.match(render, /button\.disabled = [^;]*(?:busy|quarantin)/i);
+  assert.match(render, /manualVariableAudit[\s\S]*(?:busy|quarantin)/i);
+  assert.match(render, /manualWorldAdvance[\s\S]*(?:busy|quarantin)/i);
+
+  const retry = source.slice(source.indexOf('async function retryLastFailure'), source.indexOf('function endGeneration'));
+  const busyGate = retry.indexOf('runtimeHasPendingWork()');
+  const startsRetry = retry.indexOf('runtime.retrying = true');
+  assert.ok(busyGate >= 0 && busyGate < startsRetry);
+});
+
+test('人物提交屏障后重新校验完整候选集合，不会把未达标人物从重试材料中消失', () => {
+  const commit = source.slice(source.indexOf('async function commitProfiles'), source.indexOf('async function commitWorldState'));
+  assert.match(commit, /const prepareCandidates = \(profiles, sourceData = oldData\)/);
+  assert.match(commit, /if \(candidateProfiles\.length\) \{\s*prepared = prepareCandidates\(candidateProfiles, oldData\)/);
+  assert.doesNotMatch(commit, /prepareProfileBatch\(prepared\.profiles/);
 });
 
 test('运行中的修复详情可以列出缺项但不会冒充红色终态失败', () => {
@@ -88,8 +126,8 @@ test('运行中的修复详情可以列出缺项但不会冒充红色终态失�
 
 test('原变量块先经真实MVU确定性重放再判定落地，空补丁套话不能冒充核验', () => {
   const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
-  assert.match(audit, /Mvu\.parseMessage\(original\.rawBlock, runtime\.core\.deepClone\(previousData\)\)/);
-  assert.equal((audit.match(/Mvu\.parseMessage\(original\.rawBlock/g) || []).length, 2);
+  assert.match(audit, /const replaySource = original\.ok \? original\.rawBlock : boundedInvalidBlock/);
+  assert.equal((audit.match(/Mvu\.parseMessage\(replaySource, runtime\.core\.deepClone\(previousData\)\)/g) || []).length, 2);
   assert.match(audit, /assessOriginalMvuReplay\(\{ currentData, firstReplayData, secondReplayData \}\)/);
   assert.match(audit, /originalReplay,/);
   assert.match(audit, /validateVariableAuditAnalysis\(parsed\.analysis, \{ emptyPatch: !parsed\.operations\.length \}\)/);
@@ -98,50 +136,83 @@ test('原变量块先经真实MVU确定性重放再判定落地，空补丁套�
   assert.match(audit, /差异为0.*不能单独作为依据/);
 });
 
-test('正文只接收世界公开投影，人物私有摘要只供Doctor内部阶段使用', () => {
-  assert.match(source, /worldRecallPackage_publicProjection/);
-  assert.match(source, /只能使用每项的publicSurface、publicClues、rumors、revealedSummary、visibleAction、observableConsequence与作为逐字结算依据的consumptionAnchors/);
-  assert.match(source, /privateProfileDigestFromData\(dataWithRecoveredProfiles/);
-  assert.match(source, /privateProfileDigestFromData\(data\), 30000/);
-  assert.match(source, /validateWorldProposal\(proposal, \{ previous: baseline, acceptedText:/);
-  assert.match(source, /正文只接收公开投影/);
-  assert.match(source, /医生私有推进/);
+test('正文只接收公开影响，主体锚点、私密现状和有限知识只供Doctor后台推进', () => {
+  const injection = source.slice(source.indexOf('function formatGenerationInjection'), source.indexOf('function profileDigestFromData'));
+  assert.match(injection, /publicEffect/);
+  assert.match(injection, /publicChannel/);
+  assert.match(injection, /不要求逐字照抄，也不要求全部出现/);
+  assert.match(injection, /不得从公开影响反推出行动者的私密动机/);
+  assert.doesNotMatch(injection, /entry\.(?:anchor|current|goal|knowledge|resources|constraints|nextAction)|consumptionAnchors|required_once/);
+
+  const worldAdvance = source.slice(source.indexOf('async function advanceWorld'), source.indexOf('async function acceptFinal'));
+  const actorPlanner = source.slice(source.indexOf('async function generateIsolatedActorPlan'), source.indexOf('async function advanceWorld'));
+  assert.match(actorPlanner, /anchor: subject\.anchor/);
+  assert.match(actorPlanner, /current: subject\.current/);
+  assert.match(actorPlanner, /knowledge: subject\.knowledge/);
+  assert.match(actorPlanner, /resources: subject\.resources/);
+  assert.match(actorPlanner, /constraints: subject\.constraints/);
+  assert.match(actorPlanner, /该主体私密actorView/);
+  assert.match(worldAdvance, /subjectHistories/);
+  assert.match(worldAdvance, /publicWorldSurface/);
+  assert.match(worldAdvance, /knowledgeEvidence/);
+  assert.match(worldAdvance, /全局裁决视图；刻意不含任何主体goal、knowledge、nextAction、nextCheckTurn/);
+  assert.doesNotMatch(worldAdvance, /privateProfileDigestFromData\(/);
+  assert.match(worldAdvance, /私密结果只留在结果\/状态变化\/现状/);
+  assert.match(worldAdvance, /不得泄露隐藏行动者、目的或完整真相/);
+  assert.match(source, /private_leak_removed/);
+  assert.match(source, /只清空公开字段，私密推进仍已保留/);
 });
 
-test('accepted-final并行准备但保持变量、人物、世界三段提交主权', () => {
+test('accepted-final并行检查变量和人物，只有人物持久化完整性失败才跳过世界', () => {
   const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
   const variableStart = accepted.indexOf('const variableTask = auditVariables');
   const profileStart = accepted.indexOf('const profileTask = commitProfiles');
-  const variableWait = accepted.indexOf('const variableResult = await variableTask');
-  const worldStart = accepted.indexOf('const worldTask = advanceWorld');
-  const profileWait = accepted.indexOf('const profileResult = await profileTask');
-  assert.ok(variableStart >= 0 && profileStart > variableStart && variableWait > profileStart);
-  assert.ok(worldStart > variableWait && profileWait > worldStart);
+  const jointWait = accepted.indexOf('await Promise.all([variableTask, profileTask])');
+  const worldIntegrityGate = accepted.indexOf('const worldBlockedByProfileIntegrity = Boolean(profileResult.blocksWorld)');
+  const worldResultStart = accepted.indexOf('const worldResult = worldBlockedByProfileIntegrity');
+  const worldStart = accepted.indexOf('await advanceWorld(session, finalAcceptedText, workingData)', worldResultStart);
+  assert.ok(variableStart >= 0 && profileStart > variableStart && jointWait > profileStart);
+  assert.ok(worldIntegrityGate > jointWait && worldResultStart > worldIntegrityGate && worldStart > worldResultStart);
   assert.match(accepted, /commitBarrier: variableTask/);
-  assert.match(accepted, /profileBarrier: profileTask/);
+  assert.doesNotMatch(accepted, /profileBarrier/);
+  assert.match(accepted, /MVU本轮失败但不阻断其他模块/);
+  assert.match(accepted, /人物档案本轮失败；已有档案与非人物主体仍可推进/);
+  const worldDispatch = accepted.slice(worldResultStart, accepted.indexOf('if (!sessionIsCurrent(session) || worldResult.cancelled)', worldResultStart));
+  assert.match(worldDispatch, /const worldResult = worldBlockedByProfileIntegrity\s*\?[\s\S]*skipped: true[\s\S]*blockedByProfileIntegrity: true[\s\S]*:\s*await advanceWorld\(session, finalAcceptedText, workingData\)/);
+  assert.equal((worldDispatch.match(/skipped: true/g) || []).length, 1);
+  assert.doesNotMatch(worldDispatch, /!variableResult\.ok|!profileResult\.ok|profileResult\.partial/);
 
-  const profiles = source.slice(source.indexOf('async function commitProfiles'), source.indexOf('async function commitWorldCandidate'));
+  const profiles = source.slice(source.indexOf('async function commitProfiles'), source.indexOf('async function commitWorldState'));
   assert.ok(profiles.indexOf('await execution.commitBarrier') < profiles.indexOf('await Mvu.replaceMvuData(candidate'));
-  assert.match(profiles, /人物候选保持未提交/);
-
-  const world = source.slice(source.indexOf('async function advanceWorld'), source.indexOf('function releaseSessionRecall'));
-  assert.ok(world.indexOf('await execution.profileBarrier') < world.indexOf('applyWorldProposal(baseline'));
-  assert.match(world, /人物档案没有进入原子读回终态；世界候选未提交/);
   assert.match(source, /requestControllers: new Set\(\)/);
   assert.match(source, /internalGenerationDepth/);
 });
 
-test('世界公开字段先局部净化再校验，取消会话不再进入重试、失败诊断或迟到终结', () => {
-  const worldAdvance = source.slice(source.indexOf('async function advanceWorld'), source.indexOf('function releaseSessionRecall'));
-  assert.ok(worldAdvance.indexOf('sanitizeWorldProposalPublicProjection') < worldAdvance.indexOf('validateWorldProposal'));
-  assert.match(worldAdvance, /world:public-projection-repaired/);
+test('世界按主体调度并局部合并，取消会话不写入迟到结果', () => {
+  const worldAdvance = source.slice(source.indexOf('async function advanceWorld'), source.indexOf('async function acceptFinal'));
+  assert.match(worldAdvance, /selectDueWorldSubjects/);
+  assert.match(worldAdvance, /createWorldAdvanceTickets/);
+  assert.match(worldAdvance, /parseWorldProposal\(raw, \{ subjects: globalAdjudicationSubjects \}\)/);
+  assert.match(worldAdvance, /applyWorldProposal\(workingWorld, proposalForMerge/);
+  assert.match(worldAdvance, /const adjudicationErrors = \[\]/);
+  assert.match(worldAdvance, /sanitizeWorldAdjudication\(update, subject/);
+  assert.match(worldAdvance, /adjudicationErrors\.push\(\{ subjectId: subject\.id/);
   assert.match(worldAdvance, /if \(isSessionCancellation\(error, session\)\)/);
-  assert.ok(worldAdvance.indexOf('if (isSessionCancellation(error, session))') < worldAdvance.indexOf("traceRun(session, 'world:retryable-failure'"));
-  assert.match(worldAdvance, /restoreCancelledWorldAttempt/);
   assert.match(worldAdvance, /cancelled: true/);
+  assert.doesNotMatch(worldAdvance, /repairAttempts|retryable-failure|restoreCancelledWorldAttempt/);
+  assert.match(worldAdvance, /const sourceKey = String\(session\.worldSourceKey \|\| acceptedReplySourceKey\(context, messageId, acceptedText\)\)/);
+  assert.match(worldAdvance, /world:idempotent-skip/);
+  assert.match(worldAdvance, /session\.worldAdvancePlan\.unresolvedSubjectIds/);
+  assert.match(worldAdvance, /sameTurn: targetTurn <= baseline\.turn/);
+
+  const sourceKeyBuilder = source.slice(source.indexOf('function acceptedReplySourceKey'), source.indexOf('async function captureSwipeOutcome'));
+  assert.match(sourceKeyBuilder, /const swipeId = Number\(message\?\.swipe_id\) \|\| 0/);
+  assert.match(sourceKeyBuilder, /const narrativeFingerprint = textFingerprint\(runtime\.core\.profileNarrativeText\(source\)\)/);
+  assert.match(sourceKeyBuilder, /return `\$\{chatId\}:message:\$\{Number\(messageId\)\}:swipe:\$\{swipeId\}:narrative:\$\{narrativeFingerprint\}`/);
 
   const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
   assert.match(accepted, /runtime\.processingSession = session/);
+  assert.match(accepted, /session\.worldSourceKey = acceptedReplySourceKey\(context, latestAi\.index, acceptedText\)/);
   assert.match(accepted, /if \(!sessionIsCurrent\(session\) \|\| worldResult\.cancelled\) return/);
   assert.ok(accepted.indexOf('if (!sessionIsCurrent(session) || worldResult.cancelled) return') < accepted.indexOf("addDiagnostic('world_failed'"));
 
@@ -151,23 +222,286 @@ test('世界公开字段先局部净化再校验，取消会话不再进入重�
   assert.match(cancel, /不会伪造档案或世界推进进度/);
 });
 
-test('世界提交使用准备、提交、读回三段证明且MVU读取不能阻塞面板刷新', () => {
-  assert.match(source, /prepareWorldTransaction/);
-  assert.match(source, /world_candidate_prepared/);
-  assert.match(source, /verifyWorldReadback/);
-  assert.match(source, /markWorldReadback/);
-  assert.match(source, /不得把模型返回冒充为已保存状态/);
+test('待重试队列按回复身份逐项结算，prepare不会静默丢弃任务', () => {
+  const retry = source.slice(source.indexOf('function setRetry'), source.indexOf('function restorePendingRetry'));
+  assert.match(retry, /if \(options\.clearAll\) \{\s*queue = \[\]/);
+  assert.match(retry, /else if \(runtime\.retry\) \{[\s\S]*retryDescriptorKey\(retryDescriptor\(runtime\.retry, context\)\)[\s\S]*queue = queue\.filter\(\(entry\) => retryDescriptorKey\(entry\) !== key\)/);
+  assert.match(retry, /store\.pendingRetries = queue\.slice\(-24\)/);
+  assert.match(retry, /runtime\.retry = store\.pendingRetries\.map\(\(entry\) => retryValueFromDescriptor\(entry, context\)\)\.find\(Boolean\) \|\| null/);
+
+  const prepare = source.slice(source.indexOf('async function prepareGeneration'), source.indexOf('async function auditVariables'));
+  const ordinaryPrepareEntry = prepare.slice(0, prepare.indexOf('const persistentQuarantine'));
+  assert.doesNotMatch(ordinaryPrepareEntry, /runtime\.retry\s*=|setRetry\(|pendingRetries\s*=\s*\[\]|clearAll/);
+  const quarantineBranch = prepare.slice(prepare.indexOf('const persistentQuarantine'), prepare.indexOf('const target = generationTarget'));
+  assert.match(quarantineBranch, /if \(persistentQuarantine\)[\s\S]*setRetry\(null, \{ clearAll: true \}\)/);
+
+  const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
+  const completed = accepted.indexOf("addDiagnostic('completed'");
+  const success = accepted.slice(completed, accepted.indexOf('await refreshUiData()', completed));
+  assert.match(success, /setRetry\(null\)/);
+  assert.doesNotMatch(success, /clearAll|pendingRetries\s*=\s*\[\]/);
+});
+
+test('GENERATION_STARTED先逐项恢复旧事务，失败由manifest拦截器abort而成功后才prepare', () => {
+  assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
+  assert.match(source, /globalThis\.mvuDoctorKeminiGenerateInterceptor = mvuDoctorKeminiGenerateInterceptor/);
+
+  const recovery = source.slice(source.indexOf('async function recoverPendingBeforeMainGeneration'), source.indexOf('function endGeneration'));
+  assert.match(recovery, /while \(runtime\.retry && attempts < 24\)/);
+  assert.match(recovery, /const before = retryDescriptorKey\(retryDescriptor\(runtime\.retry, context\)\)/);
+  assert.match(recovery, /await retryLastFailure\(\{ startToken \}\)/);
+  assert.match(recovery, /if \(after === before\) return false/);
+  assert.match(recovery, /return !runtime\.retry/);
+
+  const lifecycle = source.slice(
+    source.indexOf("context.eventSource.on(types.GENERATION_STARTED || 'generation_started'"),
+    source.indexOf("context.eventSource.on(types.GENERATION_ENDED || 'generation_ended'"),
+  );
+  const recoveryCall = lifecycle.indexOf('await recoverPendingBeforeMainGeneration(startContext, startToken)');
+  const blockedWrite = lifecycle.indexOf('runtime.blockedGeneration = {', recoveryCall);
+  const blockedReturn = lifecycle.indexOf('return;', blockedWrite);
+  const prepareStart = lifecycle.indexOf('preparation = beginGenerationPreparation', recoveryCall);
+  assert.ok(recoveryCall >= 0 && blockedWrite > recoveryCall && blockedReturn > blockedWrite && prepareStart > blockedReturn);
+  assert.match(lifecycle, /if \(!isRerollGeneration\(kind\) && runtime\.retry\)/);
+  assert.match(lifecycle, /if \(!recovered\) \{[\s\S]*runtime\.blockedGeneration = \{[\s\S]*clearInjection\(startContext\)[\s\S]*return;/);
+  assert.match(lifecycle, /if \(!settings\(startContext\)\.enabled\) \{[\s\S]*clearInjection\(startContext\)[\s\S]*return;/);
+  assert.match(lifecycle, /const startToken = beginGenerationStart\(kind, startContext\)/);
+  assert.doesNotMatch(lifecycle.slice(recoveryCall, prepareStart), /runtime\.active\s*=/);
+  assert.match(lifecycle.slice(prepareStart), /await prepareGeneration\(kind, preparation\)/);
+
+  const interceptor = source.slice(source.indexOf('async function mvuDoctorKeminiGenerateInterceptor'), source.indexOf('globalThis.mvuDoctorKeminiGenerateInterceptor'));
+  assert.match(interceptor, /const blocked = runtime\.blockedGeneration/);
+  assert.match(interceptor, /if \(!runtime\.retry \|\| \(blocked\.retryKey && pendingKey !== blocked\.retryKey\)\)/);
+  assert.match(interceptor, /if \(generationKind\(type\) !== blocked\.kind\) return/);
+  assert.ok(interceptor.indexOf('clearInjection(context)') < interceptor.indexOf("if (typeof abort === 'function') abort(true)"));
+  assert.match(interceptor, /if \(typeof abort === 'function'\) abort\(true\)/);
+});
+
+test('人物票据谱系按message、swipe和叙事指纹持久化，手动入口精确继承而不读fullRuns', () => {
+  const ledger = source.slice(source.indexOf('function findTicketLedgerEntry'), source.indexOf('async function captureSwipeOutcome'));
+  assert.match(ledger, /acceptedReplySourceKey\(context, messageId, acceptedText\)/);
+  assert.match(ledger, /entry\?\.chatId === identity\?\.chatId/);
+  assert.match(ledger, /Number\(entry\?\.messageId\) === Number\(identity\?\.messageId\)/);
+  assert.match(ledger, /Number\(entry\?\.swipeId\) === Number\(identity\?\.swipeId\)/);
+  assert.match(ledger, /if \(existing\) \{[\s\S]*semanticJsonEqual\(existing\.tickets \|\| \[\], session\.tickets \|\| \[\]\)[\s\S]*拒绝事后重掷或覆盖[\s\S]*return existing/);
+  assert.match(ledger, /tickets: runtime\.core\.deepClone\(Array\.isArray\(session\.tickets\) \? session\.tickets : \[\]\)/);
+
+  const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
+  const ledgerCommit = accepted.indexOf('recordTicketLedger(session, context, latestAi.index, acceptedText)');
+  const taskStart = accepted.indexOf('const variableTask = auditVariables');
+  assert.ok(ledgerCommit >= 0 && ledgerCommit < taskStart);
+  assert.match(accepted.slice(ledgerCommit, taskStart), /await saveMetadata\(context\)[\s\S]*assertAcceptedReplyTarget\(session, latestAi\.index\)/);
+
+  const manualVariable = source.slice(source.indexOf('async function manualVariableRecheck'), source.indexOf('async function manualWorldRecheck'));
+  const manualWorld = source.slice(source.indexOf('async function manualWorldRecheck'), source.indexOf('async function undoLastVariableRepair'));
+  for (const manual of [manualVariable, manualWorld]) {
+    assert.match(manual, /const ticketEntry = findTicketLedgerEntry\(context, latestAi\.index, latestAi\.message\.mes\)/);
+    assert.match(manual, /tickets: runtime\.core\.deepClone\(ticketEntry\?\.tickets \|\| \[\]\)/);
+    assert.doesNotMatch(manual, /fullRuns|sourceRuns|tickets:\s*\[\]/);
+  }
+  assert.match(manualWorld, /worldSourceKey: String\(ticketEntry\?\.sourceKey \|\| acceptedReplySourceKey/);
+});
+
+test('同一message与swipe更新重试时保留最初worldSourceKey，完整正文指纹仍拒绝过期重试', () => {
+  const descriptor = source.slice(source.indexOf('function retryDescriptor'), source.indexOf('function setRetry'));
+  assert.match(descriptor, /worldSourceKey: String\(value\.session\?\.worldSourceKey \|\| ''\)/);
+  assert.match(descriptor, /session: \{ \.\.\.compactRetrySession\(descriptor\.session\), chatId: descriptor\.chatId, worldSourceKey: descriptor\.worldSourceKey \|\| descriptor\.session\?\.worldSourceKey \|\| '' \}/);
+  const lineageKey = descriptor.slice(descriptor.indexOf('function retryLineageKey'), descriptor.indexOf('function retryValueFromDescriptor'));
+  assert.match(lineageKey, /chatId/);
+  assert.match(lineageKey, /messageId/);
+  assert.match(lineageKey, /swipeId/);
+  assert.doesNotMatch(lineageKey, /messageFingerprint|textFingerprint/);
+  const restore = descriptor.slice(descriptor.indexOf('function retryValueFromDescriptor'));
+  assert.match(restore, /textFingerprint\(message\.mes \|\| ''\) !== descriptor\.messageFingerprint/);
+
+  const setRetry = source.slice(source.indexOf('function setRetry'), source.indexOf('function restorePendingRetry'));
+  assert.match(setRetry, /const lineageKey = retryLineageKey\(descriptor\)/);
+  assert.match(setRetry, /const existingIndex = queue\.findIndex\(\(entry\) => retryLineageKey\(entry\) === lineageKey\)/);
+  assert.match(setRetry, /descriptor\.worldSourceKey = String\(existing\.worldSourceKey \|\| descriptor\.worldSourceKey \|\| ''\)/);
+  assert.match(setRetry, /descriptor\.session\.worldSourceKey = descriptor\.worldSourceKey/);
+
+  const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
+  const sourceKey = accepted.indexOf('session.worldSourceKey = acceptedReplySourceKey(context, latestAi.index, acceptedText)');
+  const variableTask = accepted.indexOf('const variableTask = auditVariables');
+  assert.ok(sourceKey >= 0 && sourceKey < variableTask);
+  assert.equal((accepted.match(/session\.worldSourceKey\s*=/g) || []).length, 1);
+});
+
+test('swipe恢复按递增epoch串行化并在每个异步边界复核身份，旧恢复不能覆盖新swipe', () => {
+  const runtimeBlock = source.slice(source.indexOf('const runtime ='), source.indexOf('const getContext'));
+  assert.match(runtimeBlock, /swipeRestoreEpoch: 0/);
+  assert.match(runtimeBlock, /swipeRestoreChain: Promise\.resolve\(\)/);
+  assert.match(runtimeBlock, /swipeRestoring: false/);
+
+  const savedRestore = source.slice(source.indexOf('async function restoreSavedSwipeOutcome'), source.indexOf('async function restoreLatestSwipe'));
+  assert.match(savedRestore, /restoreEpoch = runtime\.swipeRestoreEpoch/);
+  assert.match(savedRestore, /const identity = swipeIdentity\(context, messageId\)/);
+  assert.match(savedRestore, /const restoreCurrent = \(\) => restoreEpoch === runtime\.swipeRestoreEpoch\s*&& sameSwipeIdentity\(identity, swipeIdentity\(getContext\(\), messageId\)\)/);
+  assert.ok((savedRestore.match(/if \(!restoreCurrent\(\)\)/g) || []).length >= 5);
+  assert.match(savedRestore, /sameSwipeIdentity\(identity, outcome\)/);
+
+  const latestRestore = source.slice(source.indexOf('async function restoreLatestSwipe'), source.indexOf('function queueLatestSwipeRestore'));
+  assert.match(latestRestore, /let restoreIdentity = null/);
+  assert.match(latestRestore, /restoreIdentity = swipeIdentity\(context, latestAi\.index\)/);
+  assert.match(latestRestore, /const restoreCurrent = \(\) => restoreEpoch === runtime\.swipeRestoreEpoch\s*&& \(!restoreIdentity \|\| sameSwipeIdentity\(restoreIdentity, swipeIdentity\(getContext\(\), restoreIdentity\.messageId\)\)\)/);
+  assert.ok((latestRestore.match(/if \(!restoreCurrent\(\)\)/g) || []).length >= 5);
+  assert.match(latestRestore, /if \(!restoreCurrent\(\) \|\| selected\.stale\) return false/);
+
+  const queue = source.slice(source.indexOf('function queueLatestSwipeRestore'), source.indexOf('function uiRoot'));
+  assert.match(queue, /const restoreEpoch = \+\+runtime\.swipeRestoreEpoch/);
+  assert.match(queue, /const queuedIdentity = queuedLatest \? swipeIdentity\(queuedContext, queuedLatest\.index\) : null/);
+  assert.match(queue, /runtime\.swipeRestoreChain = runtime\.swipeRestoreChain\.catch\(\(\) => undefined\)[\s\S]*sameSwipeIdentity\(queuedIdentity, swipeIdentity\(getContext\(\), queuedIdentity\.messageId\)\)[\s\S]*restoreLatestSwipe\(value, restoreEpoch, queuedIdentity\)/);
+  assert.match(queue, /if \(restoreEpoch === runtime\.swipeRestoreEpoch\) runtime\.swipeRestoring = false/);
+
+  const lifecycle = source.slice(source.indexOf('async function init'), source.lastIndexOf('init().catch'));
+  assert.match(lifecycle, /MESSAGE_SWIPED[\s\S]*queueLatestSwipeRestore\(value\)/);
+  assert.doesNotMatch(lifecycle, /MESSAGE_SWIPED[\s\S]{0,180}restoreLatestSwipe\(value\)/);
+});
+
+test('取消accepted-final时按已完成阶段保留精确重试，而不是把处理中任务静默丢失', () => {
+  const cancel = source.slice(source.indexOf('function cancelCurrent'), source.indexOf('async function restoreSavedSwipeOutcome'));
+  assert.match(cancel, /const processing = runtime\.processingSession/);
+  assert.match(cancel, /sameChatProcessing = processing[\s\S]*processing\.finalMessageId[\s\S]*processing\.acceptedText/);
+  assert.match(cancel, /const stages = \{ variable: false, profile: false, world: false, \.\.\.\(processing\.completedStages \|\| \{\}\) \}/);
+  assert.match(cancel, /const kind = !stages\.variable \? \(processing\.manualVariableAudit \? 'variable-manual' : 'variable'\)[\s\S]*!stages\.profile \? 'profile'[\s\S]*!stages\.world \? 'world'/);
+  assert.match(cancel, /if \(kind\) recovery = \{[\s\S]*session: processing[\s\S]*messageId: Number\(processing\.finalMessageId\)[\s\S]*profileRecovery: processing\.profileRecovery \|\| null[\s\S]*completedStages: stages/);
+  assert.ok(cancel.indexOf('if (processing) processing.cancelled = true') < cancel.indexOf('setRetry(recovery, { context: liveContext })'));
+  assert.match(cancel, /else if \(recovery\) \{\s*setRetry\(recovery, \{ context: liveContext \}\);\s*persistence = saveMetadata\(liveContext\)\.catch/);
+  assert.match(cancel, /return Promise\.all\(\[persistence, fallbackRestore\]\)/);
+  assert.match(cancel, /未完成阶段已绑定当前最终正文保留/);
+  const chatSwitch = cancel.slice(cancel.indexOf("if (/聊天已切换/u.test"), cancel.indexOf('setStatus(reason'));
+  assert.match(chatSwitch, /聊天已切换[\s\S]*runtime\.retry = null/);
+  assert.doesNotMatch(chatSwitch.slice(0, chatSwitch.indexOf('else if (recovery)')), /setRetry\(recovery/);
+});
+
+test('聊天恢复持有身份令牌并计入busy，只有同一恢复完成后才允许显示就绪', () => {
+  const runtimeBlock = source.slice(source.indexOf('const runtime ='), source.indexOf('const getContext'));
+  assert.match(runtimeBlock, /recoveryEpoch: 0/);
+  assert.match(runtimeBlock, /recovering: null/);
+
+  const busy = source.slice(source.indexOf('function runtimeHasPendingWork'), source.indexOf('function statusPresentation'));
+  assert.match(busy, /runtime\.recovering/);
+
+  const recovery = source.slice(source.indexOf('function recoveryTokenCurrent'), source.indexOf('async function retryLastFailure'));
+  assert.match(recovery, /runtime\.recovering === token/);
+  assert.match(recovery, /token\.epoch === runtime\.recoveryEpoch/);
+  assert.match(recovery, /String\(getContext\(\)\?\.chatId \|\| ''\) === token\.chatId/);
+  assert.match(recovery, /epoch: \+\+runtime\.recoveryEpoch/);
+  assert.match(recovery, /runtime\.recovering = token/);
+  assert.ok((recovery.match(/assertRecoveryCurrent\(token\)/g) || []).length >= 3);
+  assert.match(recovery, /finally \{\s*if \(runtime\.recovering === token\) runtime\.recovering = null/);
+
+  const lifecycle = source.slice(source.indexOf('async function init'), source.lastIndexOf('init().catch'));
+  const chatRestore = lifecycle.slice(lifecycle.indexOf("for (const event of [types.CHAT_CHANGED"), lifecycle.indexOf('const store = await restoreDoctorStateForChat'));
+  const restoreCall = chatRestore.indexOf('await restoreDoctorStateForChat(liveContext)');
+  const refreshCall = chatRestore.indexOf('await refreshUiData()', restoreCall);
+  const readyGate = chatRestore.indexOf('if (!runtimeHasPendingWork())', refreshCall);
+  assert.ok(restoreCall >= 0 && refreshCall > restoreCall && readyGate > refreshCall);
+  assert.match(chatRestore, /const lifecycleChatId = String\(getContext\(\)\?\.chatId \|\| ''\)/);
+  assert.ok((chatRestore.match(/String\(getContext\(\)\?\.chatId \|\| ''\) !== lifecycleChatId/g) || []).length >= 2);
+});
+
+test('世界正常只保存一次；同目标失败至多补偿一次，跨目标不回写旧世界', () => {
+  const commit = source.slice(source.indexOf('async function commitWorldState'), source.indexOf('async function advanceWorld'));
+  const tryStart = commit.indexOf('try {');
+  const catchStart = commit.indexOf('} catch (error) {', tryStart);
+  const traceStart = commit.indexOf("traceRun(session, 'world:saved-unverified'", catchStart);
+  const normalSave = commit.slice(tryStart, catchStart);
+  const failedSave = commit.slice(catchStart, traceStart);
+  assert.equal((normalSave.match(/await saveMetadata\(context\)/g) || []).length, 1);
+  assert.equal((failedSave.match(/await saveMetadata\(context\)/g) || []).length, 1);
+  assert.match(commit, /const worldTarget = worldMessageId === null \? null : assertAcceptedReplyTarget\(session, worldMessageId\)/);
+  assert.match(failedSave, /if \(!worldTarget \|\| transactionTargetCurrent\(worldTarget\)\) \{[\s\S]*store\.world = baseline;[\s\S]*await saveMetadata\(context\)/);
+  const crossTargetBranch = failedSave.slice(failedSave.indexOf('await quarantineUnsafeTransaction'));
+  assert.match(crossTargetBranch, /旧世界快照未回写当前目标/);
+  assert.doesNotMatch(crossTargetBranch, /store\.world = baseline|saveMetadata\(context\)/);
+  assert.match(commit, /status: 'saved_unverified'/);
+  assert.match(commit, /world:saved-unverified/);
+  assert.doesNotMatch(commit, /metadata\(getContext\(\)\)\.world|readback_ok|saved-readback/);
+  const load = source.slice(source.indexOf('async function loadWorldAuthority'), source.indexOf('function latestMessage'));
+  assert.match(load, /status: beforeSchema[\s\S]*: 'loaded'/);
+  assert.match(load, /readbackAt: new Date\(\)\.toISOString\(\)/);
+  assert.doesNotMatch(source, /prepareWorldTransaction|world_candidate_prepared|markWorldReadback|verifyWorldReadback|recoverPreparedWorldState/);
   const refresh = source.match(/async function refreshUiData\(\) \{([\s\S]*?)\n  \}/)?.[1] || '';
   assert.ok(refresh.indexOf('renderWorld();') >= 0);
   assert.ok(refresh.indexOf('renderWorld();') < refresh.indexOf('await getMvu();'));
   assert.match(refresh, /catch \(error\)[\s\S]*世界面板仍已刷新/);
 });
 
+test('acceptedTarget绑定楼层、swipe与正文，变量和人物回滚都拒绝跨目标写入', () => {
+  const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
+  const targetStart = accepted.indexOf('session.acceptedTarget = variableTarget(context, latestAi.index)');
+  const targetFailure = accepted.indexOf('if (!session.acceptedTarget)', targetStart);
+  const taskStart = accepted.indexOf('const variableTask = auditVariables');
+  assert.ok(targetStart >= 0 && targetFailure > targetStart && taskStart > targetFailure);
+  assert.match(accepted, /adoptControlledAcceptedTarget\(session, latestAi\.index, variableResult\.afterTarget\)/);
+
+  const targetIdentity = source.slice(source.indexOf('function variableTarget'), source.indexOf('function sameVariableTarget'));
+  assert.match(targetIdentity, /chatId:/);
+  assert.match(targetIdentity, /messageId:/);
+  assert.match(targetIdentity, /swipeId:/);
+  assert.match(targetIdentity, /textFingerprint:/);
+
+  for (const [name, rollback, writeNeedle] of [
+    ['变量', source.slice(source.indexOf('async function rollbackMvuTouched'), source.indexOf('async function restoreRerollProfileAuthority')), 'await Mvu.replaceMvuData(restored.data'],
+    ['人物', source.slice(source.indexOf('async function rollbackProfileRoot'), source.indexOf('function traceRun')), 'await Mvu.replaceMvuData(candidate'],
+  ]) {
+    assert.match(rollback, /if \(!transactionTargetCurrent\(expectedTarget\)\) return \{ ok: false, unsafeTargetChange: true/);
+    assert.ok((rollback.match(/transactionTargetCurrent\(expectedTarget\)/g) || []).length >= 3, `${name}回滚必须在读取、写入和读回阶段持续核对目标`);
+    assert.ok(rollback.indexOf('transactionTargetCurrent(expectedTarget)') < rollback.indexOf(writeNeedle), `${name}回滚必须先核对目标再写入`);
+    assert.match(rollback, /目标变化|新目标|当前聊天必须隔离/);
+  }
+});
+
+test('人物提交以最新MVU为拼接基线，写入与读回都隔离非人物状态', () => {
+  const profiles = source.slice(source.indexOf('async function commitProfiles'), source.indexOf('async function commitWorldState'));
+  const target = profiles.indexOf('const commitTarget = assertAcceptedReplyTarget(session, messageId)');
+  const freshRead = profiles.indexOf('const freshBaseline = await mvuDataAt(Mvu, messageId)', target);
+  const freshSplice = profiles.indexOf('mergeProfileRootDirect(freshBaseline, prepared.profiles)', freshRead);
+  const preWriteIsolation = profiles.indexOf('if (!sameNonProfileStat(candidate, freshBaseline))', freshSplice);
+  const write = profiles.indexOf('await Mvu.replaceMvuData(candidate', preWriteIsolation);
+  const readbackIsolation = profiles.indexOf('!sameNonProfileStat(readback, freshBaseline)', write);
+  assert.ok(target >= 0 && freshRead > target && freshSplice > freshRead && preWriteIsolation > freshSplice);
+  assert.ok(write > preWriteIsolation && readbackIsolation > write);
+  assert.match(profiles, /rollbackProfileRoot\(Mvu, freshBaseline, messageId, commitTarget\)/);
+  assert.match(profiles, /if \(transactionTargetCurrent\(commitTarget\)\)[\s\S]*旧metadata快照未回写新目标/);
+});
+
 test('metadata保持同一权威对象身份，不在每次读取时重建命名空间', () => {
   const body = source.match(/function metadata\([\s\S]*?\n  function combinedProfiles/)?.[0] || '';
   assert.match(body, /let current = context\.chatMetadata\[PLUGIN_ID\]/);
-  assert.match(body, /current\.schemaVersion = 5/);
+  assert.match(body, /current\.schemaVersion = 7/);
   assert.doesNotMatch(body, /context\.chatMetadata\[PLUGIN_ID\] = \{\s*\.\.\.current/);
+  const load = source.slice(source.indexOf('async function loadWorldAuthority'), source.indexOf('function latestMessage'));
+  assert.match(load, /normalizeWorldState/);
+  assert.match(load, /诊断报告未参与恢复/);
+  assert.doesNotMatch(load, /fullRuns|recoverLatestLegacyWorld/);
+});
+
+test('世界面板从单一v7主体权威派生支线和变化，不再渲染旧多表世界', () => {
+  assert.equal(manifest.version, '0.7.0');
+  const worldUi = source.slice(source.indexOf('function renderWorld'), source.indexOf('function renderDiagnostics'));
+  assert.match(worldUi, /normalizeWorldState\(store\.world/);
+  assert.match(worldUi, /world\.subjects/);
+  assert.match(worldUi, /deriveWorldBranches\(world\)/);
+  assert.match(worldUi, /world\.changes/);
+  assert.match(worldUi, /这里是唯一权威状态/);
+  assert.match(worldUi, /支线只把主体已经造成的变化按主题归档/);
+  assert.match(worldUi, /诊断报告不会反向覆盖/);
+  assert.doesNotMatch(worldUi, /world\.threads|world\.attempts|world\.adjudications|world\.lanes|resolvedArchive/);
+});
+
+test('正文结构未确认时在任何变量、人物或世界任务创建前立即终止', () => {
+  const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
+  const structureGate = accepted.indexOf('if (!structure.ok)');
+  const variableStart = accepted.indexOf('auditVariables(session');
+  const profileStart = accepted.indexOf('commitProfiles(session');
+  const worldStart = accepted.indexOf('advanceWorld(session');
+  assert.ok(structureGate >= 0 && structureGate < variableStart && structureGate < profileStart && structureGate < worldStart);
+  const failedBranch = accepted.slice(structureGate, accepted.indexOf('if (structure.changed)'));
+  assert.match(failedBranch, /stage: 'accepted-structure'/);
+  assert.match(failedBranch, /return;/);
+  assert.doesNotMatch(failedBranch, /auditVariables|commitProfiles|advanceWorld/);
 });
 
 test('完整报告在用户点击阶段先取得文件句柄且MVU读取失败不阻断导出', () => {
@@ -177,10 +511,21 @@ test('完整报告在用户点击阶段先取得文件句柄且MVU读取失败�
   assert.match(exporter, /currentMvuReadError/);
   assert.match(exporter, /createWritable/);
   assert.match(exporter, /JSON\.stringify\(report, null, 2\)/);
+  assert.match(exporter, /runtimeSessions:\s*runtimeReportSnapshot\(context\)/);
+  const snapshot = source.match(/function runtimeReportSnapshot\(context = getContext\(\)\) \{([\s\S]*?)\n  \}/)?.[1] || '';
+  assert.match(snapshot, /active:\s*runtime\.active/);
+  assert.match(snapshot, /processingSession:\s*runtime\.processingSession/);
+  assert.match(snapshot, /preparation:\s*runtime\.preparation/);
+  assert.match(snapshot, /lastFailedFinalizeOrSave:\s*runtime\.lastFailedReportSnapshot/);
+  assert.match(snapshot, /requestControllers:\s*runtime\.requestControllers/);
+  assert.match(snapshot, /redactReportSecrets/);
+  const finalizer = source.slice(source.indexOf('async function finalizeRun'), source.indexOf('async function saveMetadata'));
+  assert.match(finalizer, /lastFailedReportSnapshot\s*=\s*redactReportSecrets/);
+  assert.match(finalizer, /trace:\s*session\.trace/);
 });
 
 test('手动变量复检不串行触发人物或世界，变量提交按准备、写入、读回、正文保存排序', () => {
-  const manual = source.slice(source.indexOf('async function manualVariableRecheck'), source.indexOf('async function undoLastVariableRepair'));
+  const manual = source.slice(source.indexOf('async function manualVariableRecheck'), source.indexOf('async function manualWorldRecheck'));
   assert.match(manual, /auditVariables/);
   assert.match(manual, /force:\s*true/);
   assert.doesNotMatch(manual, /commitProfiles|advanceWorld/);
