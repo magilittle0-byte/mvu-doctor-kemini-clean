@@ -11,7 +11,7 @@ test('控制台包含变量、连接、人物、世界、诊断与两个互不�
     assert.match(source, new RegExp(`data-tab=["']${tab}["']`));
     assert.match(source, new RegExp(`data-panel=["']${tab}["']`));
   }
-  for (const role of ['variableDoctor', 'variableTokens', 'apiEndpoint', 'apiKey', 'apiModel', 'additionalPrompt', 'models', 'testApi', 'profile-select', 'world-list', 'world-persistence', 'diagnostic-list', 'retry', 'manualVariableAudit', 'manualWorldAdvance', 'undoVariableRepair', 'cancel', 'exportFullReport']) {
+  for (const role of ['variableDoctor', 'variableTokens', 'apiEndpoint', 'apiKey', 'apiModel', 'additionalPrompt', 'models', 'testApi', 'profile-select', 'world-list', 'world-persistence', 'diagnostic-list', 'retry', 'manualVariableAudit', 'manualVariableHint', 'manualWorldAdvance', 'undoVariableRepair', 'cancel', 'exportFullReport']) {
     assert.match(source, new RegExp(`data-role=["']${role}["']`));
   }
   assert.match(source, /openAiChatEndpoint/);
@@ -24,13 +24,16 @@ test('控制台包含变量、连接、人物、世界、诊断与两个互不�
   assert.match(source, /profileRecovery/);
   assert.match(source, /Number\(settings\(\)\.repairAttempts\) \+ 1/);
   assert.match(source, /normalizeVariableOperations/);
-  assert.match(source, /assessVariableBaseline/);
   assert.doesNotMatch(source, /<AuditReceipt>/);
-  assert.match(source, /variable:dry-run-failed/);
-  assert.match(source, /variable:authority-rejected/);
-  assert.match(source, /variable:dry-run-rejected-operations-separated/);
-  assert.match(source, /authority_rejected_nochange/);
-  assert.match(source, /MVU本轮失败但不阻断其他模块/);
+  assert.match(source, /一次聚焦核验/);
+  assert.match(source, /prepareReplacement/);
+  assert.match(source, /本回合完整正确的替换块/);
+  assert.match(source, /只修复上次输出的机械错误/);
+  assert.match(source, /parseVariableDoctorOutput/);
+  assert.match(source, /replaceUpdateVariableBlock/);
+  assert.doesNotMatch(source, /mergeUpdateVariableBlocks|buildReplayVariableOperations/);
+  assert.doesNotMatch(source, /assessVariableBaseline|buildVariableAuditChecklist|extractExplicitVariableClaims/);
+  assert.match(source, /MVU事务未闭合；世界不会消费未确认状态/);
   assert.doesNotMatch(source, /schemaRejected:\s*true/);
   assert.match(source, /manualVariableRecheck/);
   assert.match(source, /本次只处理变量；人物档案与世界引擎未运行/);
@@ -124,16 +127,24 @@ test('运行中的修复详情可以列出缺项但不会冒充红色终态失�
   assert.match(presentation, /test\(text\)[\s\S]*severity: 'error'/);
 });
 
-test('原变量块先经真实MVU确定性重放再判定落地，空补丁套话不能冒充核验', () => {
+test('变量医生只做一次聚焦语义判断，脚本仅负责格式、安全写入和诚实结果', () => {
   const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
-  assert.match(audit, /const replaySource = original\.ok \? original\.rawBlock : boundedInvalidBlock/);
-  assert.equal((audit.match(/Mvu\.parseMessage\(replaySource, runtime\.core\.deepClone\(previousData\)\)/g) || []).length, 2);
-  assert.match(audit, /assessOriginalMvuReplay\(\{ currentData, firstReplayData, secondReplayData \}\)/);
-  assert.match(audit, /originalReplay,/);
-  assert.match(audit, /validateVariableAuditAnalysis\(parsed\.analysis, \{ emptyPatch: !parsed\.operations\.length \}\)/);
-  assert.match(audit, /variable:analysis-unsubstantiated/);
-  assert.match(audit, /JSON Pointer路径/);
-  assert.match(audit, /差异为0.*不能单独作为依据/);
+  assert.match(audit, /buildVariableAuditEvidence/);
+  assert.match(audit, /evidence\.triggeringUser/);
+  assert.match(audit, /evidence\.transcript/);
+  assert.match(audit, /collectMvuReference/);
+  assert.match(audit, /本回合完整正确的替换块/);
+  assert.match(audit, /重放基线非人物stat_data/);
+  assert.match(audit, /本楼层当前非人物stat_data/);
+  assert.match(audit, /const maxAttempts = Math\.min\(2/);
+  assert.match(audit, /prepareReplacement/);
+  assert.match(audit, /初次核验已经完成/);
+  assert.match(audit, /不得重新审剧情/);
+  assert.doesNotMatch(audit, /buildReplayCompleteBlock|mergeUpdateVariableBlocks/);
+  assert.match(audit, /model_reported_nochange/);
+  assert.match(audit, /这仍不等于脚本能替代语义判断/);
+  assert.match(audit, /assertVariableTarget\(session, messageId, target\)[\s\S]*prepareReplacement\(raw\)[\s\S]*assertVariableTarget\(session, messageId, target\)/);
+  assert.doesNotMatch(audit, /assessVariableBaseline|buildVariableAuditChecklist|extractExplicitVariableClaims|partial-repair|authority-rejected/);
 });
 
 test('正文只接收公开影响，主体锚点、私密现状和有限知识只供Doctor后台推进', () => {
@@ -163,24 +174,25 @@ test('正文只接收公开影响，主体锚点、私密现状和有限知识�
   assert.match(source, /只清空公开字段，私密推进仍已保留/);
 });
 
-test('accepted-final并行检查变量和人物，只有人物持久化完整性失败才跳过世界', () => {
+test('accepted-final可并行生成变量与人物候选，但世界必须等待变量和人物事务都闭合', () => {
   const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
   const variableStart = accepted.indexOf('const variableTask = auditVariables');
   const profileStart = accepted.indexOf('const profileTask = commitProfiles');
   const jointWait = accepted.indexOf('await Promise.all([variableTask, profileTask])');
+  const variableIntegrityGate = accepted.indexOf('const worldBlockedByVariableIntegrity = !variableResult.ok');
   const worldIntegrityGate = accepted.indexOf('const worldBlockedByProfileIntegrity = Boolean(profileResult.blocksWorld)');
-  const worldResultStart = accepted.indexOf('const worldResult = worldBlockedByProfileIntegrity');
+  const worldResultStart = accepted.indexOf('const worldResult = worldBlocked');
   const worldStart = accepted.indexOf('await advanceWorld(session, finalAcceptedText, workingData)', worldResultStart);
   assert.ok(variableStart >= 0 && profileStart > variableStart && jointWait > profileStart);
-  assert.ok(worldIntegrityGate > jointWait && worldResultStart > worldIntegrityGate && worldStart > worldResultStart);
+  assert.ok(variableIntegrityGate > jointWait && worldIntegrityGate > variableIntegrityGate && worldResultStart > worldIntegrityGate && worldStart > worldResultStart);
   assert.match(accepted, /commitBarrier: variableTask/);
   assert.doesNotMatch(accepted, /profileBarrier/);
-  assert.match(accepted, /MVU本轮失败但不阻断其他模块/);
+  assert.match(accepted, /MVU事务未闭合；世界不会消费未确认状态/);
   assert.match(accepted, /人物档案本轮失败；已有档案与非人物主体仍可推进/);
   const worldDispatch = accepted.slice(worldResultStart, accepted.indexOf('if (!sessionIsCurrent(session) || worldResult.cancelled)', worldResultStart));
-  assert.match(worldDispatch, /const worldResult = worldBlockedByProfileIntegrity\s*\?[\s\S]*skipped: true[\s\S]*blockedByProfileIntegrity: true[\s\S]*:\s*await advanceWorld\(session, finalAcceptedText, workingData\)/);
+  assert.match(worldDispatch, /const worldResult = worldBlocked\s*\?[\s\S]*blockedByVariableIntegrity:[\s\S]*blockedByProfileIntegrity:[\s\S]*:\s*await advanceWorld\(session, finalAcceptedText, workingData\)/);
   assert.equal((worldDispatch.match(/skipped: true/g) || []).length, 1);
-  assert.doesNotMatch(worldDispatch, /!variableResult\.ok|!profileResult\.ok|profileResult\.partial/);
+  assert.match(worldDispatch, /worldBlockedByVariableIntegrity/);
 
   const profiles = source.slice(source.indexOf('async function commitProfiles'), source.indexOf('async function commitWorldState'));
   assert.ok(profiles.indexOf('await execution.commitBarrier') < profiles.indexOf('await Mvu.replaceMvuData(candidate'));
@@ -236,7 +248,7 @@ test('待重试队列按回复身份逐项结算，prepare不会静默丢弃任�
   assert.match(quarantineBranch, /if \(persistentQuarantine\)[\s\S]*setRetry\(null, \{ clearAll: true \}\)/);
 
   const accepted = source.slice(source.indexOf('async function acceptFinal'), source.indexOf('function latestUndoableVariableRepair'));
-  const completed = accepted.indexOf("addDiagnostic('completed'");
+  const completed = accepted.indexOf('const variableNeedsManualConfirmation');
   const success = accepted.slice(completed, accepted.indexOf('await refreshUiData()', completed));
   assert.match(success, /setRetry\(null\)/);
   assert.doesNotMatch(success, /clearAll|pendingRetries\s*=\s*\[\]/);
@@ -479,7 +491,7 @@ test('metadata保持同一权威对象身份，不在每次读取时重建命名
 });
 
 test('世界面板从单一v7主体权威派生支线和变化，不再渲染旧多表世界', () => {
-  assert.equal(manifest.version, '0.7.0');
+  assert.equal(manifest.version, '0.7.1');
   const worldUi = source.slice(source.indexOf('function renderWorld'), source.indexOf('function renderDiagnostics'));
   assert.match(worldUi, /normalizeWorldState\(store\.world/);
   assert.match(worldUi, /world\.subjects/);
@@ -527,26 +539,43 @@ test('完整报告在用户点击阶段先取得文件句柄且MVU读取失败�
 test('手动变量复检不串行触发人物或世界，变量提交按准备、写入、读回、正文保存排序', () => {
   const manual = source.slice(source.indexOf('async function manualVariableRecheck'), source.indexOf('async function manualWorldRecheck'));
   assert.match(manual, /auditVariables/);
-  assert.match(manual, /force:\s*true/);
+  assert.match(manual, /mode:\s*'manual'/);
+  assert.match(manual, /const hint = manualVariableHint\(\)/);
+  assert.match(manual, /manualHint:\s*hint/);
   assert.doesNotMatch(manual, /commitProfiles|advanceWorld/);
   assert.match(manual, /人物与世界未运行/);
+  assert.match(manual, /const downstreamRetry = runtime\.retry/);
+  assert.match(manual, /if \(downstreamRetry\) setRetry\(downstreamRetry/);
 
   const audit = source.slice(source.indexOf('async function auditVariables'), source.indexOf('async function repairProfileReceipt'));
   const prepared = audit.indexOf("status: 'prepared'");
   const write = audit.indexOf('await Mvu.replaceMvuData(candidate');
   const readback = audit.indexOf('const readback = await mvuDataAt', write);
-  const saveMessage = audit.indexOf('await saveMergedVariableBlock', readback);
+  const saveMessage = audit.indexOf('await saveReplacementVariableBlock', readback);
   assert.ok(prepared >= 0 && prepared < write);
   assert.ok(write < readback && readback < saveMessage);
-  assert.match(audit, /Schema.*失败|本地补丁安全校验失败/);
-  assert.match(audit, /return \{ ok: false, error: `\$\{reason\}；零写入` \}/);
+  assert.match(audit, /官方MVU\/Schema拒绝完整替换块|补丁基本结构校验失败/);
+  assert.match(audit, /actualChanges\.paths/);
+  assert.match(audit, /人物档案根不变/);
+  assert.match(audit, /refreshMessageSurface/);
+  assert.match(audit, /；零写入/);
 });
 
-test('人物和世界内容使用textContent节点渲染且移动端为全屏控制台', () => {
+test('人物和世界内容使用textContent节点渲染且控制台服从真实视口与手机触控合同', () => {
   assert.match(source, /function node\([\s\S]*textContent = text/);
   assert.match(source, /profileSection\(/);
   assert.match(source, /renderWorld\(/);
   assert.match(source, /redactDiagnostic/);
-  assert.match(css, /@media \(max-width: \d+px\)[\s\S]*?\.mvu-kc-console \{ inset: 0; width: 100vw; height: 100vh; height: 100dvh;/);
+  assert.match(css, /@media \(max-width: 760px\), \(max-height: 600px\), \(pointer: coarse\)/);
+  assert.match(css, /\.mvu-kc-console \{[\s\S]*?top: var\(--kc-viewport-top[\s\S]*?height: var\(--kc-viewport-height/);
+  assert.match(css, /env\(safe-area-inset-(?:top|right|bottom|left)\)/);
+  assert.match(css, /min-height: 44px/);
+  assert.match(css, /overscroll-behavior: contain/);
+  assert.match(css, /\.mvu-kc-live \{[\s\S]*?max-height: 88px;[\s\S]*?overflow: hidden/);
+  assert.match(css, /-webkit-line-clamp: 2/);
+  assert.match(css, /\.mvu-kc-main \{[^}]*overflow-y: auto/);
+  assert.match(source, /window\.visualViewport/);
+  assert.match(source, /trapConsoleFocus/);
+  assert.match(source, /mvu-kc-modal-open/);
   assert.match(css, /prefers-reduced-motion/);
 });

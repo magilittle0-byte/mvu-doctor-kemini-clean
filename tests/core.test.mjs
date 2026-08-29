@@ -2,12 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   WORLD_SCHEMA_VERSION,
-  assessOriginalMvuReplay,
-  assessVariableBaseline,
-  assessVariableWriteAuthority,
   buildUpdateVariableBlock,
   buildProfilePatch,
-  buildVariableAuditChecklist,
   capturePathSnapshot,
   chatCompletionText,
   createFrozenProfileMatcher,
@@ -19,13 +15,12 @@ import {
   openAiModelsEndpoint,
   mergeProfileRootDirect,
   mergeProfileCandidates,
-  mergeUpdateVariableBlocks,
   normalizeVariableOperations,
   normalizeProfileCandidates,
   parseProfileDiscoveryReceipt,
   parseProfileReceipt,
   parseUpdateVariableBlock,
-  partitionVariableOperationsByApplication,
+  parseVariableDoctorOutput,
   applyAcceptedWorldObservations,
   applyWorldProposal,
   authorityProtectedProfileNamesFromEntries,
@@ -38,18 +33,22 @@ import {
   restorePathSnapshot,
   restoreTouchedData,
   removeApiFromExport,
+  replaceUpdateVariableBlock,
+  refreshHostMessageSurface,
   repairAcceptedNarrativeEnvelope,
   seedWorldSubjectsFromProfiles,
   selectWorldRecall,
   semanticJsonEqual,
   statDataOf,
   validatePatchOperations,
-  validateVariableAuditAnalysis,
   validateProfileSubjectCoverage,
   verifyCommittedProfiles,
   verifyPatchOperations,
   verifyPatchApplication,
   verifyPathSnapshot,
+  variableStateOf,
+  variableChangePaths,
+  verifyVariablePreservation,
 } from '../core.mjs';
 
 function completeProfile(ticket) {
@@ -294,14 +293,15 @@ test('同名半档案不是可用既有人物，再次出场仍必须进入补�
   assert.deepEqual(excluded, []);
 });
 
-test('变量医生解析无限回廊UpdateVariable并把原更新与纠错合并', () => {
+test('变量医生以本回合完整块替换原块，不再把旧delta和纠错叠加', () => {
   const original = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/契约者/经济/UP","value":10}]</JSONPatch></UpdateVariable>';
-  const correction = '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/当前时间/地点","value":"回廊大厅"}]</JSONPatch></UpdateVariable>';
+  const replacement = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/契约者/经济/UP","value":10},{"op":"replace","path":"/当前时间/地点","value":"大厅"}]</JSONPatch></UpdateVariable>';
   assert.equal(parseUpdateVariableBlock(original).ok, true);
-  const merged = mergeUpdateVariableBlocks(`正文\n${original}`, correction);
-  assert.equal(merged.ok, true);
-  assert.equal(parseUpdateVariableBlock(merged.message).operations.length, 2);
-  assert.equal((merged.message.match(/<UpdateVariable/g) || []).length, 1);
+  const replaced = replaceUpdateVariableBlock(`正文\n${original}`, replacement);
+  assert.equal(replaced.ok, true);
+  assert.equal(replaced.mode, 'replace-valid');
+  assert.deepEqual(parseUpdateVariableBlock(replaced.message).operations, parseUpdateVariableBlock(replacement).operations);
+  assert.equal((replaced.message.match(/<UpdateVariable/g) || []).length, 1);
 });
 
 test('变量医生完整替换唯一有界的坏JSON区块，边界缺失或多义时失败关闭', () => {
@@ -309,7 +309,7 @@ test('变量医生完整替换唯一有界的坏JSON区块，边界缺失或多�
   const correction = '<UpdateVariable><Analysis>只保留经医生验证的新操作。</Analysis><JSONPatch>[{"op":"replace","path":"/玩家/金钱","value":7}]</JSONPatch></UpdateVariable>';
   assert.equal(parseUpdateVariableBlock(broken).ok, false);
 
-  const replaced = mergeUpdateVariableBlocks(`正文\n${broken}\n尾声`, correction);
+  const replaced = replaceUpdateVariableBlock(`正文\n${broken}\n尾声`, correction);
   assert.equal(replaced.ok, true, replaced.error);
   assert.equal(replaced.mode, 'replace-invalid-bounded');
   assert.deepEqual(replaced.operations, [{ op: 'replace', path: '/玩家/金钱', value: 7 }]);
@@ -317,18 +317,60 @@ test('变量医生完整替换唯一有界的坏JSON区块，边界缺失或多�
   assert.equal((replaced.message.match(/<\/UpdateVariable\s*>/g) || []).length, 1);
   assert.doesNotMatch(replaced.message, /旧区块不可解析|\?\?\?/);
 
-  const missingClose = mergeUpdateVariableBlocks(
+  const missingClose = replaceUpdateVariableBlock(
     '正文\n<UpdateVariable><JSONPatch>[{"op":"delta","path":"/玩家/金钱","value":-3}]</JSONPatch>',
     correction,
   );
-  assert.equal(missingClose.ok, false);
-  assert.equal(missingClose.code, 'ambiguous-original-envelope');
-  assert.deepEqual(missingClose.operations, []);
+  assert.equal(missingClose.ok, true, missingClose.error);
+  assert.equal(missingClose.mode, 'replace-recovered-envelope');
+  assert.deepEqual(parseUpdateVariableBlock(missingClose.message).operations, parseUpdateVariableBlock(correction).operations);
 
-  const multiple = mergeUpdateVariableBlocks(`${broken}\n${broken}`, correction);
+  const multiple = replaceUpdateVariableBlock(`${broken}\n${broken}`, correction);
   assert.equal(multiple.ok, false);
   assert.equal(multiple.code, 'ambiguous-original-envelope');
   assert.deepEqual(multiple.operations, []);
+});
+
+test('变量模型输出宽容恢复唯一JSONPatch数组，但多候选仍失败关闭', () => {
+  const tagged = parseVariableDoctorOutput('<Analysis>核对完成</Analysis>\n<JSONPatch>[{"op":"replace","path":"/测试主体/数值","value":4}]</JSONPatch>');
+  assert.equal(tagged.ok, true, tagged.error);
+  assert.equal(tagged.recovery, 'jsonpatch-without-envelope');
+  assert.deepEqual(tagged.operations, [{ op: 'replace', path: '/测试主体/数值', value: 4 }]);
+
+  const arrayOnly = parseVariableDoctorOutput('修复如下：\n```json\n[{"op":"delta","path":"/测试主体/数值","value":1}]\n```');
+  assert.equal(arrayOnly.ok, true, arrayOnly.error);
+  assert.equal(arrayOnly.recovery, 'balanced-json-array');
+
+  const ambiguous = parseVariableDoctorOutput('[{"op":"delta","path":"/a","value":1}]\n[{"op":"delta","path":"/b","value":1}]');
+  assert.equal(ambiguous.ok, false);
+  assert.match(ambiguous.error, /找到2个/);
+});
+
+test('消息刷新严格先重绘再发送MESSAGE_UPDATED，并把缺失或失败接口显式返回', async () => {
+  const order = [];
+  const host = {
+    eventTypes: { MESSAGE_UPDATED: 'message_updated' },
+    async updateMessageBlock(messageId, message) { order.push(['render', messageId, message.mes]); },
+    eventSource: { async emit(name, messageId) { order.push(['emit', name, messageId]); } },
+  };
+  const success = await refreshHostMessageSurface(host, 4, { mes: '测试正文' });
+  assert.deepEqual(order, [['render', 4, '测试正文'], ['emit', 'message_updated', 4]]);
+  assert.deepEqual(success, { rendered: true, eventEmitted: true, errors: [] });
+
+  const missing = await refreshHostMessageSurface({}, 4, { mes: '测试正文' });
+  assert.equal(missing.rendered, false);
+  assert.equal(missing.eventEmitted, false);
+  assert.deepEqual(missing.errors, ['宿主未提供updateMessageBlock', '宿主未提供MESSAGE_UPDATED事件接口']);
+
+  const failedOrder = [];
+  const failed = await refreshHostMessageSurface({
+    updateMessageBlock() { failedOrder.push('render'); throw new Error('render rejected'); },
+    eventSource: { emit() { failedOrder.push('emit'); throw new Error('emit rejected'); } },
+  }, 2, { mes: '测试正文' });
+  assert.deepEqual(failedOrder, ['render', 'emit']);
+  assert.equal(failed.errors.length, 2);
+  assert.match(failed.errors.join('；'), /render rejected/);
+  assert.match(failed.errors.join('；'), /emit rejected/);
 });
 
 test('变量区块只接受单一写入源，并保留模型分析但不要求伪证式回执', () => {
@@ -346,43 +388,6 @@ test('变量区块按无限回廊真实MVU的分行结构输出', () => {
   assert.equal(parseUpdateVariableBlock(block).ok, true);
 });
 
-test('变量医生从角色卡权威规则拒绝脚本托管字段但保留可直写字段', () => {
-  const state = { stat_data: { 契约者: { 衍生属性: { HP_当前: 105, HP_最大: 105, 防御: 3, 负重_当前: 0, 负重_上限: 30 }, 经济: { UP: 0 } }, 当前敌人: { 守卫: { 衍生属性: { 防御: 6 } } } } };
-  const rules = `契约者.衍生属性:\n- 【完全禁止修改】HP_最大、防御、负重_上限等所有计算结果均由前端自动完成。\n负重_当前：前端自动计算，禁止修改。\n/当前敌人/守卫/衍生属性/防御：只读。\n契约者.经济:\n- UP在获得或支付时允许直接修改。`;
-  const authority = assessVariableWriteAuthority(state, rules, [
-    { op: 'replace', path: '/契约者/衍生属性/HP_最大', value: 120 },
-    { op: 'replace', path: '/契约者/衍生属性/HP_当前', value: 90 },
-    { op: 'replace', path: '/契约者/衍生属性/负重_当前', value: 9 },
-    { op: 'delta', path: '/契约者/经济/UP', value: 5 },
-    { op: 'replace', path: '/当前敌人/守卫/衍生属性/防御', value: 7 },
-  ]);
-  assert.equal(authority.ok, false);
-  assert.deepEqual(authority.allowedOperations.map((item) => item.path), ['/契约者/衍生属性/HP_当前', '/契约者/经济/UP']);
-  assert.deepEqual(authority.rejectedOperations.map((item) => item.operation.path), [
-    '/契约者/衍生属性/HP_最大',
-    '/契约者/衍生属性/负重_当前',
-    '/当前敌人/守卫/衍生属性/防御',
-  ]);
-  assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/HP_最大'));
-  assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/防御'));
-  assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/负重_上限'));
-  assert.ok(authority.hostManagedPaths.includes('/契约者/衍生属性/负重_当前'));
-  assert.ok(authority.hostManagedPaths.includes('/当前敌人/守卫/衍生属性/防御'));
-  assert.ok(!authority.hostManagedPaths.includes('/契约者/衍生属性/HP_当前'));
-});
-
-test('真实MVU静默拒绝一个目标时可分离拒绝项而保留已落地修复', () => {
-  const operations = [
-    { op: 'replace', path: '/当前时间/地点', value: '回廊大厅' },
-    { op: 'replace', path: '/契约者/衍生属性/负重_当前', value: 3 },
-  ];
-  const partition = partitionVariableOperationsByApplication(operations, {
-    targetErrors: [{ path: '/契约者/衍生属性/负重_当前', message: '目标路径未按预期落地' }],
-  });
-  assert.deepEqual(partition.accepted.map((item) => item.path), ['/当前时间/地点']);
-  assert.deepEqual(partition.rejected.map((item) => item.operation.path), ['/契约者/衍生属性/负重_当前']);
-});
-
 test('变量操作在脚本侧确定性修复常见MVU写法而不猜不存在路径', () => {
   const currentData = { stat_data: { 契约者: { 经济: { UP: [10, '通用点数'] }, 背包: { 旧物: '钥匙' } } } };
   const normalized = normalizeVariableOperations(currentData, [
@@ -392,7 +397,7 @@ test('变量操作在脚本侧确定性修复常见MVU写法而不猜不存在�
   ]);
   assert.equal(normalized.ok, true);
   assert.deepEqual(normalized.operations, [
-    { op: 'replace', path: '/契约者/经济/UP', value: 12 },
+    { op: 'replace', path: '/契约者/经济/UP', value: [12, '通用点数'] },
     { op: 'delta', path: '/契约者/经济/UP', value: 3 },
     { op: 'insert', path: '/契约者/背包/钥匙', value: '钥匙' },
     { op: 'remove', path: '/契约者/背包/旧物' },
@@ -415,80 +420,33 @@ test('变量操作归一化与最终校验都拒绝人物档案根路径的两�
   }
 });
 
-test('变量基线用真实前后状态识别死区块与已落地原更新', () => {
-  const previousData = { stat_data: { 玩家: { 金钱: 10 } } };
-  const unchanged = { stat_data: { 玩家: { 金钱: 10 } } };
-  const suspicious = assessVariableBaseline({ narrative: '支付了三枚金币。', previousData, currentData: unchanged, original: { ok: false, error: '缺少区块' } });
-  assert.equal(suspicious.requiresCorrection, true);
-  const original = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"delta","path":"/玩家/金钱","value":-3}]</JSONPatch></UpdateVariable>');
-  const reflected = assessVariableBaseline({ narrative: '支付了三枚金币。', previousData, currentData: { stat_data: { 玩家: { 金钱: 7 } } }, original });
-  assert.equal(reflected.code, 'original_patch_reflected');
-  assert.equal(reflected.requiresCorrection, false);
+test('变量事务差异覆盖官方派生路径，并把人物档案根完全隔离', () => {
+  const previous = { stat_data: { 测试主体: { 数值: 10, 派生: 20 }, 人物档案: { byActorId: {} } } };
+  const final = { stat_data: { 测试主体: { 数值: 7, 派生: 14 }, 人物档案: { byActorId: { npc: { name: '测试人物' } } } } };
+  const changed = variableChangePaths(previous, final);
+  assert.equal(changed.ok, true);
+  assert.deepEqual(changed.paths.sort(), ['/测试主体/数值', '/测试主体/派生'].sort());
+  assert.deepEqual(variableStateOf(final), { 测试主体: { 数值: 7, 派生: 14 } });
+
+  assert.equal(verifyVariablePreservation(final, { stat_data: { 测试主体: { 数值: 6, 派生: 14 } } }, ['/测试主体/数值']).ok, true);
+  const rejected = verifyVariablePreservation(final, { stat_data: { 测试主体: { 数值: 6, 派生: 99 } } }, ['/测试主体/数值']);
+  assert.equal(rejected.ok, false);
+  assert.deepEqual(rejected.unexpected.map((item) => item.path), ['/测试主体/派生']);
 });
 
-test('变量基线服从真实MVU重放而不是JSONPatch字面值', () => {
-  const previousData = {
-    stat_data: {
-      契约者: {
-        基础属性: { 体质: 10, 敏捷: 12, 力量: 10 },
-        衍生属性: { MP_最大: 100, 防御: 3, 闪避: 12, 负重_上限: 30 },
-      },
-    },
-  };
-  const original = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"replace","path":"/契约者/基础属性/体质","value":11},{"op":"replace","path":"/契约者/衍生属性/MP_最大","value":100},{"op":"replace","path":"/契约者/衍生属性/防御","value":3},{"op":"replace","path":"/契约者/衍生属性/闪避","value":12},{"op":"replace","path":"/契约者/衍生属性/负重_上限","value":30}]</JSONPatch></UpdateVariable>');
-  const officialReplay = {
-    stat_data: {
-      契约者: {
-        基础属性: { 体质: 11, 敏捷: 12, 力量: 10 },
-        衍生属性: { MP_最大: 110, 防御: 4, 闪避: 13, 负重_上限: 55 },
-      },
-    },
-  };
-  const receipt = assessOriginalMvuReplay({
-    currentData: structuredClone(officialReplay),
-    firstReplayData: structuredClone(officialReplay),
-    secondReplayData: structuredClone(officialReplay),
-  });
-  assert.equal(receipt.ok, true);
-  assert.equal(receipt.deterministic, true);
-  assert.equal(receipt.reflected, true);
-  const baseline = assessVariableBaseline({
-    narrative: '基础属性已经建立，衍生属性由前端公式计算。',
-    previousData,
-    currentData: officialReplay,
-    original,
-    originalReplay: receipt,
-  });
-  assert.equal(baseline.code, 'original_patch_reflected_by_real_mvu');
-  assert.equal(baseline.requiresCorrection, false);
-});
-
-test('真实MVU重放缺失、报错、不确定或与当前状态不一致时保持失败关闭', () => {
-  const currentData = { stat_data: { 玩家: { 金钱: 7 } } };
-  const replayed = { stat_data: { 玩家: { 金钱: 7 } } };
-  const changedReplay = { stat_data: { 玩家: { 金钱: 6 } } };
-  assert.equal(assessOriginalMvuReplay({ currentData }).code, 'real_mvu_replay_missing');
-  assert.equal(assessOriginalMvuReplay({ currentData, error: 'schema rejected' }).code, 'real_mvu_replay_failed');
-  assert.equal(assessOriginalMvuReplay({ currentData, firstReplayData: replayed, secondReplayData: changedReplay }).code, 'real_mvu_replay_nondeterministic');
-  assert.equal(assessOriginalMvuReplay({ currentData, firstReplayData: changedReplay, secondReplayData: changedReplay }).code, 'real_mvu_replay_not_reflected');
-});
-
-test('空补丁审计拒绝提示词模板和无证据套话，只接受具体核验依据', () => {
-  assert.equal(validateVariableAuditAnalysis('正文事实、当前值、应有值的简洁对照；没有修复时说明为什么当前状态已经闭合', { emptyPatch: true }).ok, false);
-  assert.equal(validateVariableAuditAnalysis('逐项核对后无需修复。', { emptyPatch: true }).ok, false);
-  assert.equal(validateVariableAuditAnalysis('真实状态差异为0，原变量块31项均已落地。', { emptyPatch: true }).ok, false);
-  assert.equal(validateVariableAuditAnalysis('原变量块31项经真实MVU重放后与当前stat_data一致；/契约者/衍生属性/防御由前端公式归一化，无需追加修复。', { emptyPatch: true }).ok, true);
-  assert.equal(validateVariableAuditAnalysis('修复 /玩家/金钱 到正文裁决后的7。', { emptyPatch: false }).ok, true);
-});
-
-test('变量纠错在交给MVU前拒绝不存在路径与复杂节点整块覆盖', () => {
+test('变量纠错在交给MVU前拒绝不存在路径，但动态对象和数组Schema交由官方MVU裁决', () => {
   const state = { stat_data: { 契约者: { 经济: { UP: 10 }, 背包: {} } } };
   const valid = validatePatchOperations(state, [{ op: 'delta', path: '/契约者/经济/UP', value: 5 }]);
   assert.equal(valid.ok, true);
   assert.equal(valid.expected.契约者.经济.UP, 15);
   assert.equal(verifyPatchOperations({ stat_data: valid.expected }, valid), true);
   assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/不存在', value: 1 }]).ok, false);
-  assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/经济', value: {} }]).ok, false);
+  assert.equal(validatePatchOperations(state, [{ op: 'replace', path: '/契约者/经济', value: { UP: 12 } }]).ok, true);
+  const dynamic = { stat_data: { 任务: { 临时条目: { 进度: 1 } }, 列表: ['甲', '乙'] }, schema: { type: 'object', properties: {} } };
+  assert.equal(validatePatchOperations(dynamic, [{ op: 'replace', path: '/任务/临时条目/进度', value: 2 }]).ok, true);
+  const arrayReplacement = validatePatchOperations(dynamic, [{ op: 'replace', path: '/列表', value: ['甲', '丙'] }]);
+  assert.equal(arrayReplacement.ok, true, arrayReplacement.error);
+  assert.deepEqual(arrayReplacement.expected.列表, ['甲', '丙']);
   const move = parseUpdateVariableBlock('<UpdateVariable><JSONPatch>[{"op":"move","from":"/契约者/经济/UP","to":"/契约者/经济/余额"}]</JSONPatch></UpdateVariable>');
   assert.equal(move.ok, true);
   const described = { stat_data: { 契约者: { 经济: { UP: [10, '通用点数'] } } } };
@@ -541,7 +499,7 @@ test('MVU只调整对象键顺序时仍视为同一结构，数组顺序仍必�
   assert.equal(semanticJsonEqual([1, 2], [2, 1]), false);
 });
 
-test('当前角色卡存在Schema时拒绝Schema外insert，不把数据对象存在误判为可写', () => {
+test('本地安全壳不冒充角色卡Schema裁决，动态insert交由官方MVU干运行', () => {
   const state = {
     stat_data: { 契约者: { 事件簿: {} } },
     schema: {
@@ -551,9 +509,8 @@ test('当前角色卡存在Schema时拒绝Schema外insert，不把数据对象�
     },
   };
   const validation = validatePatchOperations(state, [{ op: 'insert', path: '/契约者/事件簿/新记录', value: { 结果: '已发生' } }]);
-  assert.equal(validation.ok, false);
-  assert.equal(validation.code, 'schema_incompatible');
-  assert.match(validation.error, /Schema/);
+  assert.equal(validation.ok, true, validation.error);
+  assert.deepEqual(validation.expected.契约者.事件簿.新记录, { 结果: '已发生' });
 });
 
 test('Schema明确允许扩展的对象仍可执行insert并通过目标读回', () => {
@@ -1028,6 +985,35 @@ test('人物知识以人物可达来源为边界：旧知识可保留，新增�
     '林澄亲眼查看了仓库门锁，确认门锁昨晚被换过。',
   );
   assert.equal(acceptedFresh.ok, true, acceptedFresh.errors.join('\n'));
+
+  const systemGuide = completeProfile(ticket);
+  systemGuide.name = '资料终端';
+  systemGuide.aliases = ['测试终端'];
+  systemGuide.identity = { species: '系统单元', gender: '不适用', age: '启用后持续运行', occupation: '资料服务程序', affiliation: '测试设施', socialPosition: '经授权提供公开登记资料的服务终端' };
+  systemGuide.capabilities = ['能够通过系统权限读取测试主体已公开的登记档案'];
+  systemGuide.resources = ['可调用公开资料接口与基础资料库'];
+  systemGuide.knowledge = ['经系统授权读取：测试主体已登记的公开字段A'];
+  systemGuide.evidence = ['正文明确资料终端是拥有公开资料读取权限的系统单元'];
+  const systemAccepted = prepareProfileBatch(
+    [systemGuide],
+    [ticket],
+    { stat_data: {} },
+    '资料终端通过公开资料权限读取了测试主体已经登记的字段A，并开始说明使用规则。',
+  );
+  assert.equal(systemAccepted.ok, true, systemAccepted.errors.join('\n'));
+
+  const ordinaryImpostor = completeProfile(ticket);
+  ordinaryImpostor.knowledge = ['经系统授权读取：敌对势力的未公开密令'];
+  const systemRejected = prepareProfileBatch([ordinaryImpostor], [ticket], { stat_data: {} }, '林澄继续整理药材。');
+  assert.equal(systemRejected.ok, false);
+  assert.match(systemRejected.errors.join('；'), /knowledge|知识|来源|可达/u);
+
+  const librarian = completeProfile(ticket);
+  librarian.identity.occupation = '图书管理员';
+  librarian.capabilities = ['能够读取书籍并通过接口沟通'];
+  librarian.knowledge = ['经系统授权读取：未公开的测试记录'];
+  const librarianRejected = prepareProfileBatch([librarian], [ticket], { stat_data: {} }, '林澄继续整理公开目录。');
+  assert.equal(librarianRejected.ok, false);
 
   const existing = completeProfile(ticket);
   existing.profileId = 'actor-existing-knowledge';

@@ -119,6 +119,16 @@ export function statDataOf(data) {
   return data.stat_data && typeof data.stat_data === 'object' ? data.stat_data : data;
 }
 
+// Variable auditing and profile persistence share stat_data, but the profile
+// root belongs exclusively to the profile doctor.  Mechanical replay and
+// variable diffs must never interpret a concurrently committed profile as a
+// narrative variable change.
+export function variableStateOf(data) {
+  const stat = deepClone(statDataOf(data));
+  if (stat && typeof stat === 'object' && !Array.isArray(stat)) delete stat.人物档案;
+  return stat;
+}
+
 function at(object, path) {
   return path.split('.').reduce((value, key) => value?.[key], object);
 }
@@ -246,21 +256,33 @@ const PATCH_OPERATIONS = new Set(['replace', 'delta', 'insert', 'remove', 'move'
 const PATCH_OPERATION_ALIASES = Object.freeze({
   add: 'insert', set: 'replace', update: 'replace', change: 'replace', modify: 'replace', 修改: 'replace',
 });
-export const VARIABLE_AUDIT_CATEGORIES = Object.freeze([
-  'opening_and_initialization',
-  'numeric_and_derived',
-  'inventory_and_transfer',
-  'dynamic_collections',
-  'relationship_and_mental_causality',
-  'time_location_and_cost',
-  'player_agency',
-]);
-
 export function parseUpdateVariableBlock(message) {
   const source = String(message || '');
   const blocks = [...source.matchAll(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi)];
   if (blocks.length > 1) return { ok: false, code: 'multiple-blocks', error: `检测到${blocks.length}个<UpdateVariable>区块，拒绝选择或合并`, operations: [] };
-  const rawBlock = blocks[0]?.[0] || '';
+  let rawBlock = blocks[0]?.[0] || '';
+  let sourceRawBlock = rawBlock;
+  let sourceStart = Number(blocks[0]?.index ?? -1);
+  let sourceEnd = sourceStart >= 0 ? sourceStart + sourceRawBlock.length : -1;
+  let recoveredEnvelope = false;
+  if (!rawBlock) {
+    const opens = [...source.matchAll(/<UpdateVariable\b[^>]*>/gi)];
+    const closes = [...source.matchAll(/<\/UpdateVariable\s*>/gi)];
+    if (opens.length === 1 && closes.length === 0) {
+      sourceStart = Number(opens[0].index);
+      const tail = source.slice(sourceStart);
+      const patchClose = tail.match(/<JSONPatch\b[^>]*>[\s\S]*?<\/JSONPatch\s*>/i);
+      if (patchClose) {
+        sourceEnd = sourceStart + Number(patchClose.index) + patchClose[0].length;
+        const suffix = source.slice(sourceEnd);
+        if (/^(?:\s|```)*$/u.test(suffix)) {
+          sourceRawBlock = source.slice(sourceStart, sourceEnd);
+          rawBlock = `${sourceRawBlock}\n</UpdateVariable>`;
+          recoveredEnvelope = true;
+        }
+      }
+    }
+  }
   if (!rawBlock) return { ok: false, error: '缺少完整的<UpdateVariable>区块', operations: [] };
   const patch = rawBlock.match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/i)?.[1];
   if (patch == null) return { ok: false, error: 'UpdateVariable缺少完整的JSONPatch区块', operations: [] };
@@ -288,20 +310,72 @@ export function parseUpdateVariableBlock(message) {
   }
   const analysis = rawBlock.match(/<Analysis\b[^>]*>([\s\S]*?)<\/Analysis\s*>/i)?.[1]?.trim() || '';
   const block = buildUpdateVariableBlock(operations, '变量医生仅提交经MVU解析验证的纠错补丁。');
-  return { ok: true, operations, block, rawBlock, analysis };
+  return { ok: true, operations, block, rawBlock, sourceRawBlock, sourceStart, sourceEnd, recoveredEnvelope, analysis };
 }
 
-export function validateVariableAuditAnalysis(analysis, { emptyPatch = false } = {}) {
-  const text = String(analysis || '').trim();
-  if (!text) return { ok: false, code: 'analysis_missing', error: '变量审计没有提供Analysis核验依据' };
-  const compact = text.normalize('NFKC').toLowerCase().replace(/[\s，,。；;：:、“”"'`*#【】\[\]（）()<>]/g, '');
-  const copiedTemplate = '正文事实当前值应有值的简洁对照没有修复时说明为什么当前状态已经闭合';
-  if (compact.includes(copiedTemplate)) return { ok: false, code: 'analysis_prompt_template', error: '变量审计复述了提示词模板，没有提供本回合核验依据' };
-  if (!emptyPatch) return { ok: true, code: 'analysis_specific' };
-  const hasConcretePath = /\/[\p{L}\p{N}_~\-]+(?:\/[\p{L}\p{N}_~\-]+)+/u.test(text);
-  const hasComparison = /正文|原更新|上一楼层|当前值|当前状态|差异|变化|一致|未变|落地|闭合/u.test(text);
-  if (!hasConcretePath || !hasComparison) return { ok: false, code: 'analysis_unsubstantiated_nochange', error: '空补丁必须引用至少一个真实JSON Pointer路径，并写出该路径的正文事实或前后值对照' };
-  return { ok: true, code: 'analysis_specific_nochange' };
+function balancedJsonArrays(source, limit = 2) {
+  const text = String(source || '');
+  const output = [];
+  let start = -1;
+  let stack = [];
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    if (start < 0) {
+      if (character !== '[') continue;
+      start = index;
+      stack = [']'];
+      continue;
+    }
+    if (character === '[') stack.push(']');
+    else if (character === '{') stack.push('}');
+    else if (character === ']' || character === '}') {
+      if (stack.at(-1) !== character) {
+        start = -1;
+        stack = [];
+        continue;
+      }
+      stack.pop();
+      if (!stack.length) {
+        output.push(text.slice(start, index + 1));
+        if (output.length >= Math.max(1, Number(limit) || 2)) break;
+        start = -1;
+      }
+    }
+  }
+  return output;
+}
+
+export function parseVariableDoctorOutput(message) {
+  const direct = parseUpdateVariableBlock(message);
+  if (direct.ok) return { ...direct, recovery: direct.recoveredEnvelope ? 'missing-update-close' : '' };
+  const source = String(message || '');
+  const taggedPatches = [...source.matchAll(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch\s*>/gi)];
+  let candidates = taggedPatches.map((match) => match[1]);
+  if (!candidates.length) candidates = balancedJsonArrays(source, 3);
+  const parsedCandidates = [];
+  for (const candidate of candidates) {
+    try {
+      const value = parseJsonWithLocalRepair(candidate);
+      if (Array.isArray(value) && value.every((item) => item && typeof item === 'object' && !Array.isArray(item) && item.op)) parsedCandidates.push(value);
+    } catch { /* try the next uniquely bounded candidate */ }
+  }
+  if (parsedCandidates.length !== 1) return { ...direct, recovery: '', error: `${direct.error}；宽容提取找到${parsedCandidates.length}个可用JSONPatch数组` };
+  const analysis = source.match(/<Analysis\b[^>]*>([\s\S]*?)<\/Analysis\s*>/i)?.[1]?.trim()
+    || '格式由本地宽容解析器恢复；变量判断仍来自同一次模型核验。';
+  const recovered = parseUpdateVariableBlock(buildUpdateVariableBlock(parsedCandidates[0], analysis));
+  return recovered.ok ? { ...recovered, recovery: taggedPatches.length ? 'jsonpatch-without-envelope' : 'balanced-json-array' } : recovered;
 }
 
 export function buildUpdateVariableBlock(operations, analysis = '变量更新。') {
@@ -552,192 +626,26 @@ function leafChanges(before, after, base = '', output = [], limit = 240) {
 }
 
 export function diffStatData(previousData, currentData, limit = 240) {
-  return leafChanges(statDataOf(previousData), statDataOf(currentData), '', [], Math.max(1, Number(limit) || 240));
+  return leafChanges(variableStateOf(previousData), variableStateOf(currentData), '', [], Math.max(1, Number(limit) || 240));
 }
 
-export function buildReplayVariableOperations(previousData, finalData, limit = 1200) {
-  if (!previousData || !Object.keys(statDataOf(previousData) || {}).length) {
-    return { ok: false, operations: [], error: '缺少上一楼层MVU基线，无法把坏变量块重建为可重放的完整终态' };
-  }
-  const changes = diffStatData(previousData, finalData, Math.max(1, Number(limit) || 1200));
-  if (changes.length >= Math.max(1, Number(limit) || 1200)) {
-    return { ok: false, operations: [], error: '上一楼层到最终状态的差异超过安全重建上限' };
-  }
-  const operations = changes
-    .filter((change) => change?.path && change.path !== '/' && !doctorOwnedProfilePath(change.path))
-    .map((change) => {
-      if (change.beforeMissing) return { op: 'insert', path: change.path, value: deepClone(change.after) };
-      if (change.afterMissing) return { op: 'remove', path: change.path };
-      return { op: 'replace', path: change.path, value: deepClone(change.after) };
-    });
-  return { ok: true, operations };
+export function variableChangePaths(previousData, currentData, limit = 1200) {
+  const maximum = Math.max(1, Number(limit) || 1200);
+  const changes = leafChanges(variableStateOf(previousData), variableStateOf(currentData), '', [], maximum + 1);
+  if (changes.length > maximum) return { ok: false, paths: [], changes: [], error: `变量实际变化超过事务上限${maximum}项` };
+  const paths = [...new Set(changes.map((change) => change?.path).filter((path) => typeof path === 'string' && path !== '/'))];
+  return { ok: true, paths, changes };
 }
 
-function matchingStatePaths(data, pattern, limit = 12) {
-  const paths = [];
-  const walk = (value, base = '') => {
-    if (paths.length >= limit || !value || typeof value !== 'object') return;
-    for (const [key, child] of Object.entries(value)) {
-      const path = `${base}/${String(key).replace(/~/g, '~0').replace(/\//g, '~1')}`;
-      if (pattern.test(String(key))) paths.push(path);
-      if (child && typeof child === 'object') walk(child, path);
-      if (paths.length >= limit) break;
-    }
-  };
-  walk(statDataOf(data));
-  return [...new Set(paths)];
-}
-
-function changedStatePaths(previousData, currentData, originalOperations = []) {
-  const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
-  if (hasPrevious) return diffStatData(previousData, currentData, 1200).map((item) => String(item.path || '')).filter(Boolean);
-  return originalOperations.flatMap((item) => [item?.path, item?.from, item?.to]).map(String).filter((path) => path.startsWith('/'));
-}
-
-function pathsMatching(paths, pattern, limit = 12) {
-  return [...new Set((paths || []).filter((path) => pattern.test(String(path))))].slice(0, limit);
-}
-
-export function buildVariableAuditChecklist({ narrative = '', previousData = null, currentData = null, originalOperations = [] } = {}) {
-  const text = String(narrative || '');
-  const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
-  const changedPaths = changedStatePaths(previousData, currentData, originalOperations);
-  const rules = {
-    opening_and_initialization: {
-      risk: !hasPrevious,
-      reason: !hasPrevious ? '这是首个可用状态，必须核对初始化、基础值与派生值闭包' : '核对初始化字段是否被后续正文合法改变',
-      paths: matchingStatePaths(currentData, /初始|基础|属性|能力|等级|生命|法力|体力|力量|敏捷|智力|精神|魅力|幸运/u),
-      changedPaths: pathsMatching(changedPaths, /初始|基础|属性|能力|等级|生命|法力|体力|力量|敏捷|智力|精神|魅力|幸运/u),
-    },
-    numeric_and_derived: {
-      risk: /\d|增加|减少|提升|下降|获得|消耗|恢复|损失|结算/u.test(text) || originalOperations.some((item) => item?.op === 'delta' || typeof item?.value === 'number'),
-      reason: '核对数值变化及由其决定的派生值，禁止只改来源不改结果或反向重复delta',
-      paths: matchingStatePaths(currentData, /数值|属性|生命|法力|体力|经验|等级|点数|上限|当前|余额|金钱|货币|UP|积分|负重/u),
-      changedPaths: pathsMatching(changedPaths, /数值|属性|生命|法力|体力|经验|等级|点数|上限|当前|余额|金钱|货币|UP|积分|负重/u),
-    },
-    inventory_and_transfer: {
-      risk: /获得|拿到|捡起|拾取|购买|装备|卸下|丢弃|扔下|放下|交给|递给|归还|失去|消耗|背包|物品|武器|护甲/u.test(text),
-      reason: '核对物品所有权、装备槽、数量和交易双方；负重只按角色卡规则结算，系统空间或未装备物品不得擅自计入',
-      paths: matchingStatePaths(currentData, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
-      changedPaths: pathsMatching(changedPaths, /背包|物品|装备|武器|护甲|道具|库存|数量|负重|持有|货币|金钱/u),
-    },
-    dynamic_collections: {
-      risk: /加入|离开|创建|解散|接受任务|完成任务|契约|队伍|成员|技能|状态|效果|事件|记录/u.test(text),
-      reason: '核对动态对象的新增、删除、成员关系和状态生命周期',
-      paths: matchingStatePaths(currentData, /任务|事件|队伍|成员|契约|技能|状态|效果|记录|列表/u),
-      changedPaths: pathsMatching(changedPaths, /任务|事件|队伍|成员|契约|技能|状态|效果|记录|列表/u),
-    },
-    relationship_and_mental_causality: {
-      risk: /好感|信任|亲密|关系|恐惧|敬畏|畏惧|盲信|崇拜|操纵|洗脑|控制|胁迫|威慑|催眠/u.test(text),
-      reason: '区分自愿关系变化、恐惧敬畏、强制操纵与暂时情绪；不得把控制结果伪装成好感提升',
-      paths: matchingStatePaths(currentData, /关系|好感|信任|亲密|恐惧|敬畏|服从|控制|精神|情绪|态度|印象/u),
-      changedPaths: pathsMatching(changedPaths, /关系|好感|信任|亲密|恐惧|敬畏|服从|控制|精神|情绪|态度|印象/u),
-    },
-    time_location_and_cost: {
-      risk: /前往|抵达|离开|过去了|小时|分钟|天|夜|清晨|中午|傍晚|花费|支付|代价|受伤/u.test(text),
-      reason: '核对地点、时间、成本、伤势与已裁决后果，计划和尝试不能提前结算',
-      paths: matchingStatePaths(currentData, /时间|日期|地点|位置|场景|伤势|健康|状态|消耗|代价/u),
-      changedPaths: pathsMatching(changedPaths, /时间|日期|地点|位置|场景|伤势|健康|状态|消耗|代价/u),
-    },
-    player_agency: {
-      risk: false,
-      reason: '确认补丁只记录玩家明确行动与已接受裁决，不替玩家补写同意、感受、动机或选择',
-      paths: [],
-      changedPaths: [],
-    },
-  };
-  return VARIABLE_AUDIT_CATEGORIES.map((id) => ({ id, ...rules[id] }));
-}
-
-function normalizedAuthorityText(value) {
-  return String(value || '').normalize('NFKC').replace(/[\s_`*#【】\[\]（）()：:，,。；;、“”"'\/\\-]/g, '').toLowerCase();
-}
-
-function authorityScope(line) {
-  const match = String(line || '').trim().match(/^([^\s:#-]+(?:\.[^\s:#]+)+)\s*:?$/u);
-  return match ? match[1].split('.').filter(Boolean) : null;
-}
-
-function authorityRecords(rulesText, currentData) {
-  const records = [];
-  let scope = null;
-  const statePaths = allStatePaths(currentData);
-  const protectedRule = /禁止修改|完全禁止修改|脚本托管保护|前端(?:系统)?自动(?:完成|计算|合成)|只读/u;
-  for (const rawLine of String(rulesText || '').split(/\r?\n/)) {
-    const nextScope = authorityScope(rawLine);
-    if (nextScope) {
-      scope = nextScope;
-      continue;
-    }
-    if (!protectedRule.test(rawLine)) continue;
-    const normalized = normalizedAuthorityText(rawLine);
-    const trimmed = String(rawLine || '').trim();
-    const inlineMatch = trimmed.match(/^[-*]?\s*([^：:]+?)\s*[：:]\s*(.+)$/u);
-    const explicitPointer = trimmed.match(/^[-*]?\s*(\/[^\s：:]+)/u)?.[1] || '';
-    const inlineSelector = inlineMatch && protectedRule.test(inlineMatch[2])
-      ? normalizedAuthorityText(inlineMatch[1])
-      : '';
-    const scopeParts = inlineSelector ? [] : scope ? [...scope] : [];
-    const matchedPaths = statePaths.filter((path) => {
-      if (explicitPointer && path === explicitPointer) return true;
-      const parts = pointerParts(path) || [];
-      const leaf = normalizedAuthorityText(parts.at(-1));
-      const full = normalizedAuthorityText(parts.join('.'));
-      if (inlineSelector) return inlineSelector === leaf || inlineSelector === full;
-      const scopeMatches = !scopeParts.length || scopeParts.every((part, index) =>
-        normalizedAuthorityText(parts[index]) === normalizedAuthorityText(part));
-      return scopeMatches && ((leaf.length >= 2 && normalized.includes(leaf))
-        || (full.length >= 3 && normalized.includes(full)));
-    });
-    records.push({
-      scope: scopeParts,
-      normalized,
-      source: rawLine.trim(),
-      paths: [...new Set(matchedPaths)],
-    });
-  }
-  return records;
-}
-
-function pathMatchesAuthorityRecord(path, record) {
-  const parts = pointerParts(path);
-  if (!parts?.length || !record) return false;
-  return (record.paths || []).some((protectedPath) => pathOverlaps(path, protectedPath));
-}
-
-function allStatePaths(data, limit = 2400) {
-  const output = [];
-  const walk = (value, base = '') => {
-    if (output.length >= limit || !value || typeof value !== 'object') return;
-    for (const [key, child] of Object.entries(value)) {
-      if (output.length >= limit) break;
-      const path = `${base}/${String(key).replace(/~/g, '~0').replace(/\//g, '~1')}`;
-      output.push(path);
-      if (child && typeof child === 'object') walk(child, path);
-    }
-  };
-  walk(statDataOf(data));
-  return output;
-}
-
-export function assessVariableWriteAuthority(currentData, rulesText, operations = []) {
-  const records = authorityRecords(rulesText, currentData);
-  const allowedOperations = [];
-  const rejectedOperations = [];
-  for (const [index, operation] of (operations || []).entries()) {
-    const paths = operation?.op === 'move' ? [operation?.from, operation?.to] : [operation?.path];
-    const hits = paths.filter(Boolean).flatMap((path) => records
-      .filter((record) => pathMatchesAuthorityRecord(path, record))
-      .map((record) => ({ path, rule: record.source })));
-    if (hits.length) rejectedOperations.push({ index, operation: deepClone(operation), hits });
-    else allowedOperations.push(deepClone(operation));
-  }
-  const hostManagedPaths = allStatePaths(currentData).filter((path) => records.some((record) => pathMatchesAuthorityRecord(path, record)));
+export function verifyVariablePreservation(currentData, proposedData, allowedPaths = [], limit = 1200) {
+  const changed = variableChangePaths(currentData, proposedData, limit);
+  if (!changed.ok) return { ok: false, unexpected: [], error: changed.error };
+  const allowed = [...new Set((allowedPaths || []).filter((path) => typeof path === 'string' && path.startsWith('/')))];
+  const unexpected = changed.changes.filter((change) => !allowed.some((path) => pathOverlaps(change.path, path)));
   return {
-    ok: rejectedOperations.length === 0,
-    allowedOperations,
-    rejectedOperations,
-    hostManagedPaths: [...new Set(hostManagedPaths)],
+    ok: unexpected.length === 0,
+    unexpected,
+    error: unexpected.length ? `完整替换块会改写${unexpected.length}个未声明路径：${unexpected.slice(0, 8).map((item) => item.path).join('、')}` : '',
   };
 }
 
@@ -790,13 +698,6 @@ export function normalizeVariableOperations(currentData, operations = []) {
       operation.value = Number(operation.value);
       repairs.push({ index, kind: 'delta-number', detail: '已把数字字符串转换为数值' });
     }
-    if (operation.op === 'replace') {
-      const current = pointerValue(stat, operation.path);
-      if (current.found && isValueWithDescription(current.value) && isValueWithDescription(operation.value)) {
-        operation.value = deepClone(operation.value[0]);
-        repairs.push({ index, kind: 'value-with-description', detail: '已保留说明槽，只写入第一格真实值' });
-      }
-    }
     if (operation.op === 'move') {
       const source = pointerValue(stat, operation.from);
       const destination = pointerValue(stat, operation.to);
@@ -814,127 +715,6 @@ export function normalizeVariableOperations(currentData, operations = []) {
   return { ok: true, operations: normalized, repairs };
 }
 
-export function assessOriginalMvuReplay({ currentData = null, firstReplayData = null, secondReplayData = null, error = '' } = {}) {
-  if (error) return { ok: false, reflected: false, deterministic: false, code: 'real_mvu_replay_failed', detail: String(error) };
-  const first = statDataOf(firstReplayData);
-  const second = statDataOf(secondReplayData);
-  if (!Object.keys(first).length || !Object.keys(second).length) {
-    return { ok: false, reflected: false, deterministic: false, code: 'real_mvu_replay_missing', detail: '真实MVU没有返回两份可比较的stat_data' };
-  }
-  if (!semanticJsonEqual(first, second)) {
-    return {
-      ok: false,
-      reflected: false,
-      deterministic: false,
-      code: 'real_mvu_replay_nondeterministic',
-      replayDiffCount: diffStatData(firstReplayData, secondReplayData, 1200).length,
-      detail: '相同原变量块的两次真实MVU重放结果不一致',
-    };
-  }
-  const current = statDataOf(currentData);
-  const reflected = semanticJsonEqual(current, first);
-  return {
-    ok: reflected,
-    reflected,
-    deterministic: true,
-    code: reflected ? 'real_mvu_replay_reflected' : 'real_mvu_replay_not_reflected',
-    replayDiffCount: diffStatData(firstReplayData, currentData, 1200).length,
-    detail: reflected ? '当前stat_data与真实MVU确定性重放结果一致' : '当前stat_data与真实MVU确定性重放结果不一致',
-  };
-}
-
-export function assessVariableBaseline({ narrative = '', previousData = null, currentData = null, original = null, originalReplay = null } = {}) {
-  const hasPrevious = Object.keys(statDataOf(previousData) || {}).length > 0;
-  const diff = hasPrevious ? diffStatData(previousData, currentData, 1200) : [];
-  const checklist = buildVariableAuditChecklist({
-    narrative,
-    previousData,
-    currentData,
-    originalOperations: original?.ok ? original.operations : [],
-  });
-  const highRisk = checklist.filter((item) => item.risk).map((item) => item.id);
-  if (!hasPrevious) return { code: 'opening', requiresCorrection: false, diffCount: diff.length, highRisk, checklist };
-  if (!original?.ok) {
-    return {
-      code: diff.length ? 'unreadable_block_with_state_change' : 'missing_or_dead_block',
-      requiresCorrection: highRisk.length > 0 && diff.length === 0,
-      diffCount: diff.length,
-      highRisk,
-      checklist,
-      detail: original?.error || '正文没有可读取的变量更新区块',
-    };
-  }
-  const normalized = normalizeVariableOperations(previousData, original.operations);
-  if (!normalized.ok) return { code: 'original_patch_unsafe', requiresCorrection: true, diffCount: diff.length, highRisk, checklist, detail: normalized.error };
-  if (!normalized.operations.length) {
-    return {
-      code: diff.length ? 'empty_patch_with_state_change' : 'empty_patch',
-      requiresCorrection: highRisk.length > 0 && diff.length === 0,
-      diffCount: diff.length,
-      highRisk,
-      checklist,
-    };
-  }
-  if (originalReplay) {
-    return {
-      code: originalReplay.ok ? 'original_patch_reflected_by_real_mvu' : `original_patch_${originalReplay.code}`,
-      requiresCorrection: !originalReplay.ok,
-      diffCount: diff.length,
-      highRisk,
-      checklist,
-      repairs: normalized.repairs,
-      realMvuReplay: deepClone(originalReplay),
-      detail: originalReplay.detail || '',
-    };
-  }
-  const validation = validatePatchOperations(previousData, normalized.operations);
-  if (!validation.ok) return { code: 'original_patch_invalid', requiresCorrection: true, diffCount: diff.length, highRisk, checklist, detail: validation.error };
-  const reflected = verifyPatchOperations(currentData, validation);
-  return {
-    code: reflected ? 'original_patch_reflected' : 'original_patch_not_reflected',
-    requiresCorrection: !reflected,
-    diffCount: diff.length,
-    highRisk,
-    checklist,
-    repairs: normalized.repairs,
-  };
-}
-
-function schemaNodeAt(schema, parts) {
-  let node = schema;
-  for (const part of parts || []) {
-    if (!node || typeof node !== 'object') return null;
-    if (/^\d+$/.test(part) && node.type === 'array') node = node.elementType;
-    else if (node.type === 'object' && node.properties && Object.prototype.hasOwnProperty.call(node.properties, part)) node = node.properties[part];
-    else return null;
-  }
-  return node && typeof node === 'object' ? node : null;
-}
-
-function validateOperationSchema(currentData, operation, number) {
-  const schema = currentData?.schema;
-  if (!schema || typeof schema !== 'object') return null;
-  const operationPaths = operation.op === 'move' ? [operation.from, operation.to] : [operation.path];
-  for (const path of operationPaths) {
-    const parts = pointerParts(path);
-    if (!parts?.length) return `第${number}个操作没有可核对的Schema路径`;
-    if (operation.op !== 'insert' && !(operation.op === 'move' && path === operation.to)) {
-      if (!schemaNodeAt(schema, parts)) return `第${number}个操作的目标不在当前角色卡Schema中`;
-      continue;
-    }
-    const leaf = parts.at(-1);
-    const parentSchema = schemaNodeAt(schema, parts.slice(0, -1));
-    if (!parentSchema) return `第${number}个insert的父路径不在当前角色卡Schema中`;
-    if (parentSchema.type === 'object') {
-      const declared = parentSchema.properties && Object.prototype.hasOwnProperty.call(parentSchema.properties, leaf);
-      if (parentSchema.extensible === false && !declared) return `第${number}个insert试图扩展不可扩展的Schema对象`;
-    } else if (parentSchema.type === 'array') {
-      if (parentSchema.extensible !== true) return `第${number}个insert试图扩展不可扩展的Schema数组`;
-    } else return `第${number}个insert的父Schema不是集合`;
-  }
-  return null;
-}
-
 export function validatePatchOperations(currentData, operations) {
   const before = deepClone(statDataOf(currentData));
   const expected = deepClone(before);
@@ -947,8 +727,6 @@ export function validatePatchOperations(currentData, operations) {
     if (operationPaths.some(doctorOwnedProfilePath)) {
       return { ok: false, code: 'profile-root-owned-by-profile-doctor', error: `第${number}个操作越权触碰${PROFILE_ROOT}；变量医生不得与人物档案提交竞争` };
     }
-    const schemaError = validateOperationSchema(currentData, operation, number);
-    if (schemaError) return { ok: false, code: 'schema_incompatible', error: schemaError };
     if (operation.op === 'move') {
       const source = pointerParent(expected, operation.from);
       const destination = pointerParent(expected, operation.to);
@@ -983,11 +761,9 @@ export function validatePatchOperations(currentData, operations) {
       } else parent.parent[parent.key] = deepClone(operation.value);
     } else if (operation.op === 'replace') {
       if (!hit.found) return { ok: false, error: `第${number}个replace目标不存在：${operation.path}` };
-      if (isValueWithDescription(hit.value)) {
-        if (operation.value && typeof operation.value === 'object') return { ok: false, error: `第${number}个replace必须只写值与说明结构的第一格：${operation.path}` };
+      if (isValueWithDescription(hit.value) && (!operation.value || typeof operation.value !== 'object')) {
         parent.parent[parent.key][0] = deepClone(operation.value);
       } else {
-        if (hit.value && typeof hit.value === 'object') return { ok: false, error: `第${number}个replace试图整体覆盖复杂节点：${operation.path}` };
         parent.parent[parent.key] = deepClone(operation.value);
       }
     } else if (operation.op === 'delta') {
@@ -1037,20 +813,6 @@ export function verifyPatchApplication(data, validation, allowPaths = []) {
   });
   const errors = [...targetErrors.map((item) => item.message), ...unexpected.slice(0, 12).map((change) => `补丁外路径发生变化：${change.path}`)];
   return { ok: errors.length === 0, errors, targetErrors, unexpected };
-}
-
-export function partitionVariableOperationsByApplication(operations = [], application = null) {
-  const failedPaths = [...new Set((application?.targetErrors || []).map((item) => item?.path).filter(Boolean))];
-  if (!failedPaths.length) return { accepted: deepClone(operations), rejected: [], failedPaths };
-  const accepted = [];
-  const rejected = [];
-  for (const operation of operations || []) {
-    const paths = operation?.op === 'move' ? [operation?.from, operation?.to] : [operation?.path];
-    const hits = failedPaths.filter((failed) => paths.filter(Boolean).some((path) => pathOverlaps(path, failed)));
-    if (hits.length) rejected.push({ operation: deepClone(operation), failedPaths: hits });
-    else accepted.push(deepClone(operation));
-  }
-  return { accepted, rejected, failedPaths };
 }
 
 export function restoreTouchedData(currentData, beforeData, rollbackPaths = []) {
@@ -1103,39 +865,68 @@ export function verifyPathSnapshot(data, snapshot = []) {
   });
 }
 
-export function mergeUpdateVariableBlocks(originalMessage, correctionMessage) {
-  const original = parseUpdateVariableBlock(originalMessage);
-  const correction = parseUpdateVariableBlock(correctionMessage);
-  if (!correction.ok) return correction;
+export function replaceUpdateVariableBlock(originalMessage, replacementMessage) {
+  const replacement = parseUpdateVariableBlock(replacementMessage);
+  if (!replacement.ok) return replacement;
   const source = String(originalMessage || '');
   const completeBlocks = [...source.matchAll(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable\s*>/gi)];
   const openTags = [...source.matchAll(/<UpdateVariable\b[^>]*>/gi)];
   const closeTags = [...source.matchAll(/<\/UpdateVariable\s*>/gi)];
-  if (openTags.length !== closeTags.length || openTags.length > 1 || closeTags.length > 1 || completeBlocks.length > 1) {
+  const parsedOriginal = parseUpdateVariableBlock(source);
+  const recoveredOriginal = parsedOriginal.ok && parsedOriginal.recoveredEnvelope
+    && Number.isInteger(parsedOriginal.sourceStart) && parsedOriginal.sourceStart >= 0
+    && Number.isInteger(parsedOriginal.sourceEnd) && parsedOriginal.sourceEnd > parsedOriginal.sourceStart;
+  if (openTags.length > 1 || closeTags.length > 1 || completeBlocks.length > 1
+    || (!recoveredOriginal && openTags.length !== closeTags.length)) {
     return {
       ok: false,
       code: 'ambiguous-original-envelope',
-      error: `原正文的UpdateVariable边界不可唯一证明（开始${openTags.length}个、结束${closeTags.length}个、完整${completeBlocks.length}个），拒绝追加或猜测替换`,
+      error: `原正文的UpdateVariable边界不可唯一证明（开始${openTags.length}个、结束${closeTags.length}个、完整${completeBlocks.length}个）`,
       operations: [],
     };
   }
-  const operations = [...(original.ok ? original.operations : []), ...correction.operations];
-  const block = buildUpdateVariableBlock(operations, '保留原变量更新，并追加医生已验证的纠错。');
-  let replaced;
+  const block = buildUpdateVariableBlock(replacement.operations, replacement.analysis || '变量医生提交本回合完整替换块。');
+  let message;
   let mode;
-  if (completeBlocks.length === 1) {
+  if (recoveredOriginal) {
+    message = `${source.slice(0, parsedOriginal.sourceStart)}${block}${source.slice(parsedOriginal.sourceEnd)}`;
+    mode = 'replace-recovered-envelope';
+  } else if (completeBlocks.length === 1) {
     const match = completeBlocks[0];
-    replaced = `${source.slice(0, match.index)}${block}${source.slice(Number(match.index) + match[0].length)}`.replace(/\n{3,}/g, '\n\n').trim();
-    mode = original.ok ? 'merge-valid' : 'replace-invalid-bounded';
+    message = `${source.slice(0, Number(match.index))}${block}${source.slice(Number(match.index) + match[0].length)}`;
+    mode = parsedOriginal.ok ? 'replace-valid' : 'replace-invalid-bounded';
   } else {
-    replaced = `${source.trim()}\n\n${block}`.trim();
+    message = `${source.trim()}\n\n${block}`;
     mode = 'append-missing';
   }
-  const verified = parseUpdateVariableBlock(replaced);
-  if (!verified.ok || !semanticJsonEqual(verified.operations, operations)) {
-    return { ok: false, code: 'merged-block-verification-failed', error: `合并后的正文没有形成唯一且等价的变量块：${verified.error || '操作读回不一致'}`, operations: [] };
+  message = message.replace(/\n{3,}/g, '\n\n').trim();
+  const verified = parseUpdateVariableBlock(message);
+  if (!verified.ok || !semanticJsonEqual(verified.operations, replacement.operations)) {
+    return { ok: false, code: 'replacement-block-verification-failed', error: `完整替换块写回后无法唯一读回：${verified.error || '操作不一致'}`, operations: [] };
   }
-  return { ok: true, operations, block, message: replaced, mode };
+  return { ok: true, operations: replacement.operations, block, message, mode };
+}
+
+export async function refreshHostMessageSurface(host, messageId, message) {
+  const result = { rendered: false, eventEmitted: false, errors: [] };
+  if (typeof host?.updateMessageBlock === 'function') {
+    try {
+      await Promise.resolve(host.updateMessageBlock(messageId, message));
+      result.rendered = true;
+    } catch (error) {
+      result.errors.push(`updateMessageBlock失败：${error?.message || error}`);
+    }
+  } else result.errors.push('宿主未提供updateMessageBlock');
+  const eventName = host?.eventTypes?.MESSAGE_UPDATED || host?.event_types?.MESSAGE_UPDATED || 'message_updated';
+  if (typeof host?.eventSource?.emit === 'function') {
+    try {
+      await Promise.resolve(host.eventSource.emit(eventName, messageId));
+      result.eventEmitted = true;
+    } catch (error) {
+      result.errors.push(`MESSAGE_UPDATED发送失败：${error?.message || error}`);
+    }
+  } else result.errors.push('宿主未提供MESSAGE_UPDATED事件接口');
+  return result;
 }
 
 export function parseProfileReceipt(message) {
@@ -1741,7 +1532,10 @@ export function mergeProfileCandidates(previousProfiles, incomingProfiles) {
   return merged;
 }
 
-const REACHABLE_KNOWLEDGE_SOURCE = /(?:亲历|亲眼|目睹|观察|听见|听到|告诉|当面(?:告知|说明|交谈|告诉)|获(?:得)?告知|被告知|调查|查证|侦察|查阅|阅读|公开资料|公告|广播|传闻|报告|书信|记录|证据|职业训练|训练所学|学习所得|自身记忆|根据[^：:]{0,24}(?:推断|判断)|来源[：:])/u;
+const SYSTEM_KNOWLEDGE_SOURCE = /(?:经|通过|由)?(?:系统|程序|资料库|数据库)(?:授权|权限|读取|检索|提供|同步|告知|记录)|(?:系统|程序)(?:权限|接口)|权限(?:读取|检索|获知|掌握)/u;
+const SYSTEM_ACTOR_IDENTITY = /(?:系统(?:单元|终端|代理|程序|助手|引导)|程序(?:实体|代理|单元)|人工智能|\bAI\b|构装(?:体|单元)|资料库终端|数据库终端|后台代理)/iu;
+const SYSTEM_ACCESS_CAPABILITY = /(?:(?:系统|程序|资料库|数据库).{0,16}(?:授权|权限|读取|检索|接口)|(?:授权|权限).{0,12}(?:系统|程序|资料库|数据库).{0,12}(?:读取|检索|接口))/u;
+const REACHABLE_KNOWLEDGE_SOURCE = /(?:亲历|亲眼|目睹|观察|听见|听到|告诉|当面(?:告知|说明|交谈|告诉)|获(?:得)?告知|被告知|调查|查证|侦察|查阅|阅读|公开资料|公告|广播|传闻|报告|书信|记录|证据|职业训练|训练所学|学习所得|自身记忆|根据[^：:]{0,24}(?:推断|判断)|来源[：:]|(?:经|通过|由)?(?:系统|程序|资料库|数据库)(?:授权|权限|读取|检索|提供|同步|告知|记录)|权限(?:读取|检索|获知|掌握))/u;
 
 function sharedCjkBigrams(left, right) {
   const grams = (value) => {
@@ -1776,10 +1570,31 @@ function actorReachableNarrative(profile, narrative) {
     .join('\n');
 }
 
+function profileSupportsSystemKnowledge(profile, narrative = '') {
+  const identitySurface = [
+    profile?.name,
+    profile?.identity?.species,
+    profile?.identity?.occupation,
+    profile?.identity?.affiliation,
+    profile?.identity?.socialPosition,
+    profile?.history,
+  ].map(cleanText).filter(Boolean).join('\n');
+  const accessSurface = [
+    ...(asList(profile?.capabilities)),
+    ...(asList(profile?.resources)),
+    ...(asList(profile?.evidence)),
+    String(narrative || '').split(/(?<=[。！？!?\n])/u)
+      .filter((sentence) => normalizedNames(profile).some((name) => sentence.toLocaleLowerCase().includes(name)))
+      .slice(0, 12),
+  ].map(cleanText).filter(Boolean).join('\n');
+  return SYSTEM_ACTOR_IDENTITY.test(identitySurface) && SYSTEM_ACCESS_CAPABILITY.test(`${identitySurface}\n${accessSurface}`);
+}
+
 function knowledgeEntryHasReachableSource(value, profile = {}, narrative = '') {
   if (typeof value === 'string') {
     const text = value.trim();
     if (!REACHABLE_KNOWLEDGE_SOURCE.test(text)) return false;
+    if (SYSTEM_KNOWLEDGE_SOURCE.test(text)) return profileSupportsSystemKnowledge(profile, narrative);
     if (/(?:职业训练|训练所学|学习所得|自身记忆)/u.test(text)) {
       return Boolean(cleanText(profile?.identity?.occupation) || cleanText(profile?.history));
     }
@@ -1795,6 +1610,7 @@ function knowledgeEntryHasReachableSource(value, profile = {}, narrative = '') {
   const source = cleanText(value.source || value.origin || value.learnedFrom || value.evidence);
   const content = cleanText(value.content || value.fact || value.knowledge || value.text);
   if (!source || !content || !REACHABLE_KNOWLEDGE_SOURCE.test(`来源：${source}`)) return false;
+  if (SYSTEM_KNOWLEDGE_SOURCE.test(source)) return profileSupportsSystemKnowledge(profile, narrative);
   if (!String(narrative || '').trim()) return true;
   return knowledgeEntryHasReachableSource(`${source}：${content}`, profile, narrative);
 }
@@ -1944,7 +1760,7 @@ export function prepareProfileBatch(rawProfiles, tickets, currentData, acceptedT
       : asList(profile.knowledge).filter(meaningfulProfileListItem);
     const unreachableKnowledge = knowledgeToValidate.filter((entry) => !knowledgeEntryHasReachableSource(entry, profile, profileNarrativeText(acceptedText)));
     if (unreachableKnowledge.length) {
-      localErrors.push(`第${index + 1}张档案新增knowledge缺少人物可达来源（亲历、获告知、调查、查阅、公开资料或职业训练）：${unreachableKnowledge.map((entry) => cleanText(typeof entry === 'string' ? entry : entry?.content || entry?.fact || '未说明内容')).slice(0, 3).join('；')}`);
+      localErrors.push(`第${index + 1}张档案新增knowledge缺少人物可达来源（亲历、获告知、调查、查阅、公开资料、职业训练，或有身份/能力依据的系统授权读取）：${unreachableKnowledge.map((entry) => cleanText(typeof entry === 'string' ? entry : entry?.content || entry?.fact || '未说明内容')).slice(0, 3).join('；')}`);
     }
     if (profileId && usedIds.has(profileId)) localErrors.push(`档案批次内profileId重复：${profileId}`);
     localErrors.push(...profileCompletenessReport(profile, `第${index + 1}张档案`).errors);
@@ -2047,7 +1863,13 @@ export function diagnosticAdvice(kind, detail) {
   const code = String(kind || '').trim().toLocaleLowerCase();
   const detailText = String(detail || '');
   if (code === 'completed') {
-    return { severity: 'success', summary: '本轮人物档案和世界状态已经完成。', action: '无需处理。' };
+    return { severity: 'success', summary: '本轮MVU完整替换块、人物档案和世界状态已经完成。', action: '无需处理。' };
+  }
+  if (code === 'variable_nochange_unproven') {
+    return { severity: 'warning', summary: '变量模型没有提出本回合变化，但脚本不会把模型判断冒充绝对正确。', action: '若你在正文或面板发现具体疑点，请填写后点击“重新检查当前MVU变量”。' };
+  }
+  if (code === 'surface_refresh_failed') {
+    return { severity: 'warning', summary: '数据已经持久化，但酒馆消息面板没有完整自动刷新。', action: '请手动刷新当前聊天；完整详情保留在本条诊断中，已确认数据不会因此回滚。' };
   }
   if (code === 'world_recovered') {
     return { severity: 'success', summary: '上次中断的世界候选已经从持久检查点恢复并完成读回。', action: '无需重复推进；可在“世界”页核对修订号和提交摘要。' };

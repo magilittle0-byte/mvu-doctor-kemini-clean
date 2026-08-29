@@ -7,7 +7,7 @@
   "css": "style.css",
   "generate_interceptor": "mvuDoctorKeminiGenerateInterceptor",
   "author": "magilittle0-byte & Codex",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "homePage": "https://github.com/magilittle0-byte/mvu-doctor-kemini-clean",
   "auto_update": true
 }

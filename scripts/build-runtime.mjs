@@ -31,7 +31,7 @@ function withRuntimeVersion(indexSource, version) {
 }
 
 function embeddedCoreBlock(coreSource) {
-  const exportNames = [...coreSource.matchAll(/^export\s+(?:const|function)\s+([A-Za-z_$][\w$]*)/gm)]
+  const exportNames = [...coreSource.matchAll(/^export\s+(?:const|(?:async\s+)?function)\s+([A-Za-z_$][\w$]*)/gm)]
     .map((match) => match[1]);
   if (!exportNames.includes('generateTicketBatch') || !exportNames.includes('prepareProfileBatch')) {
     throw new Error('core export discovery failed');
