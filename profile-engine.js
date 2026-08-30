@@ -474,7 +474,7 @@
     for (const match of content.matchAll(/(?:^|[。！？!?\n])\s*([\p{Script=Han}A-Za-z·]{2,12})\s*(?:说道|问道|答道|笑道|开口|低声说|轻声说)/gu)) add(match[1]);
     // Only the short subject immediately after a sentence boundary is hard.
     // Longer natural-language fragments remain model-owned soft evidence.
-    for (const match of content.matchAll(/(?:^|[。！？!?；;\n，“”])\s*([\p{Script=Han}]{2,4})(?:微微|轻轻|缓缓|悄悄|偷偷|忽然|突然|随即|慢慢|默默)?\s*(?:把|点头|摇头|伸手|皱眉|挑眉|眨眼|开口|回答|笑着|笑道|收起|记下|写下|藏起|抬眼|垂眼)/gu)) {
+    for (const match of content.matchAll(/(?:^|[。！？!?；;\n，“”])\s*([\p{Script=Han}]{2,4}?)(?:微微|轻轻|缓缓|悄悄|偷偷|忽然|突然|随即|慢慢|默默|又|也|正|还|便|就|才|已|再|仍)?\s*(?:把|点头|摇头|伸手|皱眉|挑眉|眨眼|开口|回答|笑着|笑道|收起|记下|写下|藏起|抬眼|垂眼)/gu)) {
       const subject = match[1];
       if (!PLAYER_PROSE_PREFIX.test(subject) && !SUBJECT_FUNCTION_SUFFIX.test(subject)) add(subject);
     }

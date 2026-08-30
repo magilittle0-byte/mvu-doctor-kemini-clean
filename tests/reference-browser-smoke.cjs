@@ -765,6 +765,22 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
+    await t.test('short named action subjects keep adverbs and connectors outside the name', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page, '白露偷偷把纸片收好。白露微微点头。白露又把药囊系紧。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+        }));
+        assert.equal(Object.keys(evidence.profiles).length, 1);
+        assert.equal(evidence.result.ok, true);
+        assert.equal(evidence.result.profile.count, 1);
+      } finally { await page.close(); }
+    });
+
     await t.test('all MVU reads and writes stay pinned to the accepted numeric message id', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
