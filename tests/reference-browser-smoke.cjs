@@ -749,6 +749,22 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
+    await t.test('player prose before action verbs never becomes a mandatory NPC', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page, '你若有所思地点了点头，看看系统会把什么显示出来。白露说道：“我先看看。”');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+        }));
+        assert.equal(Object.keys(evidence.profiles).length, 1);
+        assert.equal(evidence.result.ok, true);
+        assert.equal(evidence.result.profile.count, 1);
+      } finally { await page.close(); }
+    });
+
     await t.test('all MVU reads and writes stay pinned to the accepted numeric message id', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
