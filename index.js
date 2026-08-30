@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const VERSION = '0.8.5-reference-baseline';
+  const VERSION = '0.8.6-reference-baseline';
   const WORLD_VERSION = '3.0.2';
   const WORLD_GLOBALS = ['WORLD_ENGINE_STORE', 'WORLD_ENGINE_CORE', 'WORLD_ENGINE_API'];
   const WORLD_SETTINGS_KEY = 'world_engine_settings';
@@ -203,8 +203,8 @@
       status,
       detail: String(detail || ''),
       references: {
-        storyOracle: 'Story Oracle 1.35.4',
-        profileFill: 'Life State Engine 5.35 transaction chain',
+        storyOracle: 'Story Oracle 1.35.4 diagnostic components with pinned-message adapter',
+        profileFill: 'Doctor profile fill using Life State Engine 5.35 tolerant parser and one directed repair',
         worldEngine: 'Disnight World Engine 3.0.2',
       },
     };
@@ -250,7 +250,7 @@
     window.MVUDoctorProfileEngine.installWorldContextBridge?.();
 
     exposeBootStatus('ready');
-    console.info(`[MVU Doctor] ${VERSION} 参考原版运行链已就绪`);
+    console.info(`[MVU Doctor] ${VERSION} 成熟组件适配链已就绪`);
   }
 
   window.mvuDoctorKeminiGenerateInterceptor = async function(...args) {
@@ -261,7 +261,7 @@
 
   boot().catch((error) => {
     exposeBootStatus('failed', error?.message || error);
-    console.error('[MVU Doctor] 参考原版运行链初始化失败', error);
+    console.error('[MVU Doctor] 成熟组件适配链初始化失败', error);
     try { window.toastr?.error?.(error?.message || String(error), 'MVU Doctor 初始化失败'); } catch { /* no-op */ }
   });
 })();

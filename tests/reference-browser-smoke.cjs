@@ -73,19 +73,102 @@ function profileEnvelope(profile = completeProfile) {
   return JSON.stringify({ detectedCharacters: [profile.name], noProfileReason: '', profiles: [profile] });
 }
 
+function discoveryEnvelope(names = ['白露'], reason = '') {
+  return JSON.stringify({
+    detectedCharacters: names,
+    noCharacterReason: names.length ? '' : reason,
+  });
+}
+
 async function installHarness(page, options = {}) {
   const profileReplies = Array.isArray(options.profileReplies)
     ? options.profileReplies
-    : [profileEnvelope()];
+    : [profileEnvelope(), JSON.stringify({
+      detectedCharacters: [], profiles: [],
+      noProfileReason: '本轮没有需要新增或修复的人物，已有完整人物只作背景连续性参考',
+    })];
+  const discoveryReplies = Array.isArray(options.discoveryReplies)
+    ? options.discoveryReplies
+    : Array.from({ length: 8 }, () => discoveryEnvelope());
   await page.route('https://mvu-doctor.test/**', (route) => route.fulfill({
     status: 200,
     contentType: 'text/html',
     body: '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main id="chat"></main></body></html>',
   }));
   await page.goto('https://mvu-doctor.test/');
-  await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); });
+  await page.evaluate(async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase('world_engine');
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error || new Error('failed to reset world_engine test database'));
+      request.onblocked = () => reject(new Error('world_engine test database reset blocked'));
+    });
+  });
   await page.addStyleTag({ content: styleSource });
-  await page.evaluate(({ profileReplies: replies, slowProfile, slowMetadata, diagnosisReply, diagnosisReplies, mvuPatchMode, worldFailOnce, saveChatFailOnce }) => {
+  await page.evaluate(({ profileReplies: replies, discoveryReplies: suppliedDiscoveryReplies, slowProfile, slowMetadata, diagnosisReply, diagnosisReplies, mvuPatchMode, worldFailOnce, saveChatFailOnce, saveMetadataFailOnce, initialMvuState }) => {
+    const durableKv = new Map();
+    let remainingSlowProfileWrites = 0;
+    let remainingProfileWriteFailures = 0;
+    let resolveDurableWrite = null;
+    const durableDatabase = {
+      objectStoreNames: { contains: (name) => name === 'kv' },
+      createObjectStore() {},
+      transaction(_storeName, mode) {
+        const pendingWrites = [];
+        const pendingReads = [];
+        let shouldFail = false;
+        const transaction = {
+          error: null,
+          oncomplete: null,
+          onerror: null,
+          onabort: null,
+          objectStore() {
+            return {
+              put(value, key) { pendingWrites.push([String(key), String(value)]); },
+              get(key) {
+                const request = { result: undefined, error: null, onsuccess: null, onerror: null };
+                pendingReads.push([String(key), request]);
+                return request;
+              },
+            };
+          },
+        };
+        const finish = () => {
+          if (shouldFail) {
+            transaction.error = new Error('synthetic IndexedDB transaction failure');
+            transaction.onabort?.();
+            return;
+          }
+          for (const [key, value] of pendingWrites) durableKv.set(key, value);
+          for (const [key, request] of pendingReads) {
+            request.result = durableKv.get(key);
+            request.onsuccess?.();
+          }
+          transaction.oncomplete?.();
+        };
+        setTimeout(() => {
+          const isProfileWrite = mode === 'readwrite'
+            && pendingWrites.some(([key]) => key.startsWith('mvuDoctorReferenceProfileStore:'));
+          const shouldDelay = isProfileWrite && remainingSlowProfileWrites > 0;
+          shouldFail = isProfileWrite && remainingProfileWriteFailures > 0;
+          if (shouldDelay) remainingSlowProfileWrites -= 1;
+          if (shouldFail) remainingProfileWriteFailures -= 1;
+          if (shouldDelay) resolveDurableWrite = finish;
+          else finish();
+        }, 0);
+        return transaction;
+      },
+    };
+    const fakeIndexedDb = {
+      open() {
+        const request = { result: durableDatabase, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
+        setTimeout(() => request.onsuccess?.(), 0);
+        return request;
+      },
+    };
+    Object.defineProperty(window, 'indexedDB', { configurable: true, value: fakeIndexedDb });
     const listeners = new Map();
     const eventSource = {
       on(name, handler) {
@@ -102,10 +185,18 @@ async function installHarness(page, options = {}) {
     let profileReplyIndex = 0;
     let activeDiagnosisReply = diagnosisReply;
     let queuedDiagnosisReplies = Array.isArray(diagnosisReplies) ? diagnosisReplies.map(String) : [];
+    let queuedDiscoveryReplies = Array.isArray(suppliedDiscoveryReplies) ? suppliedDiscoveryReplies.map(String) : [];
     let pendingProfile = null;
-    let worldRound = 0;
+    let worldState = {
+      round: 0,
+      worldDigest: 'WORLD_BASE_SENTINEL',
+      blackbox: { secretAssets: ['暗线账本'] },
+      model: '剧情内部模型字段',
+    };
+    let worldCheckpoint = null;
     let remainingWorldFailures = worldFailOnce ? 1 : 0;
     let remainingSlowMetadata = slowMetadata ? 1 : 0;
+    let remainingSaveMetadataFailures = saveMetadataFailOnce ? 1 : 0;
     let remainingSaveChatFailures = saveChatFailOnce ? 1 : 0;
     let resolveMetadata = null;
     const worldSettings = {
@@ -131,9 +222,17 @@ async function installHarness(page, options = {}) {
         GENERATION_ENDED: 'generation_ended', GENERATION_STOPPED: 'generation_stopped',
         MESSAGE_RECEIVED: 'message_received', MESSAGE_SWIPED: 'message_swiped', CHAT_LOADED: 'chat_loaded',
       },
-      updateChatMetadata(update) { Object.assign(this.chatMetadata, update); },
+      updateChatMetadata(update, reset) {
+        const next = reset ? { ...update } : { ...metadataByChat[activeChat], ...update };
+        metadataByChat[activeChat] = next;
+        context.chatMetadata = next;
+      },
       async saveMetadata() {
-        window.__saves.push({ chatId: this.chatId, snapshot: structuredClone(this.chatMetadata) });
+        window.__saves.push({ chatId: activeChat, snapshot: structuredClone(metadataByChat[activeChat]) });
+        if (remainingSaveMetadataFailures > 0) {
+          remainingSaveMetadataFailures -= 1;
+          throw new Error('synthetic saveMetadata failure');
+        }
         if (remainingSlowMetadata > 0) {
           remainingSlowMetadata -= 1;
           await new Promise((resolve) => { resolveMetadata = resolve; });
@@ -152,6 +251,9 @@ async function installHarness(page, options = {}) {
     window.__mvuReads = [];
     window.__saves = [];
     window.__downloads = [];
+    window.__profilePrompts = [];
+    window.__modelCalls = [];
+    window.__discoveryCalls = 0;
     window.__metadataByChat = metadataByChat;
     window.__context = context;
     window.__emit = (...args) => eventSource.emit(...args);
@@ -170,11 +272,18 @@ async function installHarness(page, options = {}) {
       current?.resolve(value);
     };
     window.__resolveMetadata = () => { const resolve = resolveMetadata; resolveMetadata = null; resolve?.(); };
+    window.__slowNextMetadata = () => { remainingSlowMetadata += 1; };
+    window.__failNextSaveMetadata = () => { remainingSaveMetadataFailures += 1; };
+    window.__metadataPending = () => Boolean(resolveMetadata);
+    window.__slowNextDurableWrite = () => { remainingSlowProfileWrites += 1; };
+    window.__failNextDurableWrite = () => { remainingProfileWriteFailures += 1; };
+    window.__durableWritePending = () => Boolean(resolveDurableWrite);
+    window.__resolveDurableWrite = () => { const resolve = resolveDurableWrite; resolveDurableWrite = null; resolve?.(); };
     window.__setDiagnosisReply = (value) => { activeDiagnosisReply = String(value); queuedDiagnosisReplies = []; };
     window.__failNextSaveChat = () => { remainingSaveChatFailures += 1; };
     window.SillyTavern = { getContext: () => context };
 
-    const mvuState = { hp: 10 };
+    const mvuState = structuredClone(initialMvuState);
     const storyFixCfg = { autoFixEnabled: true };
     const mvu = {
       getMvuData: async (request) => {
@@ -238,13 +347,36 @@ async function installHarness(page, options = {}) {
       },
     };
 
+    const worldStore = new Map([['world_engine_settings', JSON.stringify(worldSettings)]]);
+    window.__worldStoreWrites = [];
+    window.__worldStore = worldStore;
     window.WORLD_ENGINE_STORE = {
-      getItem: (key) => key === 'world_engine_settings' ? JSON.stringify(worldSettings) : null,
-      setItem: (key, value) => { if (key === 'world_engine_settings') Object.assign(worldSettings, JSON.parse(value)); },
+      getItem: (key) => worldStore.has(key) ? worldStore.get(key) : null,
+      setItem: (key, value) => {
+        worldStore.set(key, String(value));
+        window.__worldStoreWrites.push({ key: String(key), value: String(value) });
+        if (key === 'world_engine_settings') Object.assign(worldSettings, JSON.parse(value));
+      },
+      removeItem: (key) => worldStore.delete(key),
+      keys: () => [...worldStore.keys()],
     };
+    window.__profileStoreWrites = () => window.__worldStoreWrites.filter((entry) => entry.key.startsWith('mvuDoctorReferenceProfileStore:'));
     window.WORLD_ENGINE_API = {
       getSettings: () => ({ ...worldSettings }),
-      async callApi(_prompt, _maxTokens, _temperature, signal) {
+      async callApi(prompt, _maxTokens, _temperature, signal) {
+        const promptText = String(prompt || '');
+        window.__profilePrompts.push(promptText);
+        const kind = promptText.includes('把下面的人物发现结果修成指定JSON')
+          ? 'discovery-repair'
+          : (promptText.includes('你只执行人物发现')
+            ? 'discovery'
+            : (promptText.includes('你正在修复一份人物档案填表结果') ? 'profile-repair' : 'profile'));
+        window.__modelCalls.push({ kind, prompt: promptText, maxTokens: Number(_maxTokens) });
+        if (kind === 'discovery' || kind === 'discovery-repair') {
+          window.__discoveryCalls += 1;
+          if (!queuedDiscoveryReplies.length) throw new Error(`unexpected ${kind} call: discovery reply queue exhausted`);
+          return queuedDiscoveryReplies.shift();
+        }
         window.__stages.push('profile');
         const reply = replies[Math.min(profileReplyIndex, replies.length - 1)];
         profileReplyIndex += 1;
@@ -257,19 +389,29 @@ async function installHarness(page, options = {}) {
     };
     window.WORLD_ENGINE_CORE = {
       getChatId: () => activeChat,
-      loadState: () => ({ round: worldRound, blackbox: { secretAssets: ['暗线账本'] }, model: '剧情内部模型字段' }),
+      loadState: () => structuredClone(worldState),
+      restoreCheckpoint: () => worldCheckpoint ? structuredClone(worldCheckpoint) : null,
+      saveCheckpoint: (value) => { worldCheckpoint = structuredClone(value); },
+      saveState: (value) => { worldState = structuredClone(value); },
     };
     window.WORLD_ENGINE_WORLDBOOK = { buildPromptSection: async () => '原版世界后台提示' };
     window.WORLD_ENGINE_INJECT = { buildContext: (state) => JSON.stringify(state) };
     window.WORLD_ENGINE = {
       async manualEvolve(mode, reason) {
         window.__stages.push('world');
-        window.__worldCalls.push({ mode, reason, beforeRound: worldRound });
+        const promptSection = await window.WORLD_ENGINE_WORLDBOOK.buildPromptSection();
+        const injection = window.WORLD_ENGINE_INJECT.buildContext(window.WORLD_ENGINE_CORE.loadState());
+        const before = structuredClone(worldState);
+        window.__worldCalls.push({ mode, reason, beforeRound: before.round, beforeDigest: before.worldDigest, promptSection, injection });
         if (remainingWorldFailures > 0) {
           remainingWorldFailures -= 1;
           return false;
         }
-        if (mode === 'forward') worldRound += 1;
+        if (mode === 'forward') {
+          worldCheckpoint = structuredClone(before);
+          worldState.round += 1;
+        }
+        worldState.worldDigest = context.chat.at(-1)?.mes || worldState.worldDigest;
         return true;
       },
     };
@@ -287,6 +429,7 @@ async function installHarness(page, options = {}) {
     };
   }, {
     profileReplies,
+    discoveryReplies,
     slowProfile: Boolean(options.slowProfile),
     diagnosisReply: options.diagnosisReply || '<JSONPatch>[]</JSONPatch>',
     diagnosisReplies: Array.isArray(options.diagnosisReplies) ? options.diagnosisReplies : [],
@@ -294,6 +437,11 @@ async function installHarness(page, options = {}) {
     worldFailOnce: Boolean(options.worldFailOnce),
     slowMetadata: Boolean(options.slowMetadata),
     saveChatFailOnce: Boolean(options.saveChatFailOnce),
+    saveMetadataFailOnce: Boolean(options.saveMetadataFailOnce),
+    initialMvuState: options.initialMvuState || {
+      hp: 10,
+      契约者: { 当前敌人: { 白露: { 姓名: '白露' } } },
+    },
   });
   await page.addScriptTag({ content: runtimeSource });
   await page.waitForFunction(() => window.MVUDoctorProfileEngine?.ready === true);
@@ -370,7 +518,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
+test('0.8.6 reference runtime browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -379,7 +527,7 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       try {
         await installHarness(page);
         await page.locator('#mvu-ref-launcher').click();
-        for (const viewport of [{ width: 1366, height: 768 }, { width: 390, height: 844 }]) {
+        for (const viewport of [{ width: 1366, height: 768 }, { width: 390, height: 844 }, { width: 390, height: 200 }]) {
           await page.setViewportSize(viewport);
           const geometry = await page.evaluate(() => {
             const rect = document.getElementById('mvu-ref-panel').getBoundingClientRect();
@@ -396,6 +544,65 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           assert.ok(geometry.bodyWidth <= geometry.viewportWidth + 1, JSON.stringify(geometry));
           assert.ok(geometry.width >= Math.min(360, viewport.width - 2), JSON.stringify(geometry));
         }
+      } finally { await page.close(); }
+    });
+
+    await t.test('mobile panel tracks real visualViewport height and offset below 240px', async () => {
+      const page = await browser.newPage({ viewport: { width: 390, height: 720 } });
+      try {
+        await page.addInitScript(() => {
+          const state = { height: 219, offsetTop: 31 };
+          const viewport = new EventTarget();
+          Object.defineProperties(viewport, {
+            height: { get: () => state.height },
+            width: { get: () => innerWidth },
+            offsetTop: { get: () => state.offsetTop },
+            offsetLeft: { get: () => 0 },
+            pageTop: { get: () => state.offsetTop },
+            pageLeft: { get: () => 0 },
+            scale: { get: () => 1 },
+          });
+          Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+          window.__setSyntheticVisualViewport = (height, offsetTop) => {
+            state.height = height;
+            state.offsetTop = offsetTop;
+            viewport.dispatchEvent(new Event('resize'));
+            viewport.dispatchEvent(new Event('scroll'));
+          };
+        });
+        await installHarness(page);
+        await page.locator('#mvu-ref-launcher').click();
+        const snapshot = () => page.evaluate(() => {
+          const panel = document.getElementById('mvu-ref-panel').getBoundingClientRect();
+          const close = document.querySelector('#mvu-ref-panel header > button').getBoundingClientRect();
+          const root = document.documentElement.style;
+          return {
+            panel: { top: panel.top, bottom: panel.bottom, height: panel.height },
+            close: { top: close.top, bottom: close.bottom },
+            visual: {
+              top: visualViewport.offsetTop, height: visualViewport.height,
+              bottom: visualViewport.offsetTop + visualViewport.height,
+            },
+            cssTop: root.getPropertyValue('--mvu-ref-visual-top'),
+            cssHeight: root.getPropertyValue('--mvu-ref-visual-height'),
+          };
+        });
+        let geometry = await snapshot();
+        assert.equal(geometry.cssTop, '31px');
+        assert.equal(geometry.cssHeight, '219px');
+        assert.ok(geometry.panel.top >= geometry.visual.top + 7, JSON.stringify(geometry));
+        assert.ok(geometry.panel.bottom <= geometry.visual.bottom - 7, JSON.stringify(geometry));
+        assert.ok(geometry.close.top >= geometry.visual.top && geometry.close.bottom <= geometry.visual.bottom, JSON.stringify(geometry));
+
+        await page.evaluate(() => window.__setSyntheticVisualViewport(173, 83));
+        await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--mvu-ref-visual-height') === '173px');
+        geometry = await snapshot();
+        assert.equal(geometry.cssTop, '83px');
+        assert.equal(geometry.cssHeight, '173px');
+        assert.ok(geometry.panel.height >= 1, JSON.stringify(geometry));
+        assert.ok(geometry.panel.top >= geometry.visual.top + 7, JSON.stringify(geometry));
+        assert.ok(geometry.panel.bottom <= geometry.visual.bottom - 7, JSON.stringify(geometry));
+        assert.ok(geometry.close.top >= geometry.visual.top && geometry.close.bottom <= geometry.visual.bottom, JSON.stringify(geometry));
       } finally { await page.close(); }
     });
 
@@ -423,7 +630,7 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('accepted final runs diagnosis, profile and world exactly once in order', async () => {
+    await t.test('accepted final runs diagnosis, discovery, profile fill and world in the real call order', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
@@ -433,13 +640,16 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           stages: window.__stages,
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
-          saves: window.__saves,
+          profileWrites: window.__profileStoreWrites(),
+          modelCalls: window.__modelCalls,
         }));
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'profile']);
         assert.equal(evidence.runtime.lastResult.ok, true);
         assert.equal(evidence.runtime.lastResult.profile.count, 1);
+        assert.equal(evidence.runtime.lastResult.profile.modelCalls, 2);
         assert.equal(Object.keys(evidence.profiles).length, 1);
-        assert.equal(evidence.saves.length, 1);
+        assert.equal(evidence.profileWrites.length, 1);
       } finally { await page.close(); }
     });
 
@@ -459,15 +669,65 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
-          saves: window.__saves,
+          profileWrites: window.__profileStoreWrites(),
+          modelCalls: window.__modelCalls,
         }));
         const serialized = JSON.stringify(evidence.profiles);
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'world']);
+        assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'profile', 'profile-repair']);
+        assert.equal(evidence.result.profile.modelCalls, 3);
         assert.equal(evidence.result.profile.repaired, true);
         assert.match(evidence.result.profile.initialErrors.join('；'), /currentState\.location|currentState\.emotion|resources\[0\]/u);
         assert.doesNotMatch(serialized, /未知|不详|待定|未登记|未设定|暂无|正文未提及/u);
         assert.equal(Object.keys(evidence.profiles).length, 1);
-        assert.equal(evidence.saves.length, 1);
+        assert.equal(evidence.profileWrites.length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('malformed name discovery is repaired once before any profile fill', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          discoveryReplies: ['这不是可解析的名单', discoveryEnvelope()],
+          profileReplies: [profileEnvelope()],
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          modelCalls: window.__modelCalls,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+        }));
+        assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'discovery-repair', 'profile']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.result.profile.modelCalls, 3);
+        assert.equal(evidence.result.profile.repaired, true);
+        assert.match(evidence.result.profile.initialErrors.join('；'), /人物发现/u);
+        assert.equal(Object.keys(evidence.profiles).length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('an unrecoverable name discovery fails closed before profile fill and world', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          discoveryReplies: ['这不是可解析的名单', '修复后仍不是JSON'],
+          profileReplies: [profileEnvelope()],
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'failed');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          modelCalls: window.__modelCalls,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+        }));
+        assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'discovery-repair']);
+        assert.deepEqual(evidence.stages, ['diagnosis']);
+        assert.equal(evidence.result.failedStep, 'profile');
+        assert.match(evidence.result.error, /人物发现单次修复后仍不可用/u);
+        assert.equal(Object.keys(evidence.profiles).length, 0);
       } finally { await page.close(); }
     });
 
@@ -795,7 +1055,7 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
         });
         assert.equal(ticket.status, 'ended');
         assert.ok(ticket.generationKey);
-        await waitForSettled(page, 'done');
+        await waitForSettled(page, 'done', 4000);
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,
           ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
@@ -934,6 +1194,14 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
             { is_user: true, mes: '请回答。' },
             { is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] },
           ]);
+          window.WORLD_ENGINE_CORE.saveCheckpoint({
+            round: 5, worldDigest: 'WORLD_BASE_SENTINEL',
+            blackbox: { secretAssets: ['基底暗线'] },
+          });
+          window.WORLD_ENGINE_CORE.saveState({
+            round: 6, worldDigest: 'OLD_SWIPE_WORLD_SENTINEL',
+            blackbox: { secretAssets: ['旧分支暗线'] },
+          });
           await window.__emit('generation_started', 'regenerate', {}, false);
           const nextText = '白露：这是重写后的答复。';
           const message = window.__context.chat[1];
@@ -989,7 +1257,7 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           calls: window.__worldCalls.length,
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world', 'diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world', 'diagnosis', 'world']);
         assert.equal(evidence.calls, 2);
         assert.equal(evidence.checkpoint.status, 'complete');
         assert.equal(evidence.checkpoint.target.generationKey, ticket.generationKey);
@@ -1259,7 +1527,7 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('chat reroll uses original automatic-reroll world mode and preserves round', async () => {
+    await t.test('chat reroll restores the frozen World Engine checkpoint and forwards from that base', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
@@ -1269,6 +1537,9 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
             { is_user: true, mes: '请回答。' },
             { is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] },
           ]);
+          // A real rejected swipe follows an earlier forward commit, which is
+          // where frozen World Engine 3.0.2 saves the a-side checkpoint.
+          window.WORLD_ENGINE_CORE.saveCheckpoint(window.WORLD_ENGINE_CORE.loadState());
           await window.__emit('generation_started', 'regenerate', {}, false);
           const nextText = '白露：这是重写后的答复。';
           const message = window.__context.chat[1];
@@ -1295,13 +1566,339 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
         assert.equal(evidence.receipt.receivedSwipeId, 1);
         assert.equal(evidence.receipt.endObserved, false);
         assert.equal(evidence.receipt.completionScheduled, false);
-        assert.equal(evidence.call.mode, undefined);
+        assert.equal(evidence.call.mode, 'forward');
         assert.equal(evidence.call.reason, 'reroll');
-        assert.equal(evidence.result.world.beforeRound, evidence.result.world.afterRound);
+        assert.equal(evidence.call.beforeDigest, 'WORLD_BASE_SENTINEL');
+        assert.equal(evidence.result.world.mode, 'checkpoint-forward');
+        assert.equal(evidence.result.world.afterRound, evidence.result.world.beforeRound + 1);
         assert.equal(evidence.result.generationType, 'regenerate');
         assert.equal(evidence.accepted.index, 1);
         assert.equal(evidence.accepted.swipeId, 1);
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+      } finally { await page.close(); }
+    });
+
+    await t.test('reroll removes old swipe profile content before new prompts and restores each branch independently', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const oldProfile = {
+          ...structuredClone(completeProfile),
+          history: 'OLD_SWIPE_PROFILE_SENTINEL：旧分支独有经历。',
+          inferences: ['OLD_SWIPE_PROFILE_SENTINEL：旧分支推断。'],
+        };
+        const newProfile = {
+          ...structuredClone(completeProfile),
+          history: 'NEW_SWIPE_PROFILE_SENTINEL：新分支独有经历。',
+          inferences: ['NEW_SWIPE_PROFILE_SENTINEL：新分支推断。'],
+        };
+        await installHarness(page, {
+          discoveryReplies: [discoveryEnvelope(), discoveryEnvelope(), discoveryEnvelope(), discoveryEnvelope()],
+          profileReplies: [profileEnvelope(oldProfile), profileEnvelope(newProfile)],
+        });
+        const oldText = '白露把旧药囊放在左侧桌角。';
+        const newText = '白露换用新的银针，转身走向窗边。';
+        await runAcceptedReply(page, oldText);
+        await waitForSettled(page, 'done');
+        const first = await page.evaluate(() => ({
+          promptCount: window.__profilePrompts.length,
+          store: window.MVUDoctorProfileEngine.getStore(),
+        }));
+        assert.match(JSON.stringify(first.store.profiles), /OLD_SWIPE_PROFILE_SENTINEL/u);
+
+        await page.evaluate(async ({ oldReply, newReply }) => {
+          await window.__emit('generation_started', 'regenerate', {}, false);
+          const message = window.__context.chat[1];
+          message.mes = newReply;
+          message.swipe_id = 1;
+          message.swipes = [oldReply, newReply];
+          await window.__emit('message_received', 1, 'normal');
+          await window.__emit('generation_ended');
+        }, { oldReply: oldText, newReply: newText });
+        await page.waitForFunction(() => window.__worldCalls.length === 2
+          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        const rerolled = await page.evaluate((promptStart) => ({
+          prompts: window.__profilePrompts.slice(promptStart),
+          store: window.MVUDoctorProfileEngine.getStore(),
+          modelCalls: window.__modelCalls.slice(promptStart),
+          worldCall: window.__worldCalls[1],
+        }), first.promptCount);
+        assert.doesNotMatch(JSON.stringify(rerolled.prompts), /OLD_SWIPE_PROFILE_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(rerolled.store.profiles), /OLD_SWIPE_PROFILE_SENTINEL/u);
+        assert.match(JSON.stringify(rerolled.store.profiles), /NEW_SWIPE_PROFILE_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(rerolled.worldCall), /OLD_SWIPE_PROFILE_SENTINEL/u);
+        assert.match(rerolled.worldCall.promptSection, /NEW_SWIPE_PROFILE_SENTINEL/u);
+        assert.doesNotMatch(rerolled.worldCall.injection, /OLD_SWIPE_PROFILE_SENTINEL/u);
+
+        await page.evaluate(async (oldReply) => {
+          const message = window.__context.chat[1];
+          message.swipe_id = 0;
+          message.mes = oldReply;
+          await window.__emit('message_swiped', 1);
+        }, oldText);
+        await page.waitForFunction(() => {
+          try {
+            return JSON.stringify(window.MVUDoctorProfileEngine.getStore().profiles)
+              .includes('OLD_SWIPE_PROFILE_SENTINEL');
+          } catch { return false; }
+        });
+        let selected = await page.evaluate(() => JSON.stringify(window.MVUDoctorProfileEngine.getStore().profiles));
+        assert.match(selected, /OLD_SWIPE_PROFILE_SENTINEL/u);
+        assert.doesNotMatch(selected, /NEW_SWIPE_PROFILE_SENTINEL/u);
+
+        await page.evaluate(async (newReply) => {
+          const message = window.__context.chat[1];
+          message.swipe_id = 1;
+          message.mes = newReply;
+          await window.__emit('message_swiped', 1);
+        }, newText);
+        await page.waitForFunction(() => {
+          try {
+            return JSON.stringify(window.MVUDoctorProfileEngine.getStore().profiles)
+              .includes('NEW_SWIPE_PROFILE_SENTINEL');
+          } catch { return false; }
+        });
+        selected = await page.evaluate(() => JSON.stringify(window.MVUDoctorProfileEngine.getStore().profiles));
+        assert.match(selected, /NEW_SWIPE_PROFILE_SENTINEL/u);
+        assert.doesNotMatch(selected, /OLD_SWIPE_PROFILE_SENTINEL/u);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a cancelled delayed branch restore fully unwinds before the next reroll reads profiles', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const oldProfile = {
+          ...structuredClone(completeProfile),
+          history: 'DELAYED_OLD_BRANCH_SENTINEL：只能属于旧分支。',
+          inferences: ['DELAYED_OLD_BRANCH_SENTINEL：旧分支推断。'],
+        };
+        const newProfile = {
+          ...structuredClone(completeProfile),
+          history: 'CURRENT_NEW_BRANCH_SENTINEL：只能属于新分支。',
+          inferences: ['CURRENT_NEW_BRANCH_SENTINEL：新分支推断。'],
+        };
+        const finalProfile = {
+          ...structuredClone(completeProfile),
+          history: 'FINAL_REROLL_BRANCH_SENTINEL：第三分支独有经历。',
+          inferences: ['FINAL_REROLL_BRANCH_SENTINEL：第三分支推断。'],
+        };
+        await installHarness(page, {
+          discoveryReplies: [
+            discoveryEnvelope(), discoveryEnvelope(), discoveryEnvelope(),
+            discoveryEnvelope(), discoveryEnvelope(), discoveryEnvelope(),
+          ],
+          profileReplies: [profileEnvelope(oldProfile), profileEnvelope(newProfile), profileEnvelope(finalProfile)],
+        });
+        const oldText = '白露把旧药囊放在左侧桌角。';
+        const newText = '白露换用新的银针，转身走向窗边。';
+        const finalText = '白露收起银针，拿起第三只青瓷药盒。';
+        await runAcceptedReply(page, oldText);
+        await waitForSettled(page, 'done');
+        await page.evaluate(async ({ oldReply, newReply }) => {
+          await window.__emit('generation_started', 'regenerate', {}, false);
+          const message = window.__context.chat[1];
+          message.mes = newReply;
+          message.swipe_id = 1;
+          message.swipes = [oldReply, newReply];
+          await window.__emit('message_received', 1, 'normal');
+          await window.__emit('generation_ended');
+        }, { oldReply: oldText, newReply: newText });
+        await page.waitForFunction(() => window.__worldCalls.length === 2
+          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+
+        const promptStart = await page.evaluate(() => window.__profilePrompts.length);
+        await page.evaluate(async (oldReply) => {
+          window.__slowNextDurableWrite();
+          const message = window.__context.chat[1];
+          message.swipe_id = 0;
+          message.mes = oldReply;
+          await window.__emit('message_swiped', 1);
+        }, oldText);
+        await page.waitForFunction(() => window.__durableWritePending());
+
+        await page.evaluate(async ({ oldReply, newReply, finalReply }) => {
+          await window.__emit('generation_started', 'regenerate', {}, false);
+          const message = window.__context.chat[1];
+          message.mes = finalReply;
+          message.swipe_id = 2;
+          message.swipes = [oldReply, newReply, finalReply];
+          await window.__emit('message_received', 1, 'normal');
+          await window.__emit('generation_ended');
+        }, { oldReply: oldText, newReply: newText, finalReply: finalText });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        let blocked = await page.evaluate(() => ({
+          worldCalls: window.__worldCalls.length,
+          prompts: window.__profilePrompts.length,
+        }));
+        assert.equal(blocked.worldCalls, 2);
+        assert.equal(blocked.prompts, promptStart);
+
+        await page.evaluate(() => window.__resolveDurableWrite());
+        await page.waitForFunction(() => window.__worldCalls.length === 3
+          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done', null, { timeout: 8000 });
+        const evidence = await page.evaluate((fromPrompt) => ({
+          prompts: window.__profilePrompts.slice(fromPrompt),
+          store: window.MVUDoctorProfileEngine.getStore(),
+          worldCall: window.__worldCalls[2],
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+        }), promptStart);
+        const finalJson = JSON.stringify(evidence);
+        assert.doesNotMatch(JSON.stringify(evidence.prompts), /DELAYED_OLD_BRANCH_SENTINEL|CURRENT_NEW_BRANCH_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(evidence.store.profiles), /DELAYED_OLD_BRANCH_SENTINEL|CURRENT_NEW_BRANCH_SENTINEL/u);
+        assert.match(JSON.stringify(evidence.store.profiles), /FINAL_REROLL_BRANCH_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(evidence.worldCall), /DELAYED_OLD_BRANCH_SENTINEL|CURRENT_NEW_BRANCH_SENTINEL/u);
+        assert.match(evidence.worldCall.promptSection, /FINAL_REROLL_BRANCH_SENTINEL/u);
+        assert.doesNotMatch(evidence.worldCall.injection, /DELAYED_OLD_BRANCH_SENTINEL|CURRENT_NEW_BRANCH_SENTINEL/u);
+        assert.equal(evidence.runtime.phase, 'done');
+        assert.doesNotMatch(finalJson, /人物档案分支恢复失败/u);
+      } finally { await page.close(); }
+    });
+
+    await t.test('chat switching waits a delayed restore rollback and preserves the original chat branch', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const oldProfile = {
+          ...structuredClone(completeProfile),
+          history: 'CROSS_CHAT_OLD_SENTINEL：旧 swipe 独有。',
+          inferences: ['CROSS_CHAT_OLD_SENTINEL：旧 swipe 推断。'],
+        };
+        const newProfile = {
+          ...structuredClone(completeProfile),
+          history: 'CROSS_CHAT_NEW_SENTINEL：当前 swipe 独有。',
+          inferences: ['CROSS_CHAT_NEW_SENTINEL：当前 swipe 推断。'],
+        };
+        await installHarness(page, {
+          discoveryReplies: [discoveryEnvelope(), discoveryEnvelope(), discoveryEnvelope(), discoveryEnvelope()],
+          profileReplies: [profileEnvelope(oldProfile), profileEnvelope(newProfile)],
+        });
+        const oldText = '白露把旧药囊放在左侧桌角。';
+        const newText = '白露换用新的银针，转身走向窗边。';
+        await runAcceptedReply(page, oldText);
+        await waitForSettled(page, 'done');
+        await page.evaluate(async ({ oldReply, newReply }) => {
+          await window.__emit('generation_started', 'regenerate', {}, false);
+          const message = window.__context.chat[1];
+          message.mes = newReply;
+          message.swipe_id = 1;
+          message.swipes = [oldReply, newReply];
+          await window.__emit('message_received', 1, 'normal');
+          await window.__emit('generation_ended');
+        }, { oldReply: oldText, newReply: newText });
+        await page.waitForFunction(() => window.__worldCalls.length === 2
+          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+
+        await page.evaluate(async (oldReply) => {
+          window.__slowNextDurableWrite();
+          const message = window.__context.chat[1];
+          message.swipe_id = 0;
+          message.mes = oldReply;
+          await window.__emit('message_swiped', 1);
+        }, oldText);
+        await page.waitForFunction(() => window.__durableWritePending());
+        await page.evaluate(() => { window.__pendingChatSwitch = window.__switchChat('chat-b'); });
+        await page.waitForFunction(() => window.__context.chatId === 'chat-b');
+        await page.evaluate(() => window.__resolveDurableWrite());
+        await page.evaluate(() => window.__pendingChatSwitch);
+
+        let evidence = await page.evaluate(() => ({
+          activeChat: window.__context.chatId,
+          activeStore: window.MVUDoctorProfileEngine.getStore(),
+          chatB: window.__metadataByChat['chat-b'],
+          profileRawA: window.__worldStore.get('mvuDoctorReferenceProfileStore:chat-a'),
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+        }));
+        assert.equal(evidence.activeChat, 'chat-b');
+        assert.doesNotMatch(JSON.stringify(evidence.activeStore), /CROSS_CHAT_OLD_SENTINEL|CROSS_CHAT_NEW_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(evidence.chatB), /CROSS_CHAT_OLD_SENTINEL|CROSS_CHAT_NEW_SENTINEL/u);
+        const chatAStore = JSON.parse(evidence.profileRawA);
+        assert.match(JSON.stringify(chatAStore.profiles), /CROSS_CHAT_NEW_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(chatAStore.profiles), /CROSS_CHAT_OLD_SENTINEL/u);
+        assert.match(JSON.stringify(chatAStore.branches), /CROSS_CHAT_OLD_SENTINEL/u);
+        assert.match(JSON.stringify(chatAStore.branches), /CROSS_CHAT_NEW_SENTINEL/u);
+        assert.equal(evidence.runtime.phase, 'idle');
+        assert.doesNotMatch(JSON.stringify(evidence.runtime), /人物档案分支恢复失败/u);
+
+        await page.evaluate(() => window.__switchChat('chat-a'));
+        evidence = await page.evaluate(() => ({
+          activeChat: window.__context.chatId,
+          store: window.MVUDoctorProfileEngine.getStore(),
+          profileRawA: window.__worldStore.get('mvuDoctorReferenceProfileStore:chat-a'),
+        }));
+        assert.equal(evidence.activeChat, 'chat-a');
+        assert.match(JSON.stringify(evidence.store.profiles), /CROSS_CHAT_NEW_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(evidence.store.profiles), /CROSS_CHAT_OLD_SENTINEL/u);
+        const lastSavedStore = JSON.parse(evidence.profileRawA);
+        assert.match(JSON.stringify(lastSavedStore.profiles), /CROSS_CHAT_NEW_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(lastSavedStore.profiles), /CROSS_CHAT_OLD_SENTINEL/u);
+        assert.match(JSON.stringify(lastSavedStore.branches), /CROSS_CHAT_OLD_SENTINEL/u);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a failed stale-branch rollback save blocks the next reroll instead of reporting success', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const oldProfile = {
+          ...structuredClone(completeProfile),
+          history: 'ROLLBACK_FAIL_OLD_SENTINEL：旧分支。',
+          inferences: ['ROLLBACK_FAIL_OLD_SENTINEL：旧分支推断。'],
+        };
+        const newProfile = {
+          ...structuredClone(completeProfile),
+          history: 'ROLLBACK_FAIL_NEW_SENTINEL：当前分支。',
+          inferences: ['ROLLBACK_FAIL_NEW_SENTINEL：当前分支推断。'],
+        };
+        await installHarness(page, {
+          discoveryReplies: [discoveryEnvelope(), discoveryEnvelope(), discoveryEnvelope(), discoveryEnvelope()],
+          profileReplies: [profileEnvelope(oldProfile), profileEnvelope(newProfile)],
+        });
+        const oldText = '白露把旧药囊放在左侧桌角。';
+        const newText = '白露换用新的银针，转身走向窗边。';
+        const blockedText = '白露准备打开第三只药箱。';
+        await runAcceptedReply(page, oldText);
+        await waitForSettled(page, 'done');
+        await page.evaluate(async ({ oldReply, newReply }) => {
+          await window.__emit('generation_started', 'regenerate', {}, false);
+          const message = window.__context.chat[1];
+          message.mes = newReply;
+          message.swipe_id = 1;
+          message.swipes = [oldReply, newReply];
+          await window.__emit('message_received', 1, 'normal');
+          await window.__emit('generation_ended');
+        }, { oldReply: oldText, newReply: newText });
+        await page.waitForFunction(() => window.__worldCalls.length === 2
+          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        const promptStart = await page.evaluate(() => window.__profilePrompts.length);
+
+        await page.evaluate(async (oldReply) => {
+          window.__slowNextDurableWrite();
+          const message = window.__context.chat[1];
+          message.swipe_id = 0;
+          message.mes = oldReply;
+          await window.__emit('message_swiped', 1);
+        }, oldText);
+        await page.waitForFunction(() => window.__durableWritePending());
+        await page.evaluate(async ({ oldReply, newReply, blockedReply }) => {
+          await window.__emit('generation_started', 'regenerate', {}, false);
+          const message = window.__context.chat[1];
+          message.mes = blockedReply;
+          message.swipe_id = 2;
+          message.swipes = [oldReply, newReply, blockedReply];
+          await window.__emit('message_received', 1, 'normal');
+          await window.__emit('generation_ended');
+          window.__failNextDurableWrite();
+          window.__resolveDurableWrite();
+        }, { oldReply: oldText, newReply: newText, blockedReply: blockedText });
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'failed');
+        const evidence = await page.evaluate((fromPrompt) => ({
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          prompts: window.__profilePrompts.slice(fromPrompt),
+          store: window.MVUDoctorProfileEngine.getStore(),
+          worldCalls: window.__worldCalls.length,
+        }), promptStart);
+        assert.equal(evidence.worldCalls, 2);
+        assert.equal(evidence.prompts.length, 0);
+        assert.match(`${evidence.runtime.detail}\n${JSON.stringify(evidence.runtime.lastResult)}`, /回滚.*持久化|rollback/iu);
+        assert.match(JSON.stringify(evidence.store.profiles), /ROLLBACK_FAIL_NEW_SENTINEL/u);
+        assert.doesNotMatch(JSON.stringify(evidence.store.profiles), /ROLLBACK_FAIL_OLD_SENTINEL/u);
       } finally { await page.close(); }
     });
 
@@ -1389,7 +1986,7 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         const accepted = '白露：我先替你看一看伤口。';
-        await installHarness(page);
+        await installHarness(page, { profileReplies: [profileEnvelope(), profileEnvelope()] });
         await runAcceptedReply(page, accepted);
         await waitForSettled(page, 'done');
         await page.evaluate(async (text) => {
@@ -1408,7 +2005,9 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
         const evidence = await page.evaluate(() => ({ calls: window.__worldCalls, result: window.MVUDoctorProfileEngine.getRuntime().lastResult }));
         assert.equal(evidence.calls.length, 2);
-        assert.equal(evidence.calls[1].mode, undefined);
+        assert.equal(evidence.calls[1].mode, 'forward');
+        assert.equal(evidence.result.world.mode, 'checkpoint-forward');
+        assert.equal(evidence.result.world.afterRound, evidence.result.world.beforeRound + 1);
         assert.equal(evidence.result.generationType, 'swipe');
       } finally { await page.close(); }
     });
@@ -1462,22 +2061,349 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('a truly character-free turn gets one empty-result review and then continues', async () => {
-      const empty = JSON.stringify({
-        detectedCharacters: [], profiles: [],
-        noProfileReason: '本轮只有无生命环境变化，没有出现可持续记录的非玩家人物。',
-      });
+    await t.test('JSONPatch actor fields discover the value without mistaking field names or array indexes for people', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
-        await installHarness(page, { profileReplies: [empty, empty] });
+        await installHarness(page, { initialMvuState: { hp: 10 } });
+        await runAcceptedReply(page, `白露收起药囊。
+<JSONPatch>[
+  {"op":"replace","path":"/当前敌人/名称","value":"白露"},
+  {"op":"replace","path":"/当前敌人/0/姓名","value":"白露"}
+]</JSONPatch>`);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          profile: window.MVUDoctorProfileEngine.getRuntime().lastResult.profile,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.profile.completionCandidates, ['白露']);
+        assert.ok(evidence.profile.discoveredCandidates.includes('白露'));
+        assert.ok(!evidence.profile.discoveredCandidates.includes('名称'));
+        assert.ok(!evidence.profile.discoveredCandidates.includes('0'));
+        assert.equal(Object.values(evidence.profiles)[0].name, '白露');
+      } finally { await page.close(); }
+    });
+
+    await t.test('cumulative MVU inventory is only a discovery hint and cannot create an offscreen profile', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          initialMvuState: { hp: 10, 契约者: { 小队: { 名称: '测试小队', 成员: [{ 姓名: '白露' }] } } },
+          discoveryReplies: [discoveryEnvelope([], '本楼只有空走廊与静止帘幕，没有任何非玩家人物出现')],
+        });
+        await runAcceptedReply(page, '走廊尽头的旧帘子没有动静。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'world']);
+        assert.deepEqual(evidence.result.profile.currentReplyCandidates, []);
+        assert.deepEqual(evidence.result.profile.mvuInventoryCandidates, ['白露']);
+        assert.deepEqual(evidence.result.profile.discoveredCandidates, []);
+        assert.deepEqual(evidence.result.profile.completionCandidates, []);
+        assert.equal(evidence.result.profile.modelCalls, 1);
+        assert.match(evidence.result.profile.requestPrompt, /姓名消歧提示[^]*不能据此认定人物在本楼出现/u);
+        assert.match(evidence.result.profile.requestPrompt, /姓名消歧提示[^]*白露/u);
+        assert.equal(Object.keys(evidence.profiles).length, 0);
+        assert.equal(evidence.result.world.afterRound, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('all nine newcomers in the current accepted reply are committed instead of dropping actor nine', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const names = Array.from({ length: 9 }, (_, index) => `同行者${index + 1}`);
+        const profiles = names.map((name) => ({
+          ...structuredClone(completeProfile), name, aliases: [],
+          evidence: [`修复后的MVU本轮小队成员包含${name}`],
+          inferences: [`其完整背景为结合当前世界与小队身份生成的可修订补全`],
+        }));
+        await installHarness(page, {
+          initialMvuState: { hp: 10, 契约者: { 小队: { 名称: '九人小队', 成员: names.map((姓名) => ({ 姓名 })) } } },
+          discoveryReplies: [JSON.stringify({ detectedCharacters: names, noCharacterReason: '' })],
+          profileReplies: [JSON.stringify({ detectedCharacters: names, noProfileReason: '', profiles })],
+        });
+        await runAcceptedReply(page, `${names.join('、')}已经在门外集合。`);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          profile: window.MVUDoctorProfileEngine.getRuntime().lastResult.profile,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+        }));
+        assert.equal(evidence.profile.completionCandidates.length, 9);
+        assert.equal(evidence.profile.count, 9);
+        assert.equal(Object.keys(evidence.profiles).length, 9);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a legal 3000-token profile limit batches nine required actors and commits the store only once', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const names = Array.from({ length: 9 }, (_, index) => `低额同行者${index + 1}`);
+        const profiles = names.map((name) => ({
+          ...structuredClone(completeProfile), name, aliases: [],
+          evidence: [`修复后的MVU本轮小队成员包含${name}`],
+          inferences: [`其完整背景为结合当前世界与小队身份生成的可修订补全`],
+        }));
+        await installHarness(page, {
+          initialMvuState: { hp: 10, 契约者: { 小队: { 名称: '低额九人小队', 成员: names.map((姓名) => ({ 姓名 })) } } },
+          discoveryReplies: [JSON.stringify({ detectedCharacters: names, noCharacterReason: '' })],
+          profileReplies: profiles.map((profile) => profileEnvelope(profile)),
+        });
+        await page.evaluate(() => {
+          window.__context.extensionSettings['mvu-doctor-kemini-clean'] = {
+            mvuDoctorReferenceSettings: { maxTokens: 3000 },
+          };
+        });
+        await runAcceptedReply(page, `${names.join('、')}按各自分工在门外集合。`);
+        await waitForSettled(page, 'done', 12000);
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          profile: window.MVUDoctorProfileEngine.getRuntime().lastResult.profile,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          profileWrites: window.__profileStoreWrites(),
+        }));
+        assert.equal(evidence.profile.batchCapacity, 1);
+        assert.equal(evidence.profile.batchCount, 9);
+        assert.equal(evidence.profile.modelCalls, 10);
+        assert.equal(evidence.profile.count, 9);
+        assert.equal(Object.keys(evidence.profiles).length, 9);
+        assert.equal(evidence.profileWrites.length, 1, 'all batches must share one atomic IndexedDB commit');
+        assert.deepEqual(evidence.stages, ['diagnosis', ...Array(9).fill('profile'), 'world']);
+      } finally { await page.close(); }
+    });
+
+    await t.test('manual refill is scoped to the current reply and does not rewrite unrelated MVU inventory', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const currentProfile = { ...structuredClone(completeProfile), profileId: 'profile-current' };
+        const remoteProfile = {
+          ...structuredClone(completeProfile), profileId: 'profile-remote', name: '远方商人', aliases: [],
+          currentState: { ...structuredClone(completeProfile.currentState), goal: '在远方港口完成自己的货运计划' },
+        };
+        const refreshedCurrent = {
+          ...structuredClone(currentProfile),
+          currentState: { ...structuredClone(currentProfile.currentState), goal: '完成本楼伤情观察并更新记录' },
+        };
+        const echoedInventory = {
+          ...structuredClone(completeProfile), name: '远方队友', aliases: [],
+          evidence: ['整份MVU库存中存在远方队友，但本楼没有出现'],
+          inferences: ['其余字段是模型对无关库存人物的越界补全'],
+        };
+        await installHarness(page, {
+          initialMvuState: {
+            hp: 10,
+            契约者: { 小队: { 成员: [{ 姓名: '白露' }, { 姓名: '远方商人' }, { 姓名: '远方队友' }] } },
+          },
+          profileReplies: [JSON.stringify({
+            detectedCharacters: ['白露', '远方队友'], noProfileReason: '',
+            profiles: [refreshedCurrent, echoedInventory],
+          })],
+        });
+        await page.evaluate(({ current, remote }) => {
+          window.__context.chatMetadata.mvuDoctorReferenceProfiles = {
+            schema: 2, chatId: 'chat-a', revision: 1,
+            profiles: { [current.profileId]: current, [remote.profileId]: remote },
+            branches: {}, profileReceipts: {}, history: [], updatedAt: new Date().toISOString(),
+          };
+          window.__setChat([
+            { is_user: true, mes: '只检查眼前的人。' },
+            { is_user: false, is_system: false, mes: '白露把药箱放到桌边。', swipe_id: 0, swipes: ['白露把药箱放到桌边。'] },
+          ]);
+        }, { current: currentProfile, remote: remoteProfile });
+        await page.locator('#mvu-ref-launcher').click();
+        await page.locator('[data-action="retry-profile"]').click();
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+            result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            store: window.MVUDoctorProfileEngine.getStore(),
+            profileWrites: window.__profileStoreWrites(),
+        }));
+        assert.deepEqual(evidence.result.currentReplyCandidates, ['白露']);
+        assert.ok(evidence.result.mvuInventoryCandidates.includes('远方商人'));
+        assert.ok(evidence.result.mvuInventoryCandidates.includes('远方队友'));
+        assert.deepEqual(evidence.result.completionCandidates, ['白露']);
+        assert.equal(evidence.runtime.phase, 'done');
+        assert.match(evidence.runtime.detail, /人物手动补档完成：1张完整档案/u);
+        assert.equal(JSON.stringify(evidence.store.profiles['profile-remote']), JSON.stringify(remoteProfile));
+        assert.equal(evidence.store.profiles['profile-current'].currentState.goal, '完成本楼伤情观察并更新记录');
+        assert.ok(!Object.values(evidence.store.profiles).some((profile) => profile.name === '远方队友'));
+        assert.equal(evidence.profileWrites.length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a truly character-free turn is checked once by the profile model and still continues', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          initialMvuState: { hp: 10 },
+          discoveryReplies: [discoveryEnvelope([], '最终正文明确说明空旷石廊没有任何非玩家人物出现')],
+          profileReplies: [JSON.stringify({
+            detectedCharacters: [], profiles: [],
+            noProfileReason: '最终正文明确说明空旷石廊没有任何非玩家人物出现',
+          })],
+        });
         await runAcceptedReply(page, '雨势逐渐减弱，空旷石廊里没有任何人物出现。');
         await waitForSettled(page, 'done');
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'world']);
+        assert.equal(evidence.result.profile.status, 'no-profile');
+        assert.equal(evidence.result.profile.modelCalls, 1);
         assert.equal(evidence.result.profile.count, 0);
+      } finally { await page.close(); }
+    });
+
+    await t.test('an already complete actor is not overwritten when the next discovery call finds no newcomer', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          discoveryReplies: [
+            JSON.stringify({ detectedCharacters: ['白露'], noCharacterReason: '' }),
+            JSON.stringify({ detectedCharacters: ['白露'], noCharacterReason: '' }),
+          ],
+          profileReplies: [profileEnvelope(), JSON.stringify({
+            detectedCharacters: [], profiles: [],
+            noProfileReason: '本轮只有已有完整档案的白露，没有需要新增或修复的人物',
+          })],
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        await runNextAcceptedReply(page);
+        await page.waitForFunction(() => window.__worldCalls.length === 2
+          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          store: window.MVUDoctorProfileEngine.getStore(),
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world', 'diagnosis', 'world']);
+        assert.equal(evidence.result.profile.status, 'no-profile');
+        assert.equal(evidence.result.profile.modelCalls, 1);
+        assert.equal(evidence.result.profile.noProfileReason, '本轮实际出现的人物均已有完整档案，无需新增或修复');
+        assert.equal(evidence.store.history.length, 2);
+        assert.ok(evidence.store.history[1].committedProfileIds.length === 0);
+        assert.ok(Object.keys(evidence.store.branches).length >= 4);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a prose-only newcomer is discovered and completed even when MVU has no actor container', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { initialMvuState: { hp: 10 } });
+        await runAcceptedReply(page, '白露推门进来，把药箱轻轻放到桌边。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          profile: window.MVUDoctorProfileEngine.getRuntime().lastResult.profile,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.profile.completionCandidates, ['白露']);
+        assert.equal(evidence.profile.modelCalls, 2);
+        assert.equal(Object.values(evidence.profiles)[0].name, '白露');
+      } finally { await page.close(); }
+    });
+
+    await t.test('two prose-only newcomers are discovered as names and completed in bounded atomic batches', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const names = ['林澄', '陆遥'];
+        const profiles = names.map((name) => ({
+          ...structuredClone(completeProfile), name, aliases: [],
+          evidence: [`最终正文中${name}在门廊内采取了独立行动`],
+          inferences: [`其背景是结合本轮行为与世界材料形成的可修订补全`],
+        }));
+        await installHarness(page, {
+          initialMvuState: { hp: 10 },
+          discoveryReplies: [JSON.stringify({ detectedCharacters: names, noCharacterReason: '' })],
+          profileReplies: profiles.map((profile) => profileEnvelope(profile)),
+        });
+        await page.evaluate(() => {
+          window.__context.extensionSettings['mvu-doctor-kemini-clean'] = {
+            mvuDoctorReferenceSettings: { maxTokens: 3000 },
+          };
+        });
+        await runAcceptedReply(page, '林澄将湿斗篷挂在门边，陆遥则蹲下检查地上的新鲜车辙。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          profile: window.MVUDoctorProfileEngine.getRuntime().lastResult.profile,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          profileWrites: window.__profileStoreWrites(),
+          prompts: window.__profilePrompts,
+          discoveryCalls: window.__discoveryCalls,
+        }));
+        assert.deepEqual(evidence.profile.currentReplyCandidates, []);
+        assert.deepEqual(evidence.profile.mvuInventoryCandidates, []);
+        assert.deepEqual(evidence.profile.discoveredCandidates, names);
+        assert.deepEqual(evidence.profile.completionCandidates, names);
+        assert.equal(evidence.profile.batchCapacity, 1);
+        assert.equal(evidence.profile.batchCount, 2);
+        assert.equal(evidence.profile.modelCalls, 3);
+        assert.equal(Object.keys(evidence.profiles).length, 2);
+        assert.equal(evidence.profileWrites.length, 1);
+        assert.equal(evidence.discoveryCalls, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'world']);
+        assert.match(evidence.prompts[1], /本批待处理人物[^]*林澄[^]*延后批次人物[^]*陆遥/u);
+        assert.match(evidence.prompts[2], /本批待处理人物[^]*陆遥/u);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a repair response cannot consume a deferred actor through an alias', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const names = ['岑野', '乔霁'];
+        const incompleteA = {
+          ...structuredClone(completeProfile), name: names[0], aliases: [],
+          currentState: { ...structuredClone(completeProfile.currentState), location: '' },
+        };
+        const repairedA = { ...structuredClone(completeProfile), name: names[0], aliases: [names[1]] };
+        const poisonedB = { ...structuredClone(completeProfile), name: names[1], aliases: [] };
+        const legitimateB = {
+          ...structuredClone(completeProfile), name: names[1], aliases: [],
+          currentState: { ...structuredClone(completeProfile.currentState), goal: 'LEGITIMATE_SECOND_BATCH_GOAL' },
+        };
+        await installHarness(page, {
+          initialMvuState: { hp: 10 },
+          discoveryReplies: [JSON.stringify({ detectedCharacters: names, noCharacterReason: '' })],
+          profileReplies: [
+            profileEnvelope(incompleteA),
+            JSON.stringify({ detectedCharacters: names, noProfileReason: '', profiles: [repairedA, poisonedB] }),
+            profileEnvelope(legitimateB),
+          ],
+        });
+        await page.evaluate(() => {
+          window.__context.extensionSettings['mvu-doctor-kemini-clean'] = {
+            mvuDoctorReferenceSettings: { maxTokens: 3000 },
+          };
+        });
+        await runAcceptedReply(page, '岑野守在左侧门柱旁，乔霁沿着墙根逐寸检查机关。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          profile: window.MVUDoctorProfileEngine.getRuntime().lastResult.profile,
+          profiles: Object.values(window.MVUDoctorProfileEngine.getStore().profiles),
+          profileWrites: window.__profileStoreWrites(),
+          prompts: window.__profilePrompts,
+        }));
+        const storedA = evidence.profiles.find((profile) => profile.name === names[0]);
+        const storedB = evidence.profiles.find((profile) => profile.name === names[1]);
+        assert.equal(evidence.profile.repaired, true);
+        assert.equal(evidence.profile.batchCapacity, 1);
+        assert.equal(evidence.profile.batchCount, 2);
+        assert.equal(evidence.profile.modelCalls, 4);
+        assert.equal(evidence.profile.count, 2);
+        assert.ok(!storedA.aliases.includes(names[1]));
+        assert.equal(storedB.currentState.goal, 'LEGITIMATE_SECOND_BATCH_GOAL');
+        assert.equal(evidence.profileWrites.length, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'profile', 'world']);
+        assert.match(evidence.prompts[2], /延后批次人物[^]*绝不能返回[^]*乔霁/u);
       } finally { await page.close(); }
     });
 
@@ -1546,6 +2472,52 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
         assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis', 'profile', 'world']);
         assert.equal(evidence.calls, 1);
         assert.equal(evidence.checkpoint.status, 'complete');
+      } finally { await page.close(); }
+    });
+
+    await t.test('a committed profile receipt skips a duplicate model call when reload lands before the world checkpoint', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await page.evaluate(() => {
+          const reply = '白露：我先替你看一看伤口。';
+          window.__setChat([
+            { is_user: true, mes: '请继续。' },
+            { is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] },
+          ]);
+        });
+        const first = await page.evaluate(() => window.MVUDoctorProfileEngine.runProfile());
+        assert.equal(first.modelCalls, 2);
+        await page.evaluate(async () => {
+          const store = window.MVUDoctorProfileEngine.getStore();
+          const receipt = Object.values(store.profileReceipts)[0];
+          const generationKey = 'chat-a:receipt-window:test-generation';
+          store.profileReceipts[generationKey] = { ...receipt, generationKey };
+          window.WORLD_ENGINE_STORE.setItem('mvuDoctorReferenceProfileStore:chat-a', JSON.stringify(store));
+          const message = window.__context.chat[receipt.messageId];
+          const target = {
+            chatId: receipt.chatId, index: receipt.messageId, swipeId: receipt.swipeId,
+            fingerprint: receipt.fingerprint, identity: receipt.identity, generationKey, content: message.mes,
+          };
+          localStorage.setItem('mvuDoctorReferencePipeline:chat-a', JSON.stringify({
+            status: 'running', target, generationType: 'normal', nextStep: 'profile',
+            reason: 'auto', lastCompletedStep: 'diagnosis', updatedAt: new Date().toISOString(),
+          }));
+          await window.__emit('chat_loaded');
+        });
+        await page.waitForTimeout(1200);
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          calls: window.__worldCalls.length,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+        }));
+        assert.equal(evidence.runtime.phase, 'done', JSON.stringify({ runtime: evidence.runtime, checkpoint: evidence.checkpoint }));
+        assert.deepEqual(evidence.stages, ['profile', 'world']);
+        assert.equal(evidence.result.profile.status, 'already-committed');
+        assert.equal(evidence.result.profile.modelCalls, 0);
+        assert.equal(evidence.calls, 1);
       } finally { await page.close(); }
     });
 
@@ -1667,14 +2639,233 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
         await waitForSettled(page, 'done');
         const evidence = await page.evaluate(async () => {
           const base = 'mvuDoctorReferenceReport:chat-a';
-          const ids = JSON.parse(sessionStorage.getItem(`${base}:index`) || '[]');
-          sessionStorage.removeItem(`${base}:entry:${ids[0]}`);
+          const ids = JSON.parse(window.WORLD_ENGINE_STORE.getItem(`${base}:index`) || '[]');
+          window.WORLD_ENGINE_STORE.removeItem(`${base}:entry:${ids[0]}`);
           await window.__emit('chat_loaded');
           return window.MVUDoctorProfileEngine.getRuntime();
         });
         assert.equal(evidence.reportPersistence.ok, false);
         assert.match(evidence.reportPersistence.error, /缺失或损坏/u);
         assert.ok(evidence.diagnostics.some((item) => item.phase === 'report-incomplete'));
+      } finally { await page.close(); }
+    });
+
+    await t.test('reports and diagnostics persist in the mature World Engine store without new sessionStorage writes', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const beforeReload = await page.evaluate(() => {
+          const base = 'mvuDoctorReferenceReport:chat-a';
+          const ids = JSON.parse(window.WORLD_ENGINE_STORE.getItem(`${base}:index`) || '[]');
+          const storedReports = ids.map((id) => JSON.parse(window.WORLD_ENGINE_STORE.getItem(`${base}:entry:${id}`)));
+          const storedDiagnostics = JSON.parse(window.WORLD_ENGINE_STORE.getItem('mvuDoctorReferenceDiagnostics:chat-a') || '[]');
+          const runtime = window.MVUDoctorProfileEngine.getRuntime();
+          return {
+            ids, storedReports, storedDiagnostics,
+            runtimeReports: runtime.runReports,
+            runtimeDiagnostics: runtime.diagnostics,
+            sessionIndex: sessionStorage.getItem(`${base}:index`),
+            sessionDiagnostics: sessionStorage.getItem('mvuDoctorReferenceDiagnostics:chat-a'),
+          };
+        });
+        assert.ok(beforeReload.ids.length >= 4);
+        assert.deepEqual(beforeReload.storedReports, beforeReload.runtimeReports);
+        assert.deepEqual(beforeReload.storedDiagnostics, beforeReload.runtimeDiagnostics);
+        assert.equal(beforeReload.sessionIndex, null);
+        assert.equal(beforeReload.sessionDiagnostics, null);
+        await page.evaluate(async () => { await window.__emit('chat_loaded'); });
+        const afterReload = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime());
+        assert.equal(afterReload.reportPersistence.ok, true);
+        assert.deepEqual(afterReload.runReports, beforeReload.runtimeReports);
+        assert.ok(afterReload.runReports.some((run) => run.result?.profile?.requestPrompt));
+      } finally { await page.close(); }
+    });
+
+    await t.test('legacy session reports migrate byte-for-byte into the mature store without deleting the only fallback copy', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { initialMvuState: { hp: 10 } });
+        const evidence = await page.evaluate(async () => {
+          const base = 'mvuDoctorReferenceReport:chat-a';
+          const id = '1788000000000-legacy';
+          const entry = { at: '2026-08-30T00:00:00.000Z', target: { chatId: 'chat-a' }, result: { legacy: true, full: '完整内容' } };
+          const diagnostics = [{ at: '2026-08-30T00:00:00.000Z', phase: 'legacy-sentinel', detail: '旧诊断完整内容' }];
+          const values = {
+            [`${base}:entry:${id}`]: JSON.stringify(entry),
+            [`${base}:index`]: JSON.stringify([id]),
+            [`${base}:manifest`]: JSON.stringify({ attemptedCount: 1, savedCount: 1, complete: true, lastSavedAt: entry.at, lastError: '' }),
+            'mvuDoctorReferenceDiagnostics:chat-a': JSON.stringify(diagnostics),
+          };
+          for (const [key, value] of Object.entries(values)) {
+            window.WORLD_ENGINE_STORE.removeItem(key);
+            sessionStorage.setItem(key, value);
+          }
+          await window.__emit('chat_loaded');
+          return {
+            entry: JSON.parse(window.WORLD_ENGINE_STORE.getItem(`${base}:entry:${id}`)),
+            index: JSON.parse(window.WORLD_ENGINE_STORE.getItem(`${base}:index`)),
+            manifest: JSON.parse(window.WORLD_ENGINE_STORE.getItem(`${base}:manifest`)),
+            diagnostics: JSON.parse(window.WORLD_ENGINE_STORE.getItem('mvuDoctorReferenceDiagnostics:chat-a')),
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            legacyCopies: Object.fromEntries(Object.keys(values).map((key) => [key, sessionStorage.getItem(key)])),
+          };
+        });
+        assert.deepEqual(evidence.entry.result, { legacy: true, full: '完整内容' });
+        assert.deepEqual(evidence.index, ['1788000000000-legacy']);
+        assert.equal(evidence.manifest.complete, true);
+        assert.ok(evidence.diagnostics.some((item) => item.phase === 'legacy-sentinel'));
+        assert.deepEqual(evidence.runtime.runReports[0].result, { legacy: true, full: '完整内容' });
+        assert.ok(Object.values(evidence.legacyCopies).every((value) => value !== null));
+      } finally { await page.close(); }
+    });
+
+    await t.test('a corrupt mature report entry is quarantined and restored from its valid legacy copy', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { initialMvuState: { hp: 10 } });
+        const evidence = await page.evaluate(async () => {
+          const base = 'mvuDoctorReferenceReport:chat-a';
+          const id = '1788000000001-recover';
+          const entryKey = `${base}:entry:${id}`;
+          const validEntry = {
+            at: '2026-08-30T00:01:00.000Z', target: { chatId: 'chat-a' },
+            result: { recovered: true, full: '有效旧报告全文' },
+          };
+          const manifest = JSON.stringify({
+            attemptedCount: 1, savedCount: 1, complete: true,
+            lastSavedAt: validEntry.at, lastError: '',
+          });
+          window.WORLD_ENGINE_STORE.setItem(entryKey, '{broken-report-json');
+          window.WORLD_ENGINE_STORE.setItem(`${base}:index`, JSON.stringify([id]));
+          window.WORLD_ENGINE_STORE.setItem(`${base}:manifest`, manifest);
+          sessionStorage.setItem(entryKey, JSON.stringify(validEntry));
+          sessionStorage.setItem(`${base}:index`, JSON.stringify([id]));
+          sessionStorage.setItem(`${base}:manifest`, manifest);
+          await window.__emit('chat_loaded');
+          const quarantines = window.WORLD_ENGINE_STORE.keys().filter((key) => key.startsWith(`${entryKey}:corrupt:`));
+          return {
+            restored: JSON.parse(window.WORLD_ENGINE_STORE.getItem(entryKey)),
+            quarantines: quarantines.map((key) => window.WORLD_ENGINE_STORE.getItem(key)),
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            legacy: sessionStorage.getItem(entryKey),
+          };
+        });
+        assert.equal(evidence.restored.result.full, '有效旧报告全文');
+        assert.ok(evidence.quarantines.includes('{broken-report-json'));
+        assert.equal(evidence.runtime.reportPersistence.ok, true);
+        assert.equal(evidence.runtime.runReports[0].result.recovered, true);
+        assert.match(evidence.legacy, /有效旧报告全文/u);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a valid legacy diagnostic copy recovers a corrupt target without deleting either forensic source', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const evidence = await page.evaluate(async () => {
+          const key = 'mvuDoctorReferenceDiagnostics:chat-a';
+          const legacy = [{ at: '2026-08-30T01:00:00.000Z', phase: 'legacy-recovery', detail: '可恢复的完整旧诊断' }];
+          window.WORLD_ENGINE_STORE.setItem(key, '{broken-json');
+          sessionStorage.setItem(key, JSON.stringify(legacy));
+          await window.__emit('chat_loaded');
+          const quarantines = window.WORLD_ENGINE_STORE.keys().filter((item) => item.startsWith(`${key}:corrupt:`));
+          return {
+            restored: JSON.parse(window.WORLD_ENGINE_STORE.getItem(key)),
+            quarantine: quarantines.map((item) => window.WORLD_ENGINE_STORE.getItem(item)),
+            legacy: sessionStorage.getItem(key),
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          };
+        });
+        assert.ok(evidence.restored.some((item) => item.phase === 'legacy-recovery'));
+        assert.ok(evidence.quarantine.includes('{broken-json'));
+        assert.match(evidence.legacy, /legacy-recovery/u);
+        assert.ok(evidence.runtime.diagnostics.some((item) => item.phase === 'legacy-recovery'));
+      } finally { await page.close(); }
+    });
+
+    await t.test('rapid B to C chat loads cannot let the late B read overwrite or persist into C', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { initialMvuState: { hp: 10 } });
+        const evidence = await page.evaluate(async () => {
+          window.__metadataByChat['chat-c'] = {};
+          window.WORLD_ENGINE_STORE.setItem('mvuDoctorReferenceDiagnostics:chat-b', JSON.stringify([
+            { at: '2026-08-30T02:00:00.000Z', phase: 'chat-b-only', detail: 'B诊断' },
+          ]));
+          window.WORLD_ENGINE_STORE.setItem('mvuDoctorReferenceDiagnostics:chat-c', JSON.stringify([
+            { at: '2026-08-30T02:00:01.000Z', phase: 'chat-c-only', detail: 'C诊断' },
+          ]));
+          const loadB = window.__switchChat('chat-b');
+          const loadC = window.__switchChat('chat-c');
+          await Promise.all([loadB, loadC]);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return {
+            activeChat: window.__context.chatId,
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            storedC: JSON.parse(window.WORLD_ENGINE_STORE.getItem('mvuDoctorReferenceDiagnostics:chat-c') || '[]'),
+          };
+        });
+        assert.equal(evidence.activeChat, 'chat-c');
+        assert.ok(evidence.runtime.diagnostics.some((item) => item.phase === 'chat-c-only'));
+        assert.ok(!evidence.runtime.diagnostics.some((item) => item.phase === 'chat-b-only'));
+        assert.ok(evidence.storedC.some((item) => item.phase === 'chat-c-only'));
+        assert.ok(!evidence.storedC.some((item) => item.phase === 'chat-b-only'));
+      } finally { await page.close(); }
+    });
+
+    await t.test('a new generation in the same chat invalidates a late chat-load restore', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { initialMvuState: { hp: 10 } });
+        const evidence = await page.evaluate(async () => {
+          window.WORLD_ENGINE_STORE.setItem('mvuDoctorReferenceDiagnostics:chat-a', JSON.stringify([{
+            at: new Date().toISOString(), phase: 'stale-load-sentinel', detail: '不得覆盖新生成状态',
+          }]));
+          const load = window.__emit('chat_loaded');
+          window.__append({ is_user: true, mes: '立即开始新回合。' });
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          const before = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          await load;
+          const after = window.MVUDoctorProfileEngine.getRuntime();
+          return { before, after };
+        });
+        assert.ok(evidence.before?.generationKey);
+        assert.equal(evidence.after.acceptedGeneration.generationKey, evidence.before.generationKey);
+        assert.equal(evidence.after.acceptedGeneration.serial, evidence.before.serial);
+        assert.equal(evidence.after.phase, 'waiting');
+        assert.ok(!evidence.after.diagnostics.some((item) => item.phase === 'stale-load-sentinel'));
+      } finally { await page.close(); }
+    });
+
+    await t.test('diagnostic read loss stays durably latched after the primary record later becomes parseable', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { initialMvuState: { hp: 10 } });
+        await page.evaluate(async () => {
+          const key = 'mvuDoctorReferenceDiagnostics:chat-a';
+          sessionStorage.removeItem(key);
+          window.WORLD_ENGINE_STORE.setItem(key, '{irrecoverable-diagnostic-json');
+          await window.__emit('chat_loaded');
+          if (!window.MVUDoctorProfileEngine.getRuntime().diagnosticPersistence.integrityCompromised) {
+            throw new Error('read loss was not detected');
+          }
+          window.WORLD_ENGINE_STORE.setItem(key, '[]');
+          await window.__emit('chat_loaded');
+        });
+        const runtime = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime());
+        assert.equal(runtime.diagnosticPersistence.integrityCompromised, true);
+        assert.equal(runtime.diagnosticPersistence.ok, false);
+        await page.locator('#mvu-ref-launcher').click();
+        await page.locator('[data-action="export"]').click();
+        await page.waitForFunction(() => window.__downloads.length === 1);
+        const download = await page.evaluate(() => window.__downloads[0]);
+        const report = JSON.parse(download.content);
+        assert.match(download.name, /^mvu-doctor-incomplete-evidence-/u);
+        assert.equal(report.exportIntegrity.complete, false);
+        assert.equal(report.exportIntegrity.diagnosticPersistence.integrityCompromised, true);
       } finally { await page.close(); }
     });
 
@@ -1704,16 +2895,18 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
         await installHarness(page);
         await runAcceptedReply(page);
         await waitForSettled(page, 'done');
+        await page.evaluate(async () => { await window.__emit('chat_loaded'); });
         await page.locator('#mvu-ref-launcher').click();
         await page.locator('[data-action="export"]').click();
         await page.waitForFunction(() => window.__downloads.length === 1);
         const download = await page.evaluate(() => window.__downloads[0]);
-        assert.match(download.name, /^mvu-doctor-reference-report-/u);
+        assert.match(download.name, /^mvu-doctor-full-report-/u);
         assert.ok(!download.content.includes('SUPER_SECRET_BROWSER_SMOKE_KEY'));
         assert.ok(!download.content.includes('https://example.invalid/v1/chat/completions'));
         assert.ok(!download.content.includes('stub-model'));
         assert.equal(download.connected, true);
         const report = JSON.parse(download.content);
+        assert.equal(report.exportIntegrity.complete, true);
         assert.deepEqual(report.api, { configured: true, excluded: true });
         assert.equal(report.doctorSettings.maxTokens, 12000);
         assert.equal(report.runtime.diagnosticPersistence.ok, true);
@@ -1724,6 +2917,74 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
+    await t.test('export rejects an active Doctor pipeline and succeeds after an explicit retry', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowProfile: true });
+        await runAcceptedReply(page);
+        await page.waitForFunction(() => window.__stages.includes('profile')
+          && window.MVUDoctorProfileEngine.getRuntime().pipelineBusy === true);
+        await page.locator('#mvu-ref-launcher').click();
+        await page.locator('[data-action="export"]').click();
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'report-waiting');
+        let evidence = await page.evaluate(() => ({
+          downloads: window.__downloads.length,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+        }));
+        assert.equal(evidence.downloads, 0);
+        assert.match(evidence.runtime.detail, /医生任务仍在运行/u);
+        await page.evaluate((reply) => window.__resolveProfile(reply), profileEnvelope());
+        await waitForSettled(page, 'done');
+        await page.locator('[data-action="export"]').click();
+        await page.waitForFunction(() => window.__downloads.length === 1);
+        evidence = await page.evaluate(() => ({
+          download: window.__downloads[0],
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+        }));
+        assert.match(evidence.download.name, /^mvu-doctor-full-report-/u);
+        assert.equal(JSON.parse(evidence.download.content).exportIntegrity.complete, true);
+      } finally { await page.close(); }
+    });
+
+    await t.test('an export that loses chat ownership neither downloads nor writes status into the incoming chat', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { initialMvuState: { hp: 10 } });
+        await page.evaluate(() => {
+          window.__setChat([
+            { is_user: true, mes: '导出测试。' },
+            { is_user: false, is_system: false, mes: '当前聊天正文。', swipe_id: 0, swipes: ['当前聊天正文。'] },
+          ]);
+          const internals = window.StoryOracleAPI.unsafe.eval('get doctor test internals');
+          let resolveMvu;
+          internals.getMvu = async () => ({
+            getMvuData: () => new Promise((resolve) => {
+              resolveMvu = resolve;
+              window.__exportMvuStarted = true;
+            }),
+          });
+          window.__resolveExportMvu = () => resolveMvu?.({ hp: 10 });
+        });
+        await page.locator('#mvu-ref-launcher').click();
+        await page.locator('[data-action="export"]').click();
+        await page.waitForFunction(() => window.__exportMvuStarted === true);
+        await page.evaluate(async () => {
+          await window.__switchChat('chat-b');
+          window.__resolveExportMvu();
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        });
+        const evidence = await page.evaluate(() => ({
+          downloads: window.__downloads,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          chatId: window.__context.chatId,
+        }));
+        assert.equal(evidence.chatId, 'chat-b');
+        assert.equal(evidence.downloads.length, 0);
+        assert.equal(evidence.runtime.exportBusy, false);
+        assert.ok(!evidence.runtime.diagnostics.some((item) => /报告导出/u.test(String(item.detail || ''))));
+      } finally { await page.close(); }
+    });
+
     await t.test('automatic status refresh does not erase unsaved settings fields', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
@@ -1731,6 +2992,9 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
         await page.locator('#mvu-ref-launcher').click();
         await page.locator('[data-tab="settings"]').click();
         await page.locator('[name="api-endpoint"]').fill('https://typed-but-not-saved.invalid/v1/chat/completions');
+        await page.locator('[data-tab="diagnostics"]').click();
+        await page.locator('[data-tab="settings"]').click();
+        assert.equal(await page.locator('[name="api-endpoint"]').inputValue(), 'https://typed-but-not-saved.invalid/v1/chat/completions');
         await page.evaluate(async () => { await window.__emit('chat_loaded'); });
         await page.waitForTimeout(50);
         assert.equal(await page.locator('[name="api-endpoint"]').inputValue(), 'https://typed-but-not-saved.invalid/v1/chat/completions');
@@ -1785,19 +3049,20 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('a confirmed new user generation during metadata save rolls the stale profile commit back', async () => {
+    await t.test('a confirmed new user generation during durable profile save rolls the stale commit back', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
-        await installHarness(page, { slowMetadata: true });
+        await installHarness(page);
+        await page.evaluate(() => window.__slowNextDurableWrite());
         await runAcceptedReply(page);
-        await page.waitForFunction(() => window.__saves.length === 1);
+        await page.waitForFunction(() => window.__durableWritePending());
         await page.evaluate(async () => {
           await window.__emit('generation_started', 'normal', {}, false);
           window.__append({ is_user: true, mes: '这是下一轮明确的用户输入。' });
           await window.__emit('message_sent');
-          window.__resolveMetadata();
+          window.__resolveDurableWrite();
         });
-        await page.waitForFunction(() => window.__saves.length >= 2);
+        await page.waitForFunction(() => window.__profileStoreWrites().length >= 2);
         const evidence = await page.evaluate(() => ({
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
           stages: window.__stages,
@@ -1809,16 +3074,17 @@ test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('a background normal generation during metadata save cannot cancel the accepted pipeline', async () => {
+    await t.test('a background normal generation during durable profile save cannot cancel the accepted pipeline', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
-        await installHarness(page, { slowMetadata: true });
+        await installHarness(page);
+        await page.evaluate(() => window.__slowNextDurableWrite());
         await runAcceptedReply(page);
-        await page.waitForFunction(() => window.__saves.length === 1);
+        await page.waitForFunction(() => window.__durableWritePending());
         await page.evaluate(async () => {
           await window.__emit('generation_started', 'normal', {}, false);
           await window.__emit('generation_ended');
-          window.__resolveMetadata();
+          window.__resolveDurableWrite();
         });
         await waitForSettled(page, 'done');
         const evidence = await page.evaluate(() => ({

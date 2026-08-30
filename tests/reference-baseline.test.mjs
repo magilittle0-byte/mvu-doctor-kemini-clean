@@ -20,7 +20,7 @@ test('runtime loads only pinned reference engines and the new profile adapter', 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.8.5');
+  assert.equal(manifest.version, '0.8.6');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -31,8 +31,15 @@ test('profile engine retains ver5.35 tolerant parser and exactly one repair bran
   for (const symbol of ['stripCodeFence', 'normalizeJsonPunctuation', 'removeJsonTrailingCommas', 'balancedJsonCandidates', 'parseJsonCandidate']) {
     assert.match(source, new RegExp(`function ${symbol}\\(`));
   }
-  assert.equal((source.match(/raw = await callModel\(/g) || []).length, 2, 'one initial generation and one repair call');
+  assert.equal((source.match(/batchRaw = await callModel\(/g) || []).length, 2, 'each bounded batch has one initial generation and one repair call site');
+  assert.equal((source.match(/discoveryRaw = await callModel\(/g) || []).length, 2, 'name discovery has one initial call and one repair call site');
   assert.match(source, /single|单次修复/u);
+  assert.match(source, /function profileBatchCapacity\(/);
+  assert.match(source, /function discoveryPrompt\(/);
+  assert.match(source, /function discoveryRepairPrompt\(/);
+  assert.match(source, /while \(pending\.length > 0\)/);
+  assert.match(source, /dropProfilesOutsideBatch\(envelope, batchCandidates, deferredCandidates\)/);
+  assert.match(source, /dropProfilesOutsideCurrentReply\(envelope, target, currentReplyCandidates\)/);
   assert.match(source, /commitStore\(\s*after,\s*target\.chatId,\s*before\.revision,/u);
   assert.match(source, /pruneBranches/);
   assert.doesNotMatch(source, /beforeProfiles:\s*before\.profiles/);
@@ -55,14 +62,27 @@ test('host glue pins MVU reads, owns the pipeline and preserves original reroll 
   assert.match(source, /Mvu\.getMvuData\(\{ type: 'message', message_id: numericId \}\)/);
   assert.match(source, /host_mvu_readback_mismatch/);
   assert.doesNotMatch(source, /story_oracle_nonempty_noop/);
-  const candidateBlock = source.slice(source.indexOf('function highConfidenceCandidates'), source.indexOf('function suggestedCandidates'));
+  const candidateBlock = source.slice(source.indexOf('function highConfidenceCandidateSources'), source.indexOf('function suggestedCandidates'));
   assert.doesNotMatch(candidateBlock, /说道|问道|点头|摇头|伸手|SUBJECT_FUNCTION_SUFFIX|PLAYER_PROSE_PREFIX/u);
   assert.match(candidateBlock, /profile\?\.name/);
   assert.match(candidateBlock, /NPC\|ACTOR/);
+  assert.match(source, /function actorNamesFromMvuData\(/);
+  assert.match(source, /function jsonPatchActorNames\(/);
+  assert.match(source, /function profileCompletionCandidates\(/);
+  assert.match(source, /status: 'already-committed'/);
+  assert.match(source, /modelCalls: 0/);
+  assert.match(source, /你只执行人物发现，不写人物档案/u);
+  assert.match(source, /人物发现已经单独完成/u);
   assert.match(source, /setFixCfg\?\.\(\{ autoFixEnabled: false \}\)/);
   assert.match(source, /pipelineEpoch/);
   assert.match(source, /requireBranchRestore\(owner\)/);
-  assert.match(source, /const mode = isReroll \? undefined : 'forward'/);
+  assert.match(source, /branchRestoreSerial: 0/);
+  assert.match(source, /const restoreSerial = \+\+runtime\.branchRestoreSerial/);
+  assert.match(source, /restoreSerial !== runtime\.branchRestoreSerial \|\| chatId\(\) !== restoreChatId/);
+  assert.match(source, /restoreProfileBranch\(baseline, true, assertRestoreCurrent\)/);
+  assert.match(source, /const checkpoint = worldCore\?\.restoreCheckpoint\?\.\(\)/);
+  assert.match(source, /worldCore\.saveState\(checkpoint\)/);
+  assert.match(source, /const mode = restoredCheckpoint \|\| !isReroll \? 'forward' : undefined/);
   assert.doesNotMatch(source, /Date\.now\(\) - runtime\.lastUserMessageAt/);
   assert.match(source, /\['quiet', 'raw', 'silent', 'impersonate'\]/);
   assert.match(source, /GENERATION_TICKET_PREFIX/);
@@ -120,6 +140,11 @@ test('host glue pins MVU reads, owns the pipeline and preserves original reroll 
   assert.match(source, /ticketTime >= checkpointTime/);
   assert.doesNotMatch(source, /pendingTicket\.generationKey !== checkpoint\?\.target\?\.generationKey/);
   assert.match(source, /runtime\.pipelineEpoch !== recoveryEpoch/);
+  assert.match(source, /const loadSerial = \+\+chatLoadSerial/);
+  assert.match(source, /const loadEpoch = runtime\.pipelineEpoch/);
+  assert.match(source, /runtime\.pipelineEpoch === loadEpoch/);
+  assert.match(source, /const startupEpoch = runtime\.pipelineEpoch/);
+  assert.match(source, /runtime\.pipelineEpoch === startupEpoch/);
 });
 
 test('metadata commit is revision guarded and settings editing is not rerendered', () => {
@@ -128,6 +153,17 @@ test('metadata commit is revision guarded and settings editing is not rerendered
   assert.match(source, /storeDigest\(readback\) !== storeDigest\(snapshot\)/);
   assert.match(source, /panel\.querySelector\('\[data-tab="settings"\]\.active'\)/);
   assert.match(source, /runtime\.runReports/);
+  assert.match(source, /function doctorPersistenceStore\(/);
+  assert.match(source, /window\.WORLD_ENGINE_STORE/);
+  assert.match(source, /let reportPersistTail = Promise\.resolve\(\)/);
+  assert.match(source, /let reportMutationSerial = 0/);
+  assert.match(source, /reportMutationSerial \+= 1/);
+  assert.match(source, /await drainReportPersistence\(\)/);
+  assert.match(source, /if \(runtime\.pipelineBusy\)[\s\S]*?医生任务仍在运行/u);
+  assert.match(source, /DIAGNOSTIC_INTEGRITY_STORAGE_PREFIX/);
+  assert.match(source, /persistDiagnosticIntegrityLatch/);
+  const reportBlock = source.slice(source.indexOf('function recordRunReport'), source.indexOf('function storeAfterProfileRun'));
+  assert.doesNotMatch(reportBlock, /sessionStorage\.setItem/);
 });
 
 test('empty profile output cannot pass without a reason or against stable candidates', () => {
@@ -153,10 +189,13 @@ test('profile runtime accepts recoverable fenced JSON without executing browser 
 test('UI has bounded desktop and full mobile viewport layouts', () => {
   const css = read('style.css');
   assert.match(css, /width:\s*min\(780px,\s*calc\(100vw - 32px\)\)/);
-  assert.match(css, /max-height:\s*calc\(100dvh - 96px\)/);
+  assert.match(css, /max-height:\s*calc\(var\(--mvu-ref-visual-height, 100dvh\) - 96px\)/);
   assert.match(css, /@media \(max-width: 680px\)/);
   assert.match(css, /env\(safe-area-inset-top\)/);
   assert.match(css, /overflow:\s*auto/);
+  assert.match(read('profile-engine.js'), /window\.visualViewport\?\.addEventListener/);
+  assert.match(read('profile-engine.js'), /addEventListener\?\.\('resize', syncVisualViewportHeight\)/);
+  assert.match(read('profile-engine.js'), /visualViewport\?\.addEventListener\?\.\('scroll', syncVisualViewportHeight\)/);
 });
 
 test('full report export omits API key', () => {

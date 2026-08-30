@@ -1,13 +1,13 @@
-# MVU 人物与世界医生（Kemini Clean 0.8.5）
+# MVU 人物与世界医生（Kemini Clean 0.8.6）
 
-0.8.5 延续从运行入口重建的 0.8.0 基线，保留 0.8.1—0.8.4 已验证的生命周期、Story Oracle no-op、人物发现和完整档案补填边界；新增 Story Oracle 后端转发错误回执识别：只有明确的运输错误信封或 HTTP 4xx/5xx 状态回执才按原请求自动重试一次，普通无补丁文本仍然失败，绝不冒充变量正确。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
+0.8.6 延续从运行入口重建的 0.8.0 基线，保留 0.8.1—0.8.5 已验证的生命周期与 Story Oracle 修复边界；本版把成熟 Doctor 的修复后 MVU/JSONPatch 结构化人物发现移植到简化主链，并以 Life State Engine ver5.35 的宽容 JSON 解析器和单次定向修复模式实现人物填表。人物阶段先用一个很小的名单请求阅读本楼正文，再把需要补全的人物按输出容量逐批完整填表，避免“发现九人就让一次低额度回复写九张完整档案”。完整报告改用 World Engine 3.0.2 已有的 IndexedDB，并等待真实事务完成后才标记成功。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
 
 ## 当前唯一主链
 
 每条主聊天最终回复在 `GENERATION_ENDED` 后经过两次新鲜读取并确认聊天、楼层、swipe 与正文身份，再严格串行执行：
 
-1. Story Oracle v1.35.4 复检并按需修复本楼 MVU；
-2. ver5.35 式宽容填表事务生成或更新完整人物档案；
+1. 复用 Story Oracle v1.35.4 诊断组件的固定楼层适配链复检并按需修复本楼 MVU；
+2. 采用 ver5.35 宽容解析与单次定向修复模式的人物填表生成或更新完整档案；
 3. Disnight World Engine v3.0.2 推进一次私密后台世界。
 
 任一阶段失败都会停止后续阶段并保存精确重试点。刷新会恢复已完成事件票据或未完成检查点；用户取消会保存取消墓碑，不会刷新后复活。Doctor 自己修复正文中的变量块时会保留同一世界推进收据，手动复检不会让同一楼重复推进世界。
@@ -21,7 +21,7 @@
 
 逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。冻结原件可分别运行：
 
-0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)。
+0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)。
 
 ```bash
 npm run verify:vendor
@@ -31,7 +31,7 @@ npm run verify:vendor
 
 正文只负责提供本轮可见事实，不要求两千字正文写齐档案。角色卡、世界书、已有档案、MVU 与正文确定不能冲突的事实；缺失的外貌、经历、欲望、习惯、关系方式、弱点和生理信息由模型合理补全，并记录为后续可修订推断。
 
-明确姓名、对白标签、行动主体、角色卡名和稳定称谓都会进入必覆盖候选。空档案至少经过一次定向复核；整张档案完整解析、宿主持久化并完整读回后才算提交，失败不留下半张档案。
+修复后的 MVU 人物容器、正文 `JSONPatch` 人物路径、结构化人物标签、既有档案命中和稳定 NPC/ACTOR 编号组成必覆盖候选。每个最终正文先执行一次只返回姓名/稳定称谓的轻量发现；发现名必须能在本楼正文或本楼结构证据中落地，不能把整份 MVU 的远方库存人物带进当前补档。正文没写齐的信息在随后的完整填表中继续创造性补全。已有完整人物只进入姓名册，不会因再次出现而重写。待处理人数超过当前输出上限的安全容量时会分批填表；初答与单次格式修复都不得夹带延后人物或用别名吞掉后续批次。全部批次在内存汇总，最后仍只做一次原子提交；任一批失败都不留下半张档案。刷新命中同一精确提交收据时才会 0 次模型调用直接恢复到世界阶段。
 
 人物性格随机、多样性、篇幅、文风、视角和玩家边界仍由配对的 Izumi 预设在正文生成前负责，Doctor 不在正文后重新掷人格。用户的私有预设没有进入本仓库。
 
@@ -39,7 +39,7 @@ npm run verify:vendor
 
 World Engine 接收完整人物档案、修复后的 MVU 和原件世界上下文，在后台记录和推进人物、势力、环境、社会过程与事件。后台保留完整 `blackbox`，但正文注入只读取其公开投影，`secretActions` 与 `secretAssets` 在调用原件注入器前被清空；私密动机与镜头外行动不会仅靠一句提示词留给正文模型自行保密。
 
-世界状态仍只属于 World Engine。数据库继续由数据库本体独立填表，MVU 继续拥有实时变量，预设继续负责正文生成，Doctor 人物档案只存于当前聊天 metadata；四者没有合并或互相冒充成功。
+世界状态仍只属于 World Engine。数据库继续由数据库本体独立填表，MVU 继续拥有实时变量，预设继续负责正文生成；Doctor 人物档案使用 World Engine 3.0.2 已有的 IndexedDB 存储层，但按 chatId 独立键保存，不写入世界状态，也不与数据库表格竞争。旧聊天 metadata 只作一次迁移来源；四者没有合并或互相冒充成功。
 
 ## 控制台
 
@@ -52,7 +52,9 @@ World Engine 接收完整人物档案、修复后的 MVU 和原件世界上下�
 - 诊断：最近状态与运行结果；
 - 操作：精确失败重试、手动 MVU 复检、人物补档、世界重试、真正取消，以及排除全部 API 配置的当前聊天完整报告。
 
-桌面面板限制在视口内；手机使用动态视口、四边安全区、横向标签和不小于 44px 的触控目标。设置输入期间后台刷新不会覆盖未保存内容。
+人物档案、完整报告和诊断统一复用 World Engine 3.0.2 的大容量存储层，并等待 IndexedDB 写事务完成及只读事务读回后才显示完整；酒馆自身 `saveMetadata` 会吞掉保存错误且只能操作当前全局聊天，因此不再作为人物档案成功依据。旧版人物 metadata 与当前聊天的 `sessionStorage` 报告会完整复制迁移，原副本暂留作兼容回退，不裁剪字段或历史。医生仍在运行时会拒绝本次导出并明确要求任务结束后再次点击，不会下载半份“完整报告”；缺页时总览、按钮和导出文件都会明确显示“不完整”，不会用内存镜像冒充落盘成功。
+
+桌面面板限制在视口内；手机直接使用 `visualViewport` 的真实动态高度与顶部偏移（包括键盘后不足 240px 的狭小可视区）、四边安全区、横向标签和不小于 44px 的触控目标。设置草稿在标签切换、关闭重开和聊天切换时保留；人物完整 JSON 仅在展开时生成，诊断页只重绘摘要。
 
 ## 安装与更新
 

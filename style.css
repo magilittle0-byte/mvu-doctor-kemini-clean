@@ -35,8 +35,9 @@
   max-width: calc(100vw - 32px);
   height: min(760px, calc(100vh - 96px));
   max-height: calc(100vh - 96px);
-  height: min(760px, calc(100dvh - 96px));
-  max-height: calc(100dvh - 96px);
+  height: min(760px, calc(var(--mvu-ref-visual-height, 100dvh) - 96px));
+  max-height: calc(var(--mvu-ref-visual-height, 100dvh) - 96px);
+  box-sizing: border-box;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
@@ -60,6 +61,8 @@
   border-bottom: 1px solid var(--mvu-ref-line);
 }
 
+#mvu-ref-panel > header > div { min-width: 0; }
+
 #mvu-ref-panel header small {
   display: block;
   color: var(--mvu-ref-accent);
@@ -68,7 +71,7 @@
   letter-spacing: 0.14em;
 }
 
-#mvu-ref-panel h2 { margin: 3px 0 0; font-size: 20px; line-height: 1.2; }
+#mvu-ref-panel h2 { margin: 3px 0 0; font-size: 20px; line-height: 1.2; overflow-wrap: anywhere; }
 
 #mvu-ref-panel button {
   border: 1px solid var(--mvu-ref-line);
@@ -82,7 +85,7 @@
 
 #mvu-ref-panel button:hover,
 #mvu-ref-panel button.active { border-color: var(--mvu-ref-accent); background: rgba(103, 228, 207, 0.12); }
-#mvu-ref-panel header > button { width: 38px; padding: 0; font-size: 25px; }
+#mvu-ref-panel header > button { width: 38px; flex: 0 0 38px; padding: 0; font-size: 25px; }
 
 #mvu-ref-panel nav {
   display: grid;
@@ -114,8 +117,8 @@
   background: var(--mvu-ref-surface);
 }
 .mvu-ref-status strong { color: var(--mvu-ref-accent); text-transform: uppercase; min-width: 72px; }
-.mvu-ref-status.failed { border-color: rgba(255, 116, 132, 0.6); }
-.mvu-ref-status.failed strong { color: var(--mvu-ref-danger); }
+.mvu-ref-status.failed, .mvu-ref-status.report-incomplete { border-color: rgba(255, 116, 132, 0.6); }
+.mvu-ref-status.failed strong, .mvu-ref-status.report-incomplete strong { color: var(--mvu-ref-danger); }
 .mvu-ref-status.discarded, .mvu-ref-status.cancelled { border-color: rgba(255, 195, 103, 0.55); }
 .mvu-ref-status.discarded strong, .mvu-ref-status.cancelled strong { color: #ffc367; }
 .mvu-ref-status span { min-width: 0; overflow-wrap: anywhere; }
@@ -134,7 +137,8 @@
 .mvu-ref-note, .mvu-ref-empty { color: var(--mvu-ref-muted); line-height: 1.7; }
 
 .mvu-ref-card { margin-bottom: 10px; border: 1px solid var(--mvu-ref-line); border-radius: 14px; background: var(--mvu-ref-surface); overflow: hidden; }
-.mvu-ref-card summary { display: flex; justify-content: space-between; gap: 14px; padding: 14px; cursor: pointer; }
+.mvu-ref-card summary { display: flex; justify-content: space-between; gap: 14px; min-width: 0; padding: 14px; cursor: pointer; }
+.mvu-ref-card summary strong, .mvu-ref-card summary span { min-width: 0; overflow-wrap: anywhere; }
 .mvu-ref-card summary span { color: var(--mvu-ref-muted); }
 .mvu-ref-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 14px 14px; }
 .mvu-ref-grid p { margin: 0; padding: 11px; border-radius: 10px; background: rgba(0, 0, 0, 0.18); line-height: 1.65; overflow-wrap: anywhere; }
@@ -177,11 +181,14 @@
 @media (max-width: 680px) {
   #mvu-ref-launcher { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); width: 44px; height: 44px; }
   #mvu-ref-panel {
-    inset: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    top: calc(var(--mvu-ref-visual-top, 0px) + max(8px, env(safe-area-inset-top)));
+    right: max(8px, env(safe-area-inset-right));
+    bottom: auto;
+    left: max(8px, env(safe-area-inset-left));
     width: auto;
-    height: auto;
+    height: max(1px, calc(min(var(--mvu-ref-visual-height, 100dvh), 100dvh) - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom))));
     max-width: none;
-    max-height: none;
+    max-height: max(1px, calc(min(var(--mvu-ref-visual-height, 100dvh), 100dvh) - max(8px, env(safe-area-inset-top)) - max(8px, env(safe-area-inset-bottom))));
     border-radius: 16px;
   }
   #mvu-ref-panel > header { padding: 14px; }
@@ -192,6 +199,7 @@
   #mvu-ref-panel textarea,
   #mvu-ref-panel select { min-height: 44px; font-size: 16px; }
   .mvu-ref-metrics, .mvu-ref-actions, .mvu-ref-grid { grid-template-columns: 1fr; }
+  .mvu-ref-card summary { display: grid; grid-template-columns: minmax(0, 1fr); }
   #mvu-ref-panel > section { padding: 12px; }
 }
 
