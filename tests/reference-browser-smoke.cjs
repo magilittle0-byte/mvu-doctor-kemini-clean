@@ -252,6 +252,7 @@ async function installHarness(page, options = {}) {
       loadState: () => ({ round: worldRound, blackbox: { secretAssets: ['暗线账本'] }, model: '剧情内部模型字段' }),
     };
     window.WORLD_ENGINE_WORLDBOOK = { buildPromptSection: async () => '原版世界后台提示' };
+    window.WORLD_ENGINE_INJECT = { buildContext: (state) => JSON.stringify(state) };
     window.WORLD_ENGINE = {
       async manualEvolve(mode, reason) {
         window.__stages.push('world');
@@ -310,6 +311,37 @@ async function runAcceptedReplyInTauriOrder(page, assistantText = '白露：我�
   }, assistantText);
 }
 
+async function runAcceptedReplyWithLateMessageAndBackgroundNormal(page, assistantText = '白露：我先替你看一看伤口。') {
+  await page.evaluate(async (text) => {
+    const oldText = '旧楼层保持不变。';
+    window.__setChat([{ is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] }]);
+    await window.__emit('generation_started', 'normal', {}, false);
+    window.__append({ is_user: true, mes: '请继续。' });
+    window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+    await window.__emit('generation_ended');
+    // TauriTavern can deliver the matching MESSAGE_SENT after the accepted
+    // assistant row.  A separate extension may then run a background normal
+    // generation; neither event may replace the accepted main-reply ticket.
+    await window.__emit('message_sent');
+    await window.__emit('generation_started', 'normal', {}, false);
+    await window.__emit('generation_ended');
+  }, assistantText);
+}
+
+async function runAcceptedReplyWithTauriMessageOrderAndBackgroundNormal(page, assistantText = '白露：我先替你看一看伤口。') {
+  await page.evaluate(async (text) => {
+    const oldText = '旧楼层保持不变。';
+    window.__setChat([{ is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] }]);
+    await window.__emit('generation_started', 'normal', {}, false);
+    window.__append({ is_user: true, mes: '请继续。' });
+    await window.__emit('message_sent');
+    window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+    await window.__emit('generation_ended');
+    await window.__emit('generation_started', 'normal', {}, false);
+    await window.__emit('generation_ended');
+  }, assistantText);
+}
+
 async function runNextAcceptedReply(page, assistantText = '白露：我把新发现记进了随身册页。') {
   await page.evaluate(async (text) => {
     window.__append({ is_user: true, mes: '继续观察并行动。' });
@@ -324,7 +356,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
+test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -350,6 +382,30 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
           assert.ok(geometry.bodyWidth <= geometry.viewportWidth + 1, JSON.stringify(geometry));
           assert.ok(geometry.width >= Math.min(360, viewport.width - 2), JSON.stringify(geometry));
         }
+      } finally { await page.close(); }
+    });
+
+    await t.test('public world injection removes blackbox secrets without mutating private state', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const evidence = await page.evaluate(() => {
+          const privateState = {
+            round: 3,
+            winds: [{ content: '公开风声' }],
+            blackbox: {
+              secretActions: [{ action: '秘密记录同伴资料' }],
+              secretAssets: [{ name: '暗藏名册' }],
+            },
+          };
+          window.MVUDoctorProfileEngine.installWorldContextBridge();
+          const output = window.WORLD_ENGINE_INJECT.buildContext(privateState);
+          return { output, privateState };
+        });
+        assert.match(evidence.output, /公开风声/u);
+        assert.doesNotMatch(evidence.output, /秘密记录同伴资料|暗藏名册/u);
+        assert.equal(evidence.privateState.blackbox.secretActions.length, 1);
+        assert.equal(evidence.privateState.blackbox.secretAssets.length, 1);
       } finally { await page.close(); }
     });
 
@@ -385,6 +441,94 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
         }));
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
         assert.equal(evidence.result.ok, true);
+      } finally { await page.close(); }
+    });
+
+    await t.test('late message event and background normal generation cannot steal the accepted ticket', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReplyWithLateMessageAndBackgroundNormal(page);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          worldCalls: window.__worldCalls,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.runtime.lastResult.ok, true);
+        assert.equal(evidence.worldCalls.length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('Tauri message order and background normal generation cannot steal the accepted ticket', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReplyWithTauriMessageOrderAndBackgroundNormal(page);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          worldCalls: window.__worldCalls,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.runtime.lastResult.ok, true);
+        assert.equal(evidence.worldCalls.length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('nested quiet generation consumes only its own end event', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await page.evaluate(async () => {
+          const oldText = '旧楼层保持不变。';
+          window.__setChat([{ is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] }]);
+          await window.__emit('generation_started', 'normal', {}, false);
+          window.__append({ is_user: true, mes: '请继续。' });
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'quiet', { quiet: true }, false);
+          await window.__emit('generation_ended');
+          const text = '白露：我先替你看一看伤口。';
+          window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+          await window.__emit('generation_ended');
+        });
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          stack: window.MVUDoctorProfileEngine.getRuntime().generationEventStack,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stack, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('idle background normal generation with no new user layer is discarded', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const before = await page.evaluate(() => ({
+          generationKey: window.MVUDoctorProfileEngine.getRuntime().lastResult?.generationKey,
+          stages: [...window.__stages],
+        }));
+        await page.evaluate(async () => {
+          await window.__emit('generation_started', 'normal', {}, false);
+          await window.__emit('generation_ended');
+        });
+        await page.waitForTimeout(1800);
+        const after = await page.evaluate(() => ({
+          generationKey: window.MVUDoctorProfileEngine.getRuntime().lastResult?.generationKey,
+          stages: window.__stages,
+          phase: window.MVUDoctorProfileEngine.getRuntime().phase,
+          acceptedGeneration: window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration,
+        }));
+        assert.deepEqual(after.stages, before.stages);
+        assert.equal(after.generationKey, before.generationKey);
+        assert.equal(after.phase, 'done');
+        assert.equal(after.acceptedGeneration, null);
       } finally { await page.close(); }
     });
 
@@ -504,6 +648,29 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
       } finally { await page.close(); }
     });
 
+    await t.test('stopped main generation clears its durable ticket and never starts Doctor', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await page.evaluate(async () => {
+          window.__setChat([{ is_user: true, mes: '请继续。' }]);
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          await window.__emit('generation_stopped');
+        });
+        await page.waitForTimeout(100);
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+        }));
+        assert.deepEqual(evidence.stages, []);
+        assert.equal(evidence.runtime.phase, 'cancelled');
+        assert.equal(evidence.runtime.acceptedGeneration, null);
+        assert.equal(evidence.ticket, null);
+      } finally { await page.close(); }
+    });
+
     await t.test('AI opening without a prior user action is not treated as a playable turn', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
@@ -535,6 +702,50 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
         assert.deepEqual(evidence.stages, ['diagnosis']);
         assert.equal(evidence.result.failedStep, 'diagnosis');
         assert.match(evidence.result.error, /没有产生任何变量效果/u);
+      } finally { await page.close(); }
+    });
+
+    await t.test('Story Oracle wrapped empty JSONPatch is the original nochange success path', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { diagnosisReply: '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>' });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.result.diagnosis.status, 'nochange');
+      } finally { await page.close(); }
+    });
+
+    await t.test('an empty example outside the returned nonempty block cannot hide a real correction', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReply: '示例：<JSONPatch>[]</JSONPatch>\n实际：<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":11}]</JSONPatch></UpdateVariable>',
+          mvuPatchMode: 'apply',
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const result = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime().lastResult);
+        assert.equal(result.diagnosis.status, 'applied');
+      } finally { await page.close(); }
+    });
+
+    await t.test('soft title suggestions do not become mandatory profile rows', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page, '紧急播报：本段只是界面标题。\n白露说道：“我先替你看一看伤口。”');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+        }));
+        assert.equal(Object.keys(evidence.profiles).length, 1);
+        assert.equal(evidence.result.ok, true);
       } finally { await page.close(); }
     });
 
@@ -573,6 +784,7 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
           message.mes = nextText;
           message.swipe_id = 1;
           message.swipes = [oldText, nextText];
+          await window.__emit('message_swiped');
           await window.__emit('generation_ended');
         });
         await waitForSettled(page, 'done');
@@ -583,6 +795,37 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
         assert.equal(evidence.call.mode, undefined);
         assert.equal(evidence.call.reason, 'reroll');
         assert.equal(evidence.result.world.beforeRound, evidence.result.world.afterRound);
+      } finally { await page.close(); }
+    });
+
+    await t.test('automatic continue merges into the same normal ticket and advances world once', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await page.evaluate(async () => {
+          const oldText = '旧楼层保持不变。';
+          window.__setChat([{ is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] }]);
+          await window.__emit('generation_started', 'normal', {}, false);
+          window.__append({ is_user: true, mes: '请继续。' });
+          await window.__emit('message_sent');
+          const partial = '白露：这是尚未完成的答复。';
+          window.__append({ is_user: false, is_system: false, mes: partial, swipe_id: 0, swipes: [partial] });
+          await window.__emit('generation_ended');
+          await window.__emit('generation_started', 'continue', {}, false);
+          const message = window.__context.chat.at(-1);
+          const complete = `${partial}现在补完。`;
+          message.mes = complete;
+          message.swipes[message.swipe_id] = complete;
+          await window.__emit('generation_ended');
+        });
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          calls: window.__worldCalls,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+        }));
+        assert.equal(evidence.calls.length, 1);
+        assert.equal(evidence.calls[0].mode, 'forward');
+        assert.equal(evidence.result.generationType, 'normal');
       } finally { await page.close(); }
     });
 
@@ -985,7 +1228,7 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
       } finally { await page.close(); }
     });
 
-    await t.test('a new generation during metadata save rolls the stale profile commit back', async () => {
+    await t.test('a confirmed new user generation during metadata save rolls the stale profile commit back', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, { slowMetadata: true });
@@ -993,6 +1236,8 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
         await page.waitForFunction(() => window.__saves.length === 1);
         await page.evaluate(async () => {
           await window.__emit('generation_started', 'normal', {}, false);
+          window.__append({ is_user: true, mes: '这是下一轮明确的用户输入。' });
+          await window.__emit('message_sent');
           window.__resolveMetadata();
         });
         await page.waitForFunction(() => window.__saves.length >= 2);
@@ -1004,6 +1249,29 @@ test('0.8.0 reference runtime browser smoke', { timeout: 75000 }, async (t) => {
         assert.deepEqual(evidence.profiles, {});
         assert.ok(!evidence.stages.includes('world'));
         assert.notEqual(evidence.runtime.phase, 'done');
+      } finally { await page.close(); }
+    });
+
+    await t.test('a background normal generation during metadata save cannot cancel the accepted pipeline', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowMetadata: true });
+        await runAcceptedReply(page);
+        await page.waitForFunction(() => window.__saves.length === 1);
+        await page.evaluate(async () => {
+          await window.__emit('generation_started', 'normal', {}, false);
+          await window.__emit('generation_ended');
+          window.__resolveMetadata();
+        });
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          stages: window.__stages,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+        }));
+        assert.equal(Object.keys(evidence.profiles).length, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.runtime.lastResult.ok, true);
       } finally { await page.close(); }
     });
   } finally {

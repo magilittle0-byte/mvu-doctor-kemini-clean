@@ -63,7 +63,46 @@ test('host glue pins MVU reads, owns the pipeline and preserves original reroll 
   assert.match(source, /\['quiet', 'raw', 'silent', 'impersonate'\]/);
   assert.match(source, /GENERATION_TICKET_PREFIX/);
   assert.match(source, /persistGenerationTicket\(runtime\.acceptedGeneration, 'started'\)/);
-  assert.match(source, /persistGenerationTicket\(ticket, 'ended'\)/);
+  const endStart = source.indexOf("context.eventSource.on(eventName(context, 'GENERATION_ENDED'");
+  const stopStart = source.indexOf("context.eventSource.on(eventName(context, 'GENERATION_STOPPED'", endStart);
+  assert.ok(endStart >= 0 && stopStart > endStart);
+  const ended = source.slice(endStart, stopStart);
+  assert.match(ended, /const event = popGenerationEvent\(\)/);
+  assert.match(ended, /event\?\.kind === 'ignored'.*event\?\.kind === 'guarded-normal'/s);
+  assert.match(ended, /event\?\.kind === 'ticket' && event\.serial !== serial/);
+  assert.match(ended, /persistGenerationTicket\(\{\s*\.\.\.ticket,\s*awaitingStart:\s*false\s*\},\s*'ended'\)/);
+  assert.match(ended, /waitForAcceptedFinal\(serial\)/);
+  assert.ok(ended.indexOf('persistGenerationTicket') < ended.indexOf('waitForAcceptedFinal(serial)'));
+
+  const swipeStart = source.indexOf("context.eventSource.on(eventName(context, 'MESSAGE_SWIPED'", stopStart);
+  assert.ok(swipeStart > stopStart);
+  const stopped = source.slice(stopStart, swipeStart);
+  assert.match(stopped, /const event = popGenerationEvent\(\)/);
+  assert.match(stopped, /event\?\.kind === 'ignored'.*event\?\.kind === 'guarded-normal'/s);
+  assert.match(stopped, /event\?\.kind === 'ticket' && event\.serial !== ticket\.serial/);
+  assert.match(stopped, /clearGenerationTicket\(ticket\.chatId \|\| chatId\(\), ticket\.generationKey\)/);
+
+  assert.match(source, /generationEventStack\.push\(\{ kind, serial:/);
+  assert.match(source, /const explicitReplacement = \['swipe', 'regenerate'\]\.includes\(normalizedType\)/);
+  assert.match(source, /pushGenerationEvent\('guarded-normal'\)/);
+  assert.match(source, /const hasUserAfterBaseline = liveChat\.slice/);
+  assert.match(source, /const hasTurnUser = liveChat\.slice/);
+  assert.match(source, /const belongsToStartedReroll = activeTicket\?\.chatId === chatId\(\)/);
+  assert.match(source, /slotWasUnmaterialized/);
+  assert.match(source, /explicitRerollCompletion/);
+
+  const continueStart = source.indexOf('function mergeContinuationTicket');
+  const bindStart = source.indexOf('function bindEvents', continueStart);
+  assert.ok(continueStart >= 0 && bindStart > continueStart);
+  const continuation = source.slice(continueStart, bindStart);
+  assert.match(continuation, /runtime\.generationSerial \+= 1/);
+  assert.match(continuation, /\.\.\.ticket,\s*serial: runtime\.generationSerial/s);
+  assert.match(continuation, /continuationCount: Number\(ticket\.continuationCount \|\| 0\) \+ 1/);
+  assert.match(continuation, /persistGenerationTicket\(runtime\.acceptedGeneration, 'started'\)/);
+  assert.match(continuation, /pushGenerationEvent\('ticket', runtime\.acceptedGeneration\.serial\)/);
+  const startHandler = source.slice(bindStart, endStart);
+  assert.match(startHandler, /normalizedType === 'continue'.*\['started', 'ended'\].*mergeContinuationTicket\(activeTicket\)/s);
+  assert.match(startHandler, /normalizedType === 'continue' && runtime\.pipelineBusy.*pushGenerationEvent\('ignored'\)/s);
   assert.match(source, /checkpoint\.status === 'cancelled'/);
   assert.match(source, /migrateDoctorWrittenAcceptedTarget/);
   assert.match(source, /ensureManualGenerationBinding/);

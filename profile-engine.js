@@ -13,6 +13,7 @@
   const MAX_BRANCH_MESSAGES = 8;
   const EMPTY_VALUE = /^(?:未知|不详|待定|待确认|未登记|未说明|暂无|无法确认|unknown|null|n\/a)?$/iu;
   const WORLD_CONTEXT_BRIDGE = Symbol.for('mvu-doctor.reference.world-context-bridge');
+  const WORLD_PUBLIC_PROJECTION_BRIDGE = Symbol.for('mvu-doctor.reference.world-public-projection-bridge');
   const STALE_TASK = 'stale_accepted_target';
 
   // Direct transplant from Life State Engine ver5.35, content lines 295-374.
@@ -763,14 +764,15 @@ ${target.content}`;
     }
 
     const patchBlock = so.extractUpdateBlock(raw);
-    const explicitEmpty = /<JSONPatch\b[^>]*>\s*(?:```(?:json)?\s*)?\[\s*\](?:\s*```)?\s*<\/JSONPatch>/iu.test(String(raw || ''));
+    const explicitEmpty = /<JSONPatch\b[^>]*>\s*(?:```(?:json)?\s*)?\[\s*\](?:\s*```)?\s*<\/JSONPatch>/iu
+      .test(String(patchBlock || raw || ''));
     if (!patchBlock && !explicitEmpty) {
       throw enrichDiagnosisError(Object.assign(new Error('故事神谕模型返回既没有UpdateVariable补丁，也没有明确的空JSONPatch；本轮不能冒充变量正确'), {
         code: 'story_oracle_unrecognized_diagnosis', raw: String(raw || '').slice(0, 16000),
       }));
     }
     let result = { status: 'nochange' };
-    if (patchBlock) {
+    if (patchBlock && !explicitEmpty) {
       const opts = { type: 'message', message_id: target.index };
       const oldData = unchangedPayload;
       const snapshot = deepClone(oldData);
@@ -839,16 +841,18 @@ ${target.content}`;
 
   function installWorldContextBridge() {
     const worldbook = window.WORLD_ENGINE_WORLDBOOK;
-    if (!worldbook?.buildPromptSection || worldbook[WORLD_CONTEXT_BRIDGE]) return Boolean(worldbook?.[WORLD_CONTEXT_BRIDGE]);
-    const original = worldbook.buildPromptSection.bind(worldbook);
-    worldbook.buildPromptSection = async function(...args) {
-      const base = await original(...args);
-      const pinnedTarget = runtime.worldContextTarget || latestAssistant();
-      if (!pinnedTarget) return base;
-      requireCurrentTarget(pinnedTarget, '世界推演读取私密上下文');
-      const profileStore = readStore();
-      const mvu = await currentMvuState(pinnedTarget.index);
-      const privateContext = `【Doctor私密权威快照｜仅供后台世界推演】
+    const injector = window.WORLD_ENGINE_INJECT;
+    let installed = false;
+    if (worldbook?.buildPromptSection && !worldbook[WORLD_CONTEXT_BRIDGE]) {
+      const original = worldbook.buildPromptSection.bind(worldbook);
+      worldbook.buildPromptSection = async function(...args) {
+        const base = await original(...args);
+        const pinnedTarget = runtime.worldContextTarget || latestAssistant();
+        if (!pinnedTarget) return base;
+        requireCurrentTarget(pinnedTarget, '世界推演读取私密上下文');
+        const profileStore = readStore();
+        const mvu = await currentMvuState(pinnedTarget.index);
+        const privateContext = `【Doctor私密权威快照｜仅供后台世界推演】
 以下人物档案和MVU状态不是玩家知识，不得据此让不知情人物全知，也不得直接泄露到正文。人物必须按自己的欲望、知识、资源、阻力和行动习惯决定下一步；尝试不等于成功，结果仍由世界规则裁决。
 
 完整人物档案：
@@ -859,10 +863,28 @@ ${JSON.stringify(mvu, null, 2)}
 
 用户的全局自定义模型适配附加提示词：
 ${settings().globalPrompt || '（未设置）'}`;
-      return [base, privateContext].filter(Boolean).join('\n\n');
-    };
-    Object.defineProperty(worldbook, WORLD_CONTEXT_BRIDGE, { value: { original }, configurable: false });
-    return true;
+        return [base, privateContext].filter(Boolean).join('\n\n');
+      };
+      Object.defineProperty(worldbook, WORLD_CONTEXT_BRIDGE, { value: { original }, configurable: false });
+      installed = true;
+    } else if (worldbook?.[WORLD_CONTEXT_BRIDGE]) installed = true;
+
+    if (injector?.buildContext && !injector[WORLD_PUBLIC_PROJECTION_BRIDGE]) {
+      const originalBuildContext = injector.buildContext.bind(injector);
+      injector.buildContext = function(worldState, tags) {
+        const publicState = deepClone(worldState || {});
+        if (publicState.blackbox && typeof publicState.blackbox === 'object') {
+          publicState.blackbox.secretActions = [];
+          publicState.blackbox.secretAssets = [];
+        }
+        return originalBuildContext(publicState, tags);
+      };
+      Object.defineProperty(injector, WORLD_PUBLIC_PROJECTION_BRIDGE, {
+        value: { original: originalBuildContext }, configurable: false,
+      });
+      installed = true;
+    } else if (injector?.[WORLD_PUBLIC_PROJECTION_BRIDGE]) installed = true;
+    return installed;
   }
 
   function committedWorldReceipt(target) {
@@ -991,8 +1013,7 @@ ${settings().globalPrompt || '（未设置）'}`;
     reportPersistence: { ok: true, attemptedCount: 0, savedCount: 0, lastSavedAt: '', error: '' },
     diagnosticPersistence: { ok: true, count: 0, error: '' },
     generationTicketPersistence: { ok: true, status: '', error: '' },
-    pendingUserSend: false,
-    hiddenGenerationDepth: 0,
+    generationEventStack: [],
   };
 
   function setPhase(phase, detail, result = null) {
@@ -1248,7 +1269,7 @@ ${settings().globalPrompt || '（未设置）'}`;
       let errors;
       try {
         envelope = normalizeEnvelope(parseJsonResponse(raw));
-        errors = validateEnvelope(envelope, players, [...new Set([...candidates, ...suggestions])]);
+        errors = validateEnvelope(envelope, players, candidates);
         if (errors.length === 0 && envelope.profiles.length === 0) {
           errors.push('首次返回空档案必须进行一次定向复核；只有复核后仍确认无人时才能接受空结果');
         }
@@ -1264,7 +1285,7 @@ ${settings().globalPrompt || '（未设置）'}`;
         repairRaw = String(raw);
         requireTaskOwner(owner, target, '人物档案单次修复返回');
         envelope = normalizeEnvelope(parseJsonResponse(raw));
-        errors = validateEnvelope(envelope, players, [...new Set([...candidates, ...suggestions])]);
+        errors = validateEnvelope(envelope, players, candidates);
         repairErrors = [...errors];
       }
       if (errors.length > 0) throw new Error(`单次修复后档案仍不完整：${errors.join('；')}`);
@@ -1362,6 +1383,7 @@ ${settings().globalPrompt || '（未设置）'}`;
     if (cancelPendingGeneration) {
       runtime.generationSerial += 1;
       runtime.acceptedGeneration = null;
+      runtime.generationEventStack = [];
     }
     runtime.diagnostics.unshift({ at: new Date().toISOString(), phase: 'cancel-requested', detail: reason });
     persistDiagnostics();
@@ -1525,7 +1547,7 @@ ${settings().globalPrompt || '（未设置）'}`;
       }
       step = 'world';
       setPhase('world-running', '变量与人物已确认，原版世界引擎正在推进后台世界');
-      result.world = await runWorldEvolution(target, generationType === 'swipe' || generationType === 'regenerate', owner);
+      result.world = await runWorldEvolution(target, ['swipe', 'regenerate', 'continue'].includes(generationType), owner);
       requirePipelineOwner(owner, target, '世界阶段完成');
       result.ok = true;
       result.status = 'complete';
@@ -1599,20 +1621,64 @@ ${settings().globalPrompt || '（未设置）'}`;
       && fresh.swipeId === ticket.expectedSwipeId
       && liveSlot.materialized;
     const explicitRerollCompletion = ticket.type === 'swipe' || ticket.type === 'regenerate';
+    const baselineIndex = Number.isInteger(ticket.baselineIndex)
+      ? ticket.baselineIndex : (Number.isInteger(ticket.expectedIndex) ? ticket.expectedIndex : -1);
+    const liveChat = ctx()?.chat || [];
+    const hasUserAfterBaseline = liveChat.slice(Math.max(0, baselineIndex + 1))
+      .some((message) => message?.is_user === true && Boolean(messageText(message)));
+    const hasTurnUser = liveChat.slice(Math.max(0, baselineIndex + 1), fresh.index)
+      .some((message) => message?.is_user === true && Boolean(messageText(message)));
+    const type = ticket.type || 'normal';
+    if (type === 'normal' && !hasUserAfterBaseline) {
+      runtime.acceptedGeneration = null;
+      try { clearGenerationTicket(ticket.chatId || fresh.chatId, ticket.generationKey); }
+      catch (error) { noteGenerationTicketFailure('忽略后台生成时清理', error); }
+      runtime.phase = text(ticket.priorPhase || (runtime.lastResult?.ok ? 'done' : 'idle'));
+      runtime.detail = ticket.priorPhase === 'idle' && !runtime.lastResult
+        ? '这是没有用户行动的AI开场或后台生成；医生不会推进变量、档案或后台世界'
+        : text(ticket.priorDetail || (runtime.lastResult?.ok ? '上一轮医生任务已完成' : '等待下一条最终回复'));
+      runtime.diagnostics.unshift({
+        at: new Date().toISOString(), phase: 'background-ignored',
+        detail: '生成前锚点之后没有用户楼；已按后台生成忽略，不推进变量、档案或世界',
+      });
+      persistDiagnostics();
+      render();
+      return;
+    }
     if (baseline && fresh.identity === baseline && !materializedOverswipe && !explicitRerollCompletion) {
+      if (type === 'continue') {
+        runtime.acceptedGeneration = null;
+        try { clearGenerationTicket(ticket.chatId || fresh.chatId, ticket.generationKey); }
+        catch (error) { noteGenerationTicketFailure('忽略空续写时清理', error); }
+        runtime.phase = text(ticket.priorPhase || (runtime.lastResult?.ok ? 'done' : 'idle'));
+        runtime.detail = text(ticket.priorDetail || '续写没有产生新的最终正文；医生未重复推进');
+        runtime.diagnostics.unshift({
+          at: new Date().toISOString(), phase: 'continue-empty',
+          detail: '续写结束后正文指纹未变化；已清理票据，不重复推进变量、档案或世界',
+        });
+        persistDiagnostics();
+        render();
+        return;
+      }
       setPhase('waiting', '尚未读到新的最终正文，继续等待对应的主聊天生成完成事件');
       setTimeout(() => { void waitForAcceptedFinal(serial); }, 650);
       return;
     }
-    const type = ticket.type || 'normal';
-    fresh.generationKey = ticket.generationKey;
-    if (type === 'normal' && !previousUser(fresh.index)) {
+    if (type === 'normal' && !hasTurnUser) {
       runtime.acceptedGeneration = null;
       try { clearGenerationTicket(ticket.chatId || fresh.chatId, ticket.generationKey); }
-      catch (error) { noteGenerationTicketFailure('忽略AI开场时清理', error); }
-      setPhase('idle', '这是没有用户行动的AI开场；医生不会为开场白推进变量、档案或后台世界');
+      catch (error) { noteGenerationTicketFailure('忽略无用户锚点正文时清理', error); }
+      runtime.phase = text(ticket.priorPhase || (runtime.lastResult?.ok ? 'done' : 'idle'));
+      runtime.detail = text(ticket.priorDetail || '检测到不属于用户回合的后台正文；医生未接管');
+      runtime.diagnostics.unshift({
+        at: new Date().toISOString(), phase: 'background-ignored',
+        detail: '新助手正文之前没有本轮用户楼；已按后台输出忽略',
+      });
+      persistDiagnostics();
+      render();
       return;
     }
+    fresh.generationKey = ticket.generationKey;
     try {
       persistPipelineCheckpoint({
         status: 'running', target: deepClone(fresh), generationType: type,
@@ -1882,11 +1948,81 @@ ${settings().globalPrompt || '（未设置）'}`;
     return true;
   }
 
+  function beginGenerationTicket(normalizedType, source = 'generation-started') {
+    const isReroll = normalizedType === 'swipe' || normalizedType === 'regenerate';
+    const baseline = latestAssistant();
+    const baselineSlot = activeSwipeSlot(baseline?.message);
+    const priorPhase = runtime.phase;
+    const priorDetail = runtime.detail;
+    cancelAll('新的主聊天生成开始');
+    try { clearGenerationTicket(chatId()); }
+    catch (error) { noteGenerationTicketFailure('新正文开始前清理', error); }
+    runtime.generationSerial += 1;
+    runtime.acceptedGeneration = {
+      serial: runtime.generationSerial,
+      chatId: chatId(),
+      type: normalizedType,
+      baselineIdentity: baseline?.identity || '',
+      baselineIndex: baseline?.index ?? -1,
+      generationKey: `${chatId()}:${Date.now().toString(36)}:${runtime.generationSerial}`,
+      startedAt: new Date().toISOString(),
+      expectedIndex: baseline?.index ?? null,
+      expectedSwipeId: baselineSlot.swipeId,
+      slotWasUnmaterialized: Boolean(isReroll && baseline && !baselineSlot.materialized),
+      priorPhase,
+      priorDetail,
+      awaitingStart: source === 'message-sent',
+      status: 'started',
+    };
+    try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'started'); }
+    catch (error) { noteGenerationTicketFailure('正文开始', error); }
+    runtime.generationType = normalizedType;
+    if (isReroll && baseline) scheduleBranchRestore(() => restoreProfileBranch(baseline, true));
+    setPhase('waiting', '正文生成中');
+    return runtime.acceptedGeneration?.serial;
+  }
+
+  function pushGenerationEvent(kind, serial = null) {
+    runtime.generationEventStack.push({ kind, serial: Number.isFinite(serial) ? serial : null });
+    if (runtime.generationEventStack.length > 32) runtime.generationEventStack.splice(0, runtime.generationEventStack.length - 32);
+  }
+
+  function popGenerationEvent() {
+    return runtime.generationEventStack.pop() || null;
+  }
+
+  function mergeContinuationTicket(ticket) {
+    runtime.generationSerial += 1;
+    runtime.acceptedGeneration = {
+      ...ticket,
+      serial: runtime.generationSerial,
+      status: 'started',
+      awaitingStart: false,
+      continuationCount: Number(ticket.continuationCount || 0) + 1,
+    };
+    try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'started'); }
+    catch (error) { noteGenerationTicketFailure('正文续写合并', error); }
+    pushGenerationEvent('ticket', runtime.acceptedGeneration.serial);
+    setPhase('waiting', '正文正在续写；保持同一用户回合票据');
+  }
+
   function bindEvents() {
     const context = ctx();
     if (!context?.eventSource?.on) throw new Error('宿主事件总线不可用');
     context.eventSource.on(eventName(context, 'MESSAGE_SENT', 'message_sent'), () => {
-      runtime.pendingUserSend = true;
+      runtime.lastUserMessageAt = Date.now();
+      const chat = ctx()?.chat || [];
+      const tail = chat.at(-1);
+      const activeTicket = runtime.acceptedGeneration;
+      if (tail?.is_user !== true) return;
+      if (activeTicket?.chatId === chatId() && activeTicket.status === 'started') return;
+      const pendingEvent = runtime.generationEventStack.at(-1);
+      if (pendingEvent?.kind === 'guarded-normal') {
+        const serial = beginGenerationTicket('normal', 'generation-started');
+        runtime.generationEventStack[runtime.generationEventStack.length - 1] = { kind: 'ticket', serial };
+        return;
+      }
+      beginGenerationTicket('normal', 'message-sent');
     });
     context.eventSource.on(eventName(context, 'GENERATION_STARTED', 'generation_started'), (type, options, dryRun) => {
       const normalizedType = text(type || 'normal').toLocaleLowerCase();
@@ -1894,54 +2030,78 @@ ${settings().globalPrompt || '（未设置）'}`;
         || options?.silent === true || options?.raw === true
         || ['quiet', 'raw', 'silent', 'impersonate'].includes(normalizedType);
       if (hidden) {
-        runtime.hiddenGenerationDepth += 1;
+        pushGenerationEvent('ignored');
         return;
       }
       enforceManagedScheduling();
-      const isReroll = normalizedType === 'swipe' || normalizedType === 'regenerate';
       const mainTypes = new Set(['normal', 'swipe', 'regenerate', 'continue']);
-      if (!mainTypes.has(normalizedType) && !runtime.pendingUserSend) return;
-      const baseline = latestAssistant();
-      const baselineSlot = activeSwipeSlot(baseline?.message);
-      cancelAll('新的主聊天生成开始');
-      try { clearGenerationTicket(chatId()); }
-      catch (error) { noteGenerationTicketFailure('新正文开始前清理', error); }
-      runtime.generationSerial += 1;
-      runtime.acceptedGeneration = {
-        serial: runtime.generationSerial,
-        chatId: chatId(),
-        type: normalizedType,
-        baselineIdentity: baseline?.identity || '',
-        generationKey: `${chatId()}:${Date.now().toString(36)}:${runtime.generationSerial}`,
-        expectedIndex: baseline?.index ?? null,
-        expectedSwipeId: baselineSlot.swipeId,
-        slotWasUnmaterialized: Boolean(isReroll && baseline && !baselineSlot.materialized),
-        status: 'started',
-      };
-      try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'started'); }
-      catch (error) { noteGenerationTicketFailure('正文开始', error); }
-      runtime.generationType = normalizedType;
-      runtime.pendingUserSend = false;
-      if (isReroll && baseline) scheduleBranchRestore(() => restoreProfileBranch(baseline, true));
-      setPhase('waiting', '正文生成中');
-    });
-    context.eventSource.on(eventName(context, 'GENERATION_ENDED', 'generation_ended'), () => {
-      if (runtime.hiddenGenerationDepth > 0) {
-        runtime.hiddenGenerationDepth -= 1;
+      if (!mainTypes.has(normalizedType)) {
+        pushGenerationEvent('ignored');
         return;
       }
+      const activeTicket = runtime.acceptedGeneration;
+      if (normalizedType === 'continue' && activeTicket?.chatId === chatId()
+        && ['started', 'ended'].includes(text(activeTicket.status))) {
+        mergeContinuationTicket(activeTicket);
+        return;
+      }
+      if (normalizedType === 'continue' && runtime.pipelineBusy) {
+        pushGenerationEvent('ignored');
+        return;
+      }
+      if (activeTicket?.chatId === chatId() && activeTicket.status === 'started'
+        && activeTicket.awaitingStart === true && normalizedType === activeTicket.type) {
+        runtime.acceptedGeneration = { ...activeTicket, awaitingStart: false };
+        try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'started'); }
+        catch (error) { noteGenerationTicketFailure('用户发送后的正文开始', error); }
+        pushGenerationEvent('ticket', runtime.acceptedGeneration.serial);
+        return;
+      }
+      // A generation is only provisional until its final chat layer proves
+      // that a user turn actually occurred.  While one provisional/accepted
+      // ticket or its pipeline owns the chat, later extension generations may
+      // finish, but they cannot replace that ticket.
+      const explicitReplacement = ['swipe', 'regenerate'].includes(normalizedType);
+      if (!explicitReplacement && ((activeTicket?.chatId === chatId()
+        && ['started', 'ended'].includes(text(activeTicket.status))) || runtime.pipelineBusy)) {
+        pushGenerationEvent('guarded-normal');
+        return;
+      }
+      const serial = beginGenerationTicket(normalizedType, 'generation-started');
+      pushGenerationEvent('ticket', serial);
+    });
+    context.eventSource.on(eventName(context, 'GENERATION_ENDED', 'generation_ended'), () => {
+      const event = popGenerationEvent();
+      if (event?.kind === 'ignored' || event?.kind === 'guarded-normal') return;
       const ticket = runtime.acceptedGeneration;
       const serial = ticket?.serial;
+      if (event?.kind === 'ticket' && event.serial !== serial) return;
       if (Number.isFinite(serial)) {
-        try { runtime.acceptedGeneration = persistGenerationTicket(ticket, 'ended'); }
+        try { runtime.acceptedGeneration = persistGenerationTicket({ ...ticket, awaitingStart: false }, 'ended'); }
         catch (error) { noteGenerationTicketFailure('正文完成', error); }
         void waitForAcceptedFinal(serial);
       }
     });
+    context.eventSource.on(eventName(context, 'GENERATION_STOPPED', 'generation_stopped'), () => {
+      const event = popGenerationEvent();
+      if (event?.kind === 'ignored' || event?.kind === 'guarded-normal') return;
+      const ticket = runtime.acceptedGeneration;
+      if (!ticket || (event?.kind === 'ticket' && event.serial !== ticket.serial)) return;
+      cancelAll('正文生成已停止', true);
+      try { clearGenerationTicket(ticket.chatId || chatId(), ticket.generationKey); }
+      catch (error) { noteGenerationTicketFailure('正文停止时清理', error); }
+      setPhase('cancelled', '正文生成已停止；未推进变量、人物档案或后台世界');
+    });
     context.eventSource.on(eventName(context, 'MESSAGE_SWIPED', 'message_swiped'), () => {
-      cancelAll('swipe已变化', true);
-      try { clearGenerationTicket(chatId()); }
-      catch (error) { noteGenerationTicketFailure('swipe变化时清理', error); }
+      const activeTicket = runtime.acceptedGeneration;
+      const belongsToStartedReroll = activeTicket?.chatId === chatId()
+        && activeTicket.status === 'started'
+        && ['swipe', 'regenerate'].includes(activeTicket.type);
+      if (!belongsToStartedReroll) {
+        cancelAll('swipe已变化', true);
+        try { clearGenerationTicket(chatId()); }
+        catch (error) { noteGenerationTicketFailure('swipe变化时清理', error); }
+      }
       const scheduledChat = chatId();
       const scheduledTarget = latestAssistant();
       void scheduleBranchRestore(async () => {
@@ -1959,8 +2119,7 @@ ${settings().globalPrompt || '（未设置）'}`;
     context.eventSource.on(eventName(context, 'CHAT_LOADED', 'chat_loaded'), () => {
       cancelAll('聊天已切换', true);
       runtime.branchRestorePromise = Promise.resolve({ ok: true });
-      runtime.hiddenGenerationDepth = 0;
-      runtime.pendingUserSend = false;
+      runtime.generationEventStack = [];
       runtime.lastResult = null;
       runtime.currentTarget = null;
       runtime.lastAccepted = null;
