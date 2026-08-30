@@ -1,6 +1,6 @@
-# MVU 人物与世界医生（Kemini Clean 0.8.4）
+# MVU 人物与世界医生（Kemini Clean 0.8.5）
 
-0.8.4 延续从运行入口重建的 0.8.0 基线，保留 0.8.1 的真实宿主生成事件修复、0.8.2 的 Story Oracle no-op 语义和 0.8.3 的人物发现边界；同时恢复成熟 0.7.x 已有的包装占位词与列表内容校验，让不完整档案先进入现有单次定向补填再原子提交。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
+0.8.5 延续从运行入口重建的 0.8.0 基线，保留 0.8.1—0.8.4 已验证的生命周期、Story Oracle no-op、人物发现和完整档案补填边界；新增 Story Oracle 后端转发错误回执识别：只有明确的运输错误信封或 HTTP 4xx/5xx 状态回执才按原请求自动重试一次，普通无补丁文本仍然失败，绝不冒充变量正确。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
 
 ## 当前唯一主链
 
@@ -21,7 +21,7 @@
 
 逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。冻结原件可分别运行：
 
-0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)。
+0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)。
 
 ```bash
 npm run verify:vendor

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.4-reference-baseline';
+  const ENGINE_VERSION = '0.8.5-reference-baseline';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
   const REPORT_STORAGE_PREFIX = 'mvuDoctorReferenceReport:';
@@ -697,6 +697,21 @@ ${target.content}`;
     if (story) story.autoDiagnoseEnabled = false;
   }
 
+  // Story Oracle's backend-forward transport normally throws request faults,
+  // but some compatible relays return the fault as a successful `content`
+  // string beginning with an error envelope (which may be localized) or an
+  // explicit HTTP 4xx/5xx status.  The upstream auto-diagnoser treats every
+  // response without an UpdateVariable block as `nochange`, which would turn
+  // that transport fault into a false success.  Recognize only the relay's
+  // explicit error envelope; ordinary prose remains an invalid diagnosis.
+  function storyTransportErrorResponse(value) {
+    const response = String(value || '').trim();
+    const errorEnvelope = /^\[(?:(?:api|http|request)\s*)?(?:error|failed|failure|错误|失败)\](?:\s|$)/iu.test(response);
+    const englishStatus = /\b(?:request|api|http)\b[^\r\n]{0,80}\b(?:failed|failure|error|status)\b[^\r\n]{0,40}\b[45]\d{2}\b/iu.test(response);
+    const localizedStatus = /(?:请求|接口|api|http)[^\r\n]{0,80}(?:失败|错误|状态码|错误码|status|code)[^\r\n]{0,40}\b[45]\d{2}\b/iu.test(response);
+    return errorEnvelope || englishStatus || localizedStatus;
+  }
+
   // Derived directly from Story Oracle 1.35.4 runAutoDiagnose/autoApplyFix.
   // Only the host target changes: every MVU read/write is pinned to the accepted
   // message id instead of the original "latest" alias, with freshness guards
@@ -751,9 +766,11 @@ ${target.content}`;
       : '【自动诊断】最新一条 AI 回复的正文里【没有】变量更新区块。请充当变量更新引擎：通读这条回复，依本卡 MVU 规则与当前状态，推导出本回合应当发生的全部变量更新，输出一个 <UpdateVariable> 区块把状态更新到位；若这条回复确实不涉及任何变量变化，则在 <JSONPatch> 里输出空数组（[]）。';
     const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }];
     const request = { systemPrompt, userMsg };
+    const diagnosisAttempts = [];
     const enrichDiagnosisError = (error) => {
       error.request ||= deepClone(request);
       if (!error.raw) error.raw = String(raw || '');
+      error.diagnosisAttempts ||= deepClone(diagnosisAttempts);
       return error;
     };
     const maxTokens = Math.max(storySettings.maxTokens, 4096);
@@ -761,13 +778,24 @@ ${target.content}`;
     const toast = so.showAutoDiagGenerating();
     let raw = '';
     try {
-      if (storySettings.mode === 'direct') {
-        const body = { model: storySettings.model, messages, max_tokens: maxTokens };
-        if (storySettings.sendTemperature) body.temperature = storySettings.temperature;
-        raw = await so.callDirect(so.resolveEndpointUrl(storySettings), storySettings.apiKey, body, call.signal);
-      } else {
-        const override = storySettings.sendTemperature ? { temperature: storySettings.temperature } : {};
-        raw = await so.callProfile(storySettings.profileId, messages, maxTokens, override, call.signal);
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        if (storySettings.mode === 'direct') {
+          const body = { model: storySettings.model, messages, max_tokens: maxTokens };
+          if (storySettings.sendTemperature) body.temperature = storySettings.temperature;
+          raw = await so.callDirect(so.resolveEndpointUrl(storySettings), storySettings.apiKey, body, call.signal);
+        } else {
+          const override = storySettings.sendTemperature ? { temperature: storySettings.temperature } : {};
+          raw = await so.callProfile(storySettings.profileId, messages, maxTokens, override, call.signal);
+        }
+        const transportError = storyTransportErrorResponse(raw);
+        diagnosisAttempts.push({ attempt, kind: transportError ? 'transport-error-content' : 'response', raw: String(raw || '') });
+        if (!transportError) break;
+        requireTaskOwner(owner, target, `变量诊断运输回执第${attempt}次返回后`);
+        const retryBaseline = await mvuPayloadAt(target.index);
+        if (JSON.stringify(retryBaseline) !== baselineDigest) {
+          throw Object.assign(new Error('变量诊断运输错误恢复期间固定楼层MVU基线已变化，本次旧诊断已废弃'), { code: STALE_TASK });
+        }
+        if (attempt === 1) setPhase('diagnosing', '故事神谕返回运输错误，正在按原请求自动重试一次');
       }
     } catch (error) {
       throw enrichDiagnosisError(error);
@@ -779,6 +807,12 @@ ${target.content}`;
     const unchangedPayload = await mvuPayloadAt(target.index);
     if (JSON.stringify(unchangedPayload) !== baselineDigest) {
       throw enrichDiagnosisError(Object.assign(new Error('模型诊断期间固定楼层MVU基线已变化，本次旧诊断已废弃'), { code: STALE_TASK }));
+    }
+
+    if (storyTransportErrorResponse(raw)) {
+      throw enrichDiagnosisError(Object.assign(new Error('故事神谕后端转发连续返回运输错误内容；已按原请求自动重试一次，未把错误冒充变量正确'), {
+        code: 'story_oracle_transport_error_response', raw: String(raw || '').slice(0, 16000),
+      }));
     }
 
     const patchBlock = so.extractUpdateBlock(raw);
@@ -850,6 +884,7 @@ ${target.content}`;
       raw: String(raw),
       patchBlock: String(patchBlock || ''),
       request,
+      diagnosisAttempts: deepClone(diagnosisAttempts),
       mvu: await currentMvuState(target.index),
     };
   }
@@ -1587,9 +1622,11 @@ ${settings().globalPrompt || '（未设置）'}`;
       result.status = stale ? 'stale' : 'failed';
       result.failedStep = step;
       result.error = error?.message || String(error);
+      if (error?.code) result.errorCode = String(error.code);
       if (error?.identityMigrationError) result.error += `；受控正文身份迁移失败：${error.identityMigrationError}`;
       if (error?.raw) result.raw = String(error.raw);
       if (error?.request) result.request = deepClone(error.request);
+      if (error?.diagnosisAttempts) result.diagnosisAttempts = deepClone(error.diagnosisAttempts);
       if (error?.worldReceipt) result.world = deepClone(error.worldReceipt);
       if (runtime.pipelineEpoch === owner) {
         try {

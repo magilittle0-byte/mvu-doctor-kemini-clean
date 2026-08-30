@@ -85,7 +85,7 @@ async function installHarness(page, options = {}) {
   await page.goto('https://mvu-doctor.test/');
   await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); });
   await page.addStyleTag({ content: styleSource });
-  await page.evaluate(({ profileReplies: replies, slowProfile, slowMetadata, diagnosisReply, mvuPatchMode, worldFailOnce, saveChatFailOnce }) => {
+  await page.evaluate(({ profileReplies: replies, slowProfile, slowMetadata, diagnosisReply, diagnosisReplies, mvuPatchMode, worldFailOnce, saveChatFailOnce }) => {
     const listeners = new Map();
     const eventSource = {
       on(name, handler) {
@@ -101,6 +101,7 @@ async function installHarness(page, options = {}) {
     let activeChat = 'chat-a';
     let profileReplyIndex = 0;
     let activeDiagnosisReply = diagnosisReply;
+    let queuedDiagnosisReplies = Array.isArray(diagnosisReplies) ? diagnosisReplies.map(String) : [];
     let pendingProfile = null;
     let worldRound = 0;
     let remainingWorldFailures = worldFailOnce ? 1 : 0;
@@ -169,7 +170,7 @@ async function installHarness(page, options = {}) {
       current?.resolve(value);
     };
     window.__resolveMetadata = () => { const resolve = resolveMetadata; resolveMetadata = null; resolve?.(); };
-    window.__setDiagnosisReply = (value) => { activeDiagnosisReply = String(value); };
+    window.__setDiagnosisReply = (value) => { activeDiagnosisReply = String(value); queuedDiagnosisReplies = []; };
     window.__failNextSaveChat = () => { remainingSaveChatFailures += 1; };
     window.SillyTavern = { getContext: () => context };
 
@@ -202,9 +203,15 @@ async function installHarness(page, options = {}) {
       beginPostReplyCall: () => { const controller = new AbortController(); return { signal: controller.signal, end() {} }; },
       showAutoDiagGenerating: () => null,
       dismissToast() {},
-      callDirect: async () => { window.__stages.push('diagnosis'); return activeDiagnosisReply; },
+      callDirect: async () => {
+        window.__stages.push('diagnosis');
+        return queuedDiagnosisReplies.length ? queuedDiagnosisReplies.shift() : activeDiagnosisReply;
+      },
       resolveEndpointUrl: (settings) => settings.endpoint,
-      callProfile: async () => { window.__stages.push('diagnosis'); return activeDiagnosisReply; },
+      callProfile: async () => {
+        window.__stages.push('diagnosis');
+        return queuedDiagnosisReplies.length ? queuedDiagnosisReplies.shift() : activeDiagnosisReply;
+      },
       writeUpdateBlockToMessage: async (index, block) => {
         const message = context.chat[index];
         if (!message || !block) return;
@@ -282,6 +289,7 @@ async function installHarness(page, options = {}) {
     profileReplies,
     slowProfile: Boolean(options.slowProfile),
     diagnosisReply: options.diagnosisReply || '<JSONPatch>[]</JSONPatch>',
+    diagnosisReplies: Array.isArray(options.diagnosisReplies) ? options.diagnosisReplies : [],
     mvuPatchMode: options.mvuPatchMode || 'noop',
     worldFailOnce: Boolean(options.worldFailOnce),
     slowMetadata: Boolean(options.slowMetadata),
@@ -362,7 +370,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.4 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
+test('0.8.5 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -1113,6 +1121,45 @@ test('0.8.4 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
         }));
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
         assert.equal(evidence.result.diagnosis.status, 'nochange');
+      } finally { await page.close(); }
+    });
+
+    await t.test('Story Oracle backend error content retries the identical diagnosis once before continuing', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReplies: ['[API错误]\nRequest failed with status code 520', '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>'],
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis', 'profile', 'world']);
+        assert.equal(evidence.result.diagnosis.status, 'nochange');
+        assert.equal(evidence.result.diagnosis.diagnosisAttempts.length, 2);
+        assert.equal(evidence.result.diagnosis.diagnosisAttempts[0].kind, 'transport-error-content');
+        assert.equal(evidence.result.diagnosis.diagnosisAttempts[1].kind, 'response');
+      } finally { await page.close(); }
+    });
+
+    await t.test('two Story Oracle backend error envelopes fail with the transport code and never reach profile or world', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReplies: ['[API错误]\nRequest failed with status code 520', '[API错误]\nRequest failed with status code 520'],
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'failed');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis']);
+        assert.equal(evidence.result.failedStep, 'diagnosis');
+        assert.equal(evidence.result.errorCode, 'story_oracle_transport_error_response');
+        assert.equal(evidence.result.diagnosisAttempts.length, 2);
       } finally { await page.close(); }
     });
 
