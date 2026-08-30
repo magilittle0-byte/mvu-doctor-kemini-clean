@@ -1,6 +1,6 @@
-# MVU 人物与世界医生（Kemini Clean 0.8.7）
+# MVU 人物与世界医生（Kemini Clean 0.8.8）
 
-0.8.7 延续 0.8.6 的人物发现、分批完整填表和成熟存储链，只修复一个真实根因：人物请求目标现在像成熟数据库来源行一样由脚本持有，AI只补内容。稳定称谓不再交给模型重复证明，也不会在校验前因创造性姓名不同而被整张删除。人物初答与唯一一次修复答会在收到时立即进入报告，不再因批次失败而导出空证据。本版没有增加状态机、额外修复或模糊身份匹配；旧 Doctor 仍不参与运行。
+0.8.8 保留 0.8.7 的数据库来源行绑定、人物发现、分批完整填表和原子存储链，只修复真实酒馆第 2 回合暴露的一个词法误判：占位词作为独立答案落在字段开头或结尾时仍拒绝，但职责句中间描述“未知来源”等未知对象不再被误判成整项缺失。本版没有新增模型调用、状态机、重试、字段或宽松空值；原有完整档案校验和一次修复保持不变。
 
 ## 当前唯一主链
 
@@ -21,7 +21,7 @@
 
 逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。冻结原件可分别运行：
 
-0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)；0.8.7 的数据库来源行绑定与失败证据修复见 [`docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md`](docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md)。
+0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)；0.8.7 的数据库来源行绑定与失败证据修复见 [`docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md`](docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md)；0.8.8 的占位词边界根修见 [`docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md`](docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md)。
 
 ```bash
 npm run verify:vendor

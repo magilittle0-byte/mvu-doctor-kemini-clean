@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.7-reference-baseline';
+  const ENGINE_VERSION = '0.8.8-reference-baseline';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -17,10 +17,11 @@
   // placeholder does not become usable merely because punctuation or an
   // explanatory wrapper was appended to it.
   const EMPTY_WORDS = /^(?:(?:未知|不详|待定|待确认|未登记|未说明|暂无|尚不明确|无法确认|无法判断|不可知|unknown|null|n\/a)(?:$|[\s（(：:，,。；;])|无$)/iu;
-  // The real 0.8.3 run also returned a placeholder at the end of a sentence.
-  // These are the prompt's explicit forbidden fill tokens, so check the whole
-  // field rather than only its first word.
-  const PROFILE_PLACEHOLDER = /(?:未知|不详|待定|未登记|未设定|暂无|正文未提及)/iu;
+  // The real 0.8.3 run returned placeholders as the field's actual answer: at
+  // the start, or sentence-final after a generic wrapper.  Keep those invalid,
+  // but do not reject a substantive role merely because it describes an
+  // unknown object in the middle of the sentence.
+  const PROFILE_EDGE_PLACEHOLDER = /(?:^(?:未知|不详|待定|未登记|未设定|暂无|正文未提及)(?:$|[\s（(：:，,。；;])|(?:未知|不详|待定|未登记|未设定|暂无|正文未提及)[\s）)】\]}》〉”’"'」』。；;，,:：、!?！？]*$)/iu;
   const WORLD_CONTEXT_BRIDGE = Symbol.for('mvu-doctor.reference.world-context-bridge');
   const WORLD_PUBLIC_PROJECTION_BRIDGE = Symbol.for('mvu-doctor.reference.world-public-projection-bridge');
   const STALE_TASK = 'stale_accepted_target';
@@ -130,7 +131,7 @@
   function usable(value) {
     const valueText = text(value);
     return valueText.length > 0 && /[\p{L}\p{N}]/u.test(valueText)
-      && !EMPTY_WORDS.test(valueText) && !PROFILE_PLACEHOLDER.test(valueText);
+      && !EMPTY_WORDS.test(valueText) && !PROFILE_EDGE_PLACEHOLDER.test(valueText);
   }
 
   function at(object, path) {

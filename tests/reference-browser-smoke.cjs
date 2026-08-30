@@ -518,7 +518,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.7 reference runtime browser smoke', { timeout: 180000 }, async (t) => {
+test('0.8.8 reference runtime browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -657,6 +657,7 @@ test('0.8.7 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         const placeholderProfile = structuredClone(completeProfile);
+        placeholderProfile.identity.occupation = '职业为“未知”';
         placeholderProfile.currentState.location = '临时营地边缘，具体位置未知';
         placeholderProfile.currentState.emotion = '未知：外表仍保持平静';
         placeholderProfile.resources = ['未知。'];
@@ -677,9 +678,38 @@ test('0.8.7 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'profile', 'profile-repair']);
         assert.equal(evidence.result.profile.modelCalls, 3);
         assert.equal(evidence.result.profile.repaired, true);
-        assert.match(evidence.result.profile.initialErrors.join('；'), /currentState\.location|currentState\.emotion|resources\[0\]/u);
+        const initialErrors = evidence.result.profile.initialErrors.join('；');
+        assert.match(initialErrors, /identity\.occupation/u);
+        assert.match(initialErrors, /currentState\.location/u);
+        assert.match(initialErrors, /currentState\.emotion/u);
+        assert.match(initialErrors, /resources\[0\]/u);
         assert.doesNotMatch(serialized, /未知|不详|待定|未登记|未设定|暂无|正文未提及/u);
         assert.equal(Object.keys(evidence.profiles).length, 1);
+        assert.equal(evidence.profileWrites.length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a substantive occupation may describe an unknown object without being rejected as a placeholder', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const contextualProfile = structuredClone(completeProfile);
+        contextualProfile.identity.occupation = '负责追查未知来源信号的前线侦察员';
+        await installHarness(page, {
+          profileReplies: [profileEnvelope(contextualProfile)],
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          profileWrites: window.__profileStoreWrites(),
+          modelCalls: window.__modelCalls,
+        }));
+        const [stored] = Object.values(evidence.profiles);
+        assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'profile']);
+        assert.equal(evidence.result.profile.modelCalls, 2);
+        assert.equal(evidence.result.profile.repaired, false);
+        assert.equal(stored.identity.occupation, contextualProfile.identity.occupation);
         assert.equal(evidence.profileWrites.length, 1);
       } finally { await page.close(); }
     });
