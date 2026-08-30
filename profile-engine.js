@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.6-reference-baseline';
+  const ENGINE_VERSION = '0.8.7-reference-baseline';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -480,6 +480,90 @@
     return { ...value, profiles, detectedCharacters, noProfileReason: text(value.noProfileReason) };
   }
 
+  // The mature database templates keep the requested row identity in the
+  // script/SELECT and let the model fill only the missing cells.  These rows
+  // are the JSON adapter for that same ownership boundary.
+  function profileTargetRows(candidateNames, store = null) {
+    return candidateNames.map((candidateName, index) => {
+      const sourceName = text(candidateName);
+      const existing = findUniqueExistingProfile(store?.profiles || {}, { name: sourceName, aliases: [] });
+      return {
+        rowId: `P${index + 1}`,
+        sourceName,
+        canonicalName: text(existing?.name) || sourceName,
+      };
+    });
+  }
+
+  function bindProfilesToTargetRows(envelope, targetRows, reservedSourceNames = []) {
+    const rowsById = new Map(targetRows.map((row) => [row.rowId, row]));
+    const reservedNames = new Set(reservedSourceNames.map((name) => text(name).toLocaleLowerCase()).filter(Boolean));
+    const claimedRows = new Set();
+    const errors = [];
+    const profiles = [];
+    const suppliedProfiles = Array.isArray(envelope?.profiles) ? envelope.profiles : [];
+    const unambiguousSingle = targetRows.length === 1 && suppliedProfiles.length === 1;
+
+    suppliedProfiles.forEach((candidate, index) => {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        errors.push(`第${index + 1}张档案不是对象，无法绑定目标行`);
+        return;
+      }
+      let rowId = text(candidate.rowId);
+      if (!rowId && unambiguousSingle) rowId = targetRows[0].rowId;
+      if (!rowId) {
+        errors.push(`第${index + 1}张档案缺少rowId；多人物批次不得按返回顺序猜配`);
+        return;
+      }
+      const row = rowsById.get(rowId);
+      if (!row) {
+        errors.push(`第${index + 1}张档案使用了未知rowId ${rowId}`);
+        return;
+      }
+      if (claimedRows.has(rowId)) {
+        errors.push(`rowId ${rowId}被重复返回`);
+        return;
+      }
+      claimedRows.add(rowId);
+
+      const returnedName = text(candidate.name);
+      const canonicalName = text(row.canonicalName) || row.sourceName;
+      let aliases = Array.isArray(candidate.aliases) ? [...candidate.aliases] : candidate.aliases;
+      if (Array.isArray(aliases)) aliases = aliases
+        .map((name) => typeof name === 'string' ? text(name) : name)
+        .filter((name) => typeof name !== 'string'
+          || (name && !reservedNames.has(name.toLocaleLowerCase())));
+      if (Array.isArray(aliases)) {
+        if (row.sourceName.toLocaleLowerCase() !== canonicalName.toLocaleLowerCase()) aliases.push(row.sourceName);
+        if (returnedName && returnedName.toLocaleLowerCase() !== canonicalName.toLocaleLowerCase()) aliases.push(returnedName);
+      }
+      const { rowId: _discardedRowId, ...profile } = candidate;
+      profiles.push({
+        ...profile,
+        name: canonicalName,
+        aliases: Array.isArray(aliases) ? [...new Set(aliases.filter((name) => (
+          typeof name !== 'string' || (
+            name.toLocaleLowerCase() !== canonicalName.toLocaleLowerCase()
+            && !reservedNames.has(name.toLocaleLowerCase())
+          )
+        )))] : aliases,
+      });
+    });
+
+    for (const row of targetRows) {
+      if (!claimedRows.has(row.rowId)) errors.push(`目标行${row.rowId}（${row.sourceName}）没有返回档案`);
+    }
+    return {
+      envelope: {
+        ...envelope,
+        profiles,
+        detectedCharacters: profiles.map((profile) => profile.name),
+        noProfileReason: profiles.length ? '' : text(envelope?.noProfileReason),
+      },
+      errors,
+    };
+  }
+
   function validateEnvelope(envelope, players, requiredCandidates = []) {
     const errors = [];
     if (envelope.invalid) errors.push('返回顶层必须是对象');
@@ -758,31 +842,6 @@
     };
   }
 
-  function dropProfilesOutsideBatch(envelope, batchCandidates, deferredCandidates = []) {
-    const required = new Set(batchCandidates.map((name) => text(name).toLocaleLowerCase()).filter(Boolean));
-    const deferred = new Set(deferredCandidates.map((name) => text(name).toLocaleLowerCase()).filter(Boolean));
-    const retained = envelope.profiles.filter((profile) => {
-      const primary = text(profile?.name).toLocaleLowerCase();
-      if (deferred.has(primary) && !required.has(primary)) return false;
-      return [...profileNameSet(profile)].some((name) => required.has(name));
-    }).map((profile) => ({
-      ...profile,
-      aliases: Array.isArray(profile.aliases)
-        ? profile.aliases.filter((alias) => {
-          const key = text(alias).toLocaleLowerCase();
-          return !deferred.has(key) || required.has(key);
-        })
-        : profile.aliases,
-    }));
-    if (JSON.stringify(retained) === JSON.stringify(envelope.profiles)) return envelope;
-    const retainedNames = new Set(retained.flatMap((profile) => [...profileNameSet(profile)]));
-    return {
-      ...envelope,
-      profiles: retained,
-      detectedCharacters: envelope.detectedCharacters.filter((name) => retainedNames.has(text(name).toLocaleLowerCase())),
-    };
-  }
-
   function suggestedCandidates(target, players) {
     const content = target?.content || '';
     const excluded = new Set(players.map((name) => name.toLocaleLowerCase()));
@@ -803,10 +862,9 @@
 
   function profileSchemaText() {
     return `{
-  "detectedCharacters": ["本轮最终正文中需要持续记录的所有非玩家人物姓名或稳定称谓"],
-  "noProfileReason": "只有detectedCharacters和profiles都为空时填写：具体说明为何本轮确实没有可持续记录的NPC，否则留空",
   "profiles": [{
-    "name": "人物姓名或唯一称谓",
+    "rowId": "必须原样复制目标行的rowId，例如P1",
+    "name": "根据上下文补全的姓名；脚本会保留来源稳定称谓作为身份主键",
     "aliases": [],
     "identity": {"species":"物种","gender":"性别","age":"年龄或具体年龄段","occupation":"职业职责","affiliation":"所属","socialPosition":"社会位置"},
     "appearance": {"overall":"整体形象","body":"体型动作","face":"面部","hair":"头发或不适用原因","voice":"声音","physiology":"完整生理说明"},
@@ -842,6 +900,7 @@
       .filter((profile, index) => validateProfile(profile, index).length === 0)
       .map((profile) => ({ name: profile.name, aliases: profile.aliases || [] }));
     const deferredCandidates = Array.isArray(options.deferredCandidates) ? options.deferredCandidates : [];
+    const targetRows = Array.isArray(options.targetRows) ? options.targetRows : profileTargetRows(candidates, store);
     const discoveryInstruction = `人物发现已经单独完成。你现在只为本批列出的${candidates.length}个人物逐一生成完整档案，不得遗漏，也不得返回任何未列入本批的人物。${deferredCandidates.length ? '延后批次人物由后续请求处理，本批绝不能提前返回。' : ''}`;
     return `你是数据库式人物档案填表器。${discoveryInstruction}
 
@@ -850,8 +909,8 @@
 2. 正文通常不会包含人物全部信息。缺失内容必须结合世界观、身份、行为和上下文进行合理创造性补全，写入inferences；禁止使用未知、待定、未登记、未设定、暂无、不详、正文未提及等占位词，也不得把占位词包进长句伪装成完整字段。
 3. 已有档案是权威旧状态。待修复人物必须返回更新后的完整档案；没有新证据的旧字段保持。不要重复返回未列出的既有完整人物。
 4. 不替玩家决定行动、感受、同意或关系。人物的goal必须是该人物自己的目标。
-5. detectedCharacters必须与profiles按人物双向一一对应，并逐一覆盖本批待处理人物；不得用空数组逃避填表。
-6. 只返回一个JSON对象，不要代码围栏、解释或分析。
+5. targetRows是脚本持有的权威来源行。每张profiles档案必须原样返回对应rowId；不得改写、遗漏、重复或自造rowId。sourceName是当前身份主键，姓名未知时不得用猜测的全名覆盖它；你补出的姓名会由脚本保存为可修订别名。
+6. 只返回一个JSON对象，不要代码围栏、解释、分析或detectedCharacters平行名单。
 7. 本请求不是人物发现步骤。只输出本批待处理人物；延后人物和任何其他人物都不得返回。
 
 唯一输出结构：
@@ -863,8 +922,8 @@ ${cropForModel(existing, 30000)}
 已有完整档案姓名册（这些人物若不在待处理列表中就不要重复返回；用它来区分真正新人）：
 ${cropForModel(completeRegistry, 12000)}
 
-脚本从修复后的MVU、正文JSONPatch/人物结构和稳定NPC/ACTOR编号得到的待处理人物（非空时逐一完整建档或修复）：
-${JSON.stringify(candidates)}
+脚本从修复后的MVU、正文JSONPatch/人物结构和稳定NPC/ACTOR编号建立的权威目标行（逐行完整填表）：
+${JSON.stringify(targetRows)}
 
 延后批次人物（本批不得返回）：
 ${JSON.stringify(deferredCandidates)}
@@ -953,14 +1012,15 @@ ${cropForModel(target.content, 52000)}`;
 
   function repairPrompt(target, store, players, authority, candidates, suggestions, candidate, errors, options = {}) {
     const deferredCandidates = Array.isArray(options.deferredCandidates) ? options.deferredCandidates : [];
-    return `你正在修复一份人物档案填表结果。保留候选中正确内容，只修复列出的格式或完整性问题。正文没有明确的信息必须合理补全并在inferences中标为可修订推断，不能删字段、使用占位词，或把占位词包进长句。只返回一个完整JSON对象，并且只返回本批待处理人物，不得返回延后批次或其他人物。
+    const targetRows = Array.isArray(options.targetRows) ? options.targetRows : profileTargetRows(candidates, store);
+    return `你正在修复一份人物档案填表结果。保留候选中正确内容，只修复列出的格式或完整性问题。正文没有明确的信息必须合理补全并在inferences中标为可修订推断，不能删字段、使用占位词，或把占位词包进长句。每张档案必须原样返回权威目标行的rowId。只返回一个完整JSON对象，并且只返回本批待处理人物，不得返回延后批次或其他人物。
 
 玩家身份（不得建档）：${JSON.stringify(players)}
 唯一结构：${profileSchemaText()}
 校验错误：${JSON.stringify(errors)}
 失败候选：${cropForModel(String(candidate || ''), 30000)}
 仅与待处理人物相符的已有档案：${cropForModel(relevantExistingProfiles(store, candidates), 30000)}
-必须核对的高置信人物候选：${JSON.stringify(candidates)}
+必须原样绑定的权威目标行：${JSON.stringify(targetRows)}
 延后批次人物（本次修复绝不能返回）：${JSON.stringify(deferredCandidates)}
 仅供判断的软人物提示：${JSON.stringify(suggestions)}
 角色卡与世界书：${cropForModel(authority.card, 24000)}\n${cropForModel(authority.world, 42000)}
@@ -2074,23 +2134,30 @@ ${settings().globalPrompt || '（未设置）'}`;
     let modelCalls = 0;
     let requestPrompt = '';
     let repairRequestPrompt = '';
+    const rawParts = [];
+    const initialRawParts = [];
+    const repairRawParts = [];
+    const requestPromptParts = [];
+    const repairPromptParts = [];
+    const syncProfileEvidence = () => {
+      initialRaw = initialRawParts.join('\n\n');
+      repairRaw = repairRawParts.join('\n\n');
+      requestPrompt = requestPromptParts.join('\n\n');
+      repairRequestPrompt = repairPromptParts.join('\n\n');
+      raw = repairRaw || initialRaw;
+    };
     try {
       setPhase('running', '正在用ver5.35宽容解析与单次定向修复模式生成完整人物档案');
       const authority = await authorityContext(target, currentMvu);
       requireTaskOwner(owner, target, '人物档案权威上下文完成');
       const aggregateProfiles = [];
-      const rawParts = [];
-      const initialRawParts = [];
-      const repairRawParts = [];
-      const requestPromptParts = [];
-      const repairPromptParts = [];
       const batchCapacity = profileBatchCapacity();
       let noProfileReason = '';
       let batchNumber = 0;
       const profileCovers = (profile, candidateName) => profileNameSet(profile).has(text(candidateName).toLocaleLowerCase());
       const mergeGeneratedProfile = (profile) => {
-        const names = profileNameSet(profile);
-        const duplicateIndex = aggregateProfiles.findIndex((known) => [...profileNameSet(known)].some((name) => names.has(name)));
+        const primaryName = text(profile?.name).toLocaleLowerCase();
+        const duplicateIndex = aggregateProfiles.findIndex((known) => text(known?.name).toLocaleLowerCase() === primaryName);
         if (duplicateIndex >= 0) aggregateProfiles[duplicateIndex] = deepClone(profile);
         else aggregateProfiles.push(deepClone(profile));
       };
@@ -2107,9 +2174,11 @@ ${settings().globalPrompt || '（未设置）'}`;
         target, before, players, authority, currentReplyCandidates, mvuInventoryCandidates, suggestions,
       );
       requestPromptParts.push(`【人物发现】\n${nameDiscoveryPrompt}`);
+      syncProfileEvidence();
       modelCalls += 1;
       let discoveryRaw = await callModel(nameDiscoveryPrompt, controller.signal);
       initialRawParts.push(`【人物发现】\n${String(discoveryRaw)}`);
+      syncProfileEvidence();
       requireTaskOwner(owner, target, '人物姓名发现返回');
       let narrativeDiscovery;
       try {
@@ -2121,9 +2190,11 @@ ${settings().globalPrompt || '（未设置）'}`;
           target, players, discoveryRaw, [error.message || String(error)],
         );
         repairPromptParts.push(`【人物发现修复】\n${nameRepairPrompt}`);
+        syncProfileEvidence();
         modelCalls += 1;
         discoveryRaw = await callModel(nameRepairPrompt, controller.signal);
         repairRawParts.push(`【人物发现修复】\n${String(discoveryRaw)}`);
+        syncProfileEvidence();
         requireTaskOwner(owner, target, '人物姓名发现单次修复返回');
         try {
           narrativeDiscovery = normalizeDiscoveryResponse(discoveryRaw, players);
@@ -2154,27 +2225,31 @@ ${settings().globalPrompt || '（未设置）'}`;
         const batchCandidates = pending.splice(0, batchCapacity);
         const deferredCandidates = [...pending];
         const batchStore = storeWithGeneratedProfiles();
+        const targetRows = profileTargetRows(batchCandidates, batchStore);
+        const reservedCandidates = candidates.filter((name) => !batchCandidates.includes(name));
         const batchSuggestions = batchNumber === 1 ? suggestions : [];
         const batchPrompt = generationPrompt(
           target, batchStore, players, authority, batchCandidates, batchSuggestions,
-          { deferredCandidates },
+          { deferredCandidates, targetRows },
         );
         requestPromptParts.push(`【第${batchNumber}批】\n${batchPrompt}`);
+        syncProfileEvidence();
         modelCalls += 1;
         let batchRaw = await callModel(batchPrompt, controller.signal);
         initialRawParts.push(`【第${batchNumber}批】\n${String(batchRaw)}`);
+        syncProfileEvidence();
         requireTaskOwner(owner, target, `人物档案第${batchNumber}批模型返回`);
         let envelope;
         let errors;
         try {
-          envelope = dropUntargetedCompleteProfiles(
-            normalizeEnvelope(parseJsonResponse(batchRaw)), batchStore, batchCandidates,
+          const binding = bindProfilesToTargetRows(
+            normalizeEnvelope(parseJsonResponse(batchRaw)), targetRows, reservedCandidates,
           );
-          envelope = dropProfilesOutsideBatch(envelope, batchCandidates, deferredCandidates);
+          envelope = dropUntargetedCompleteProfiles(binding.envelope, batchStore, batchCandidates);
           if (reason === 'manual-refill') {
             envelope = dropProfilesOutsideCurrentReply(envelope, target, currentReplyCandidates);
           }
-          errors = validateEnvelope(envelope, players, batchCandidates);
+          errors = [...binding.errors, ...validateEnvelope(envelope, players, batchCandidates)];
         } catch (error) {
           envelope = { profiles: [], detectedCharacters: [], noProfileReason: '' };
           errors = [error.message || String(error)];
@@ -2184,21 +2259,23 @@ ${settings().globalPrompt || '（未设置）'}`;
           repaired = true;
           const batchRepairPrompt = repairPrompt(
             target, batchStore, players, authority, batchCandidates, batchSuggestions, batchRaw, errors,
-            { deferredCandidates },
+            { deferredCandidates, targetRows },
           );
           repairPromptParts.push(`【第${batchNumber}批】\n${batchRepairPrompt}`);
+          syncProfileEvidence();
           modelCalls += 1;
           batchRaw = await callModel(batchRepairPrompt, controller.signal);
           repairRawParts.push(`【第${batchNumber}批】\n${String(batchRaw)}`);
+          syncProfileEvidence();
           requireTaskOwner(owner, target, `人物档案第${batchNumber}批单次修复返回`);
-          envelope = dropUntargetedCompleteProfiles(
-            normalizeEnvelope(parseJsonResponse(batchRaw)), batchStore, batchCandidates,
+          const binding = bindProfilesToTargetRows(
+            normalizeEnvelope(parseJsonResponse(batchRaw)), targetRows, reservedCandidates,
           );
-          envelope = dropProfilesOutsideBatch(envelope, batchCandidates, deferredCandidates);
+          envelope = dropUntargetedCompleteProfiles(binding.envelope, batchStore, batchCandidates);
           if (reason === 'manual-refill') {
             envelope = dropProfilesOutsideCurrentReply(envelope, target, currentReplyCandidates);
           }
-          errors = validateEnvelope(envelope, players, batchCandidates);
+          errors = [...binding.errors, ...validateEnvelope(envelope, players, batchCandidates)];
           repairErrors.push(...errors.map((message) => `第${batchNumber}批：${message}`));
         }
         if (errors.length > 0) throw new Error(`第${batchNumber}批单次修复后档案仍不完整：${errors.join('；')}`);
@@ -2214,11 +2291,8 @@ ${settings().globalPrompt || '（未设置）'}`;
       };
       const aggregateErrors = validateEnvelope(envelope, players, candidates);
       if (aggregateErrors.length > 0) throw new Error(`人物档案分批汇总不完整：${aggregateErrors.join('；')}`);
+      syncProfileEvidence();
       raw = rawParts.join('\n\n');
-      initialRaw = initialRawParts.join('\n\n');
-      repairRaw = repairRawParts.join('\n\n');
-      requestPrompt = requestPromptParts.join('\n\n');
-      repairRequestPrompt = repairPromptParts.join('\n\n');
 
       const nextProfiles = deepClone(before.profiles);
       const committed = [];
@@ -2259,12 +2333,21 @@ ${settings().globalPrompt || '（未设置）'}`;
       if (owner === null) setPhase('done', committed.length ? `${persistenceText}：${committed.length}张完整档案` : `${persistenceText}：本轮确实没有可建档NPC`, result);
       return result;
     } catch (error) {
+      syncProfileEvidence();
       if (error?.name === 'AbortError') {
         if (owner === null) setPhase('cancelled', '人物档案任务已取消');
-        return { ok: false, status: 'cancelled', identity, reason, modelCalls };
+        return {
+          ok: false, status: 'cancelled', identity, reason, modelCalls,
+          raw: String(raw).slice(0, 16000), initialRaw, repairRaw, initialErrors, repairErrors,
+          requestPrompt, repairRequestPrompt,
+        };
       }
       if (error?.code === STALE_TASK) {
-        const result = { ok: false, status: 'stale', identity, reason, modelCalls, error: error.message || String(error) };
+        const result = {
+          ok: false, status: 'stale', identity, reason, modelCalls, error: error.message || String(error),
+          raw: String(raw).slice(0, 16000), initialRaw, repairRaw, initialErrors, repairErrors,
+          requestPrompt, repairRequestPrompt,
+        };
         if (owner === null) setPhase('discarded', result.error, result);
         return result;
       }

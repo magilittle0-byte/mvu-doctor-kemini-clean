@@ -20,7 +20,7 @@ test('runtime loads only pinned reference engines and the new profile adapter', 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.8.6');
+  assert.equal(manifest.version, '0.8.7');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -38,7 +38,11 @@ test('profile engine retains ver5.35 tolerant parser and exactly one repair bran
   assert.match(source, /function discoveryPrompt\(/);
   assert.match(source, /function discoveryRepairPrompt\(/);
   assert.match(source, /while \(pending\.length > 0\)/);
-  assert.match(source, /dropProfilesOutsideBatch\(envelope, batchCandidates, deferredCandidates\)/);
+  assert.match(source, /function profileTargetRows\(/);
+  assert.match(source, /function bindProfilesToTargetRows\(/);
+  assert.equal((source.match(/bindProfilesToTargetRows\(/g) || []).length, 3, 'initial and repair paths use the same target-row binder');
+  assert.doesNotMatch(source, /dropProfilesOutsideBatch/);
+  assert.match(source, /const syncProfileEvidence = \(\) =>/);
   assert.match(source, /dropProfilesOutsideCurrentReply\(envelope, target, currentReplyCandidates\)/);
   assert.match(source, /commitStore\(\s*after,\s*target\.chatId,\s*before\.revision,/u);
   assert.match(source, /pruneBranches/);

@@ -1,6 +1,6 @@
-# MVU 人物与世界医生（Kemini Clean 0.8.6）
+# MVU 人物与世界医生（Kemini Clean 0.8.7）
 
-0.8.6 延续从运行入口重建的 0.8.0 基线，保留 0.8.1—0.8.5 已验证的生命周期与 Story Oracle 修复边界；本版把成熟 Doctor 的修复后 MVU/JSONPatch 结构化人物发现移植到简化主链，并以 Life State Engine ver5.35 的宽容 JSON 解析器和单次定向修复模式实现人物填表。人物阶段先用一个很小的名单请求阅读本楼正文，再把需要补全的人物按输出容量逐批完整填表，避免“发现九人就让一次低额度回复写九张完整档案”。完整报告改用 World Engine 3.0.2 已有的 IndexedDB，并等待真实事务完成后才标记成功。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
+0.8.7 延续 0.8.6 的人物发现、分批完整填表和成熟存储链，只修复一个真实根因：人物请求目标现在像成熟数据库来源行一样由脚本持有，AI只补内容。稳定称谓不再交给模型重复证明，也不会在校验前因创造性姓名不同而被整张删除。人物初答与唯一一次修复答会在收到时立即进入报告，不再因批次失败而导出空证据。本版没有增加状态机、额外修复或模糊身份匹配；旧 Doctor 仍不参与运行。
 
 ## 当前唯一主链
 
@@ -21,7 +21,7 @@
 
 逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。冻结原件可分别运行：
 
-0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)。
+0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)；0.8.7 的数据库来源行绑定与失败证据修复见 [`docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md`](docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md)。
 
 ```bash
 npm run verify:vendor
@@ -31,7 +31,7 @@ npm run verify:vendor
 
 正文只负责提供本轮可见事实，不要求两千字正文写齐档案。角色卡、世界书、已有档案、MVU 与正文确定不能冲突的事实；缺失的外貌、经历、欲望、习惯、关系方式、弱点和生理信息由模型合理补全，并记录为后续可修订推断。
 
-修复后的 MVU 人物容器、正文 `JSONPatch` 人物路径、结构化人物标签、既有档案命中和稳定 NPC/ACTOR 编号组成必覆盖候选。每个最终正文先执行一次只返回姓名/稳定称谓的轻量发现；发现名必须能在本楼正文或本楼结构证据中落地，不能把整份 MVU 的远方库存人物带进当前补档。正文没写齐的信息在随后的完整填表中继续创造性补全。已有完整人物只进入姓名册，不会因再次出现而重写。待处理人数超过当前输出上限的安全容量时会分批填表；初答与单次格式修复都不得夹带延后人物或用别名吞掉后续批次。全部批次在内存汇总，最后仍只做一次原子提交；任一批失败都不留下半张档案。刷新命中同一精确提交收据时才会 0 次模型调用直接恢复到世界阶段。
+修复后的 MVU 人物容器、正文 `JSONPatch` 人物路径、结构化人物标签、既有档案命中和稳定 NPC/ACTOR 编号组成必覆盖候选。每个最终正文先执行一次只返回姓名/稳定称谓的轻量发现；发现名必须能在本楼正文或本楼结构证据中落地，不能把整份 MVU 的远方库存人物带进当前补档。完整填表使用数据库式目标行：脚本固定 `rowId/sourceName`，AI补齐档案内容；正文只给出“引导者”一类稳定称谓时，称谓继续作为身份主键，AI创造的姓名保存为可修订别名。多人物只按行键绑定，不按返回顺序或相似名字猜配。待处理人数超过当前输出上限的安全容量时会分批填表；初答与单次格式修复都不得夹带延后人物或用别名吞掉后续批次。全部批次在内存汇总，最后仍只做一次原子提交；任一批失败都不留下半张档案。刷新命中同一精确提交收据时才会 0 次模型调用直接恢复到世界阶段。
 
 人物性格随机、多样性、篇幅、文风、视角和玩家边界仍由配对的 Izumi 预设在正文生成前负责，Doctor 不在正文后重新掷人格。用户的私有预设没有进入本仓库。
 
