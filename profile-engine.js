@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.1-reference-baseline';
+  const ENGINE_VERSION = '0.8.2-reference-baseline';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
   const REPORT_STORAGE_PREFIX = 'mvuDoctorReferenceReport:';
@@ -792,11 +792,8 @@ ${target.content}`;
       const newData = await Mvu.parseMessage(patchBlock, oldData);
       requireTaskOwner(owner, target, '变量补丁解析完成');
       if (!newData) result = { status: 'failed' };
-      else if (JSON.stringify(newData) === JSON.stringify(oldData)) {
-        throw enrichDiagnosisError(Object.assign(new Error('故事神谕返回了非空修复补丁，但它对固定楼层没有产生任何变量效果；已按失败保留供重试'), {
-          code: 'story_oracle_nonempty_noop', raw: String(raw || '').slice(0, 16000),
-        }));
-      } else {
+      else if (JSON.stringify(newData) === JSON.stringify(oldData)) result = { status: 'nochange' };
+      else {
         requireTaskOwner(owner, target, '变量补丁写入前');
         await Mvu.replaceMvuData(newData, opts);
         let readback;

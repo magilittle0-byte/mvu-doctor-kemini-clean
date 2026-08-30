@@ -20,7 +20,7 @@ test('runtime loads only pinned reference engines and the new profile adapter', 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.8.1');
+  assert.equal(manifest.version, '0.8.2');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -54,7 +54,7 @@ test('host glue pins MVU reads, owns the pipeline and preserves original reroll 
   const source = read('profile-engine.js');
   assert.match(source, /Mvu\.getMvuData\(\{ type: 'message', message_id: numericId \}\)/);
   assert.match(source, /host_mvu_readback_mismatch/);
-  assert.match(source, /story_oracle_nonempty_noop/);
+  assert.doesNotMatch(source, /story_oracle_nonempty_noop/);
   assert.match(source, /setFixCfg\?\.\(\{ autoFixEnabled: false \}\)/);
   assert.match(source, /pipelineEpoch/);
   assert.match(source, /requireBranchRestore\(owner\)/);

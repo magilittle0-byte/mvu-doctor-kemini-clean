@@ -362,7 +362,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.1 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
+test('0.8.2 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -1058,19 +1058,18 @@ test('0.8.1 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('a nonempty Story Oracle patch with no MVU effect fails before profile or world', async () => {
+    await t.test('a nonempty Story Oracle patch with no MVU effect follows the original nochange path', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, { diagnosisReply: '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":10}]</JSONPatch></UpdateVariable>' });
         await runAcceptedReply(page);
-        await waitForSettled(page, 'failed');
+        await waitForSettled(page, 'done');
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis']);
-        assert.equal(evidence.result.failedStep, 'diagnosis');
-        assert.match(evidence.result.error, /没有产生任何变量效果/u);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.result.diagnosis.status, 'nochange');
       } finally { await page.close(); }
     });
 
