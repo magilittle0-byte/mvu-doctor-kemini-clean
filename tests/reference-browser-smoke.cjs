@@ -362,7 +362,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.3 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
+test('0.8.4 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -430,6 +430,34 @@ test('0.8.3 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
         assert.equal(evidence.runtime.lastResult.ok, true);
         assert.equal(evidence.runtime.lastResult.profile.count, 1);
+        assert.equal(Object.keys(evidence.profiles).length, 1);
+        assert.equal(evidence.saves.length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('wrapped and sentence-final placeholders trigger the existing one-shot profile repair before commit', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const placeholderProfile = structuredClone(completeProfile);
+        placeholderProfile.currentState.location = '临时营地边缘，具体位置未知';
+        placeholderProfile.currentState.emotion = '未知：外表仍保持平静';
+        placeholderProfile.resources = ['未知。'];
+        await installHarness(page, {
+          profileReplies: [profileEnvelope(placeholderProfile), profileEnvelope(completeProfile)],
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          saves: window.__saves,
+        }));
+        const serialized = JSON.stringify(evidence.profiles);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'world']);
+        assert.equal(evidence.result.profile.repaired, true);
+        assert.match(evidence.result.profile.initialErrors.join('；'), /currentState\.location|currentState\.emotion|resources\[0\]/u);
+        assert.doesNotMatch(serialized, /未知|不详|待定|未登记|未设定|暂无|正文未提及/u);
         assert.equal(Object.keys(evidence.profiles).length, 1);
         assert.equal(evidence.saves.length, 1);
       } finally { await page.close(); }

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.3-reference-baseline';
+  const ENGINE_VERSION = '0.8.4-reference-baseline';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
   const REPORT_STORAGE_PREFIX = 'mvuDoctorReferenceReport:';
@@ -11,7 +11,14 @@
   const WORLD_RECEIPT_STORAGE_PREFIX = 'mvuDoctorReferenceWorldReceipt:';
   const MAX_HISTORY = 24;
   const MAX_BRANCH_MESSAGES = 8;
-  const EMPTY_VALUE = /^(?:未知|不详|待定|待确认|未登记|未说明|暂无|无法确认|unknown|null|n\/a)?$/iu;
+  // Directly retained from the mature 0.7.x completeness contract: a
+  // placeholder does not become usable merely because punctuation or an
+  // explanatory wrapper was appended to it.
+  const EMPTY_WORDS = /^(?:(?:未知|不详|待定|待确认|未登记|未说明|暂无|尚不明确|无法确认|无法判断|不可知|unknown|null|n\/a)(?:$|[\s（(：:，,。；;])|无$)/iu;
+  // The real 0.8.3 run also returned a placeholder at the end of a sentence.
+  // These are the prompt's explicit forbidden fill tokens, so check the whole
+  // field rather than only its first word.
+  const PROFILE_PLACEHOLDER = /(?:未知|不详|待定|未登记|未设定|暂无|正文未提及)/iu;
   const WORLD_CONTEXT_BRIDGE = Symbol.for('mvu-doctor.reference.world-context-bridge');
   const WORLD_PUBLIC_PROJECTION_BRIDGE = Symbol.for('mvu-doctor.reference.world-public-projection-bridge');
   const STALE_TASK = 'stale_accepted_target';
@@ -110,7 +117,8 @@
 
   function usable(value) {
     const valueText = text(value);
-    return valueText.length > 0 && !EMPTY_VALUE.test(valueText);
+    return valueText.length > 0 && /[\p{L}\p{N}]/u.test(valueText)
+      && !EMPTY_WORDS.test(valueText) && !PROFILE_PLACEHOLDER.test(valueText);
   }
 
   function at(object, path) {
@@ -407,6 +415,9 @@
       const value = at(profile, path);
       if (!Array.isArray(value)) errors.push(`第${index + 1}张档案的${path}必须是数组`);
       else if (path !== 'aliases' && value.length < 1) errors.push(`第${index + 1}张档案的${path}不能为空`);
+      else value.forEach((item, itemIndex) => {
+        if (typeof item !== 'string' || !usable(item)) errors.push(`第${index + 1}张档案的${path}[${itemIndex}]不是可用完整内容`);
+      });
     }
     return errors;
   }
@@ -543,7 +554,7 @@
 
 硬规则：
 1. 玩家身份是 ${JSON.stringify(players)}，以及正文中的user、玩家、主人公、契约者本人；绝不能给玩家建立NPC档案。
-2. 正文通常不会包含人物全部信息。缺失内容必须结合世界观、身份、行为和上下文进行合理创造性补全，写入inferences；禁止使用未知、待定、未登记、正文未提及等占位词。
+2. 正文通常不会包含人物全部信息。缺失内容必须结合世界观、身份、行为和上下文进行合理创造性补全，写入inferences；禁止使用未知、待定、未登记、未设定、暂无、不详、正文未提及等占位词，也不得把占位词包进长句伪装成完整字段。
 3. 已有档案是权威旧状态。人物再次出现时返回更新后的完整档案；没有新证据的旧字段保持。
 4. 不替玩家决定行动、感受、同意或关系。人物的goal必须是该人物自己的目标。
 5. detectedCharacters必须与profiles按人物双向一一对应。确实无人可建档时两者都返回空数组，并在noProfileReason写清具体原因；不得用空数组逃避填表。
@@ -584,7 +595,7 @@ ${target.content}`;
   }
 
   function repairPrompt(target, store, players, authority, candidates, suggestions, candidate, errors) {
-    return `你正在修复一份人物档案填表结果。保留候选中正确内容，只修复列出的格式或完整性问题。正文没有明确的信息必须合理补全，不能删字段或改成未知。只返回一个完整JSON对象。
+    return `你正在修复一份人物档案填表结果。保留候选中正确内容，只修复列出的格式或完整性问题。正文没有明确的信息必须合理补全并在inferences中标为可修订推断，不能删字段、使用占位词，或把占位词包进长句。只返回一个完整JSON对象。
 
 玩家身份（不得建档）：${JSON.stringify(players)}
 唯一结构：${profileSchemaText()}
