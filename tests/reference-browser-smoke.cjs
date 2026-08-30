@@ -362,7 +362,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.2 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
+test('0.8.3 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -1149,6 +1149,22 @@ test('0.8.2 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
+    await t.test('free prose action fragments never become mandatory profile names', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page, '白露说道：“先别动。”她手里拿着把短刀，另一只手握着那把旧伞。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+        }));
+        assert.equal(Object.keys(evidence.profiles).length, 1);
+        assert.equal(evidence.result.ok, true);
+        assert.equal(evidence.result.profile.count, 1);
+      } finally { await page.close(); }
+    });
+
     await t.test('all MVU reads and writes stay pinned to the accepted numeric message id', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
@@ -1347,7 +1363,7 @@ test('0.8.2 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('a named NPC with empty profile output cannot be reported green', async () => {
+    await t.test('a structured NPC id with empty profile output cannot be reported green', async () => {
       const empty = JSON.stringify({
         detectedCharacters: [], profiles: [],
         noProfileReason: '这一轮是纯环境描述，确实没有任何需要持续记录的非玩家人物。',
@@ -1355,7 +1371,7 @@ test('0.8.2 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, { profileReplies: [empty, empty] });
-        await runAcceptedReply(page, '白露把纸片收进袖中，脸上仍是柔弱的笑。');
+        await runAcceptedReply(page, 'NPC-7把纸片收进袖中，脸上仍是柔弱的笑。');
         await waitForSettled(page, 'failed');
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.2-reference-baseline';
+  const ENGINE_VERSION = '0.8.3-reference-baseline';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
   const REPORT_STORAGE_PREFIX = 'mvuDoctorReferenceReport:';
@@ -465,8 +465,6 @@
   ]);
   const NON_PERSON_LABEL = /(?:环境|地图|任务|进度|状态|档案|世界|回廊|旁白|系统|变量|更新|摘要|情报|警戒|选项|属性|数值|面板|记录|正文|总览|目标|事件|物资库)$/u;
   const PLAYER_LABEL = /^(?:user|玩家|用户|主人公|主角|契约者|我|你)$/iu;
-  const PLAYER_PROSE_PREFIX = /^(?:你|我|咱|我们|你们|玩家|用户)/u;
-  const SUBJECT_FUNCTION_SUFFIX = /(?:会|要|想|将|能|可|正|又|也|都|还)$/u;
 
   function highConfidenceCandidates(target, store, players) {
     const content = target?.content || '';
@@ -482,13 +480,9 @@
     for (const profile of Object.values(store.profiles || {})) {
       for (const name of [profile?.name, ...(profile?.aliases || [])]) if (usable(name) && content.includes(name)) add(profile.name || name);
     }
-    for (const match of content.matchAll(/(?:^|[。！？!?\n])\s*([\p{Script=Han}A-Za-z·]{2,12})\s*(?:说道|问道|答道|笑道|开口|低声说|轻声说)/gu)) add(match[1]);
-    // Only the short subject immediately after a sentence boundary is hard.
-    // Longer natural-language fragments remain model-owned soft evidence.
-    for (const match of content.matchAll(/(?:^|[。！？!?；;\n，“”])\s*([\p{Script=Han}]{2,4}?)(?:微微|轻轻|缓缓|悄悄|偷偷|忽然|突然|随即|慢慢|默默|又|也|正|还|便|就|才|已|再|仍)?\s*(?:把|点头|摇头|伸手|皱眉|挑眉|眨眼|开口|回答|笑着|笑道|收起|记下|写下|藏起|抬眼|垂眼)/gu)) {
-      const subject = match[1];
-      if (!PLAYER_PROSE_PREFIX.test(subject) && !SUBJECT_FUNCTION_SUFFIX.test(subject)) add(subject);
-    }
+    // Mature references do not treat free-form Chinese prose as deterministic NER.
+    // The fill model owns first-appearance discovery from the complete accepted reply;
+    // hard coverage is limited to registered identities and explicit structural ids.
     for (const match of content.matchAll(/\b(?:NPC|ACTOR)[-_ ]?\d+\b/giu)) add(match[0]);
     return [...found];
   }
@@ -561,7 +555,7 @@ ${profileSchemaText()}
 已有完整档案：
 ${JSON.stringify(store.profiles)}
 
-脚本从既有档案命中、明确句首发言者、句界后二至四字短动作主语和稳定NPC编号得到的高置信候选（这些人物若不是玩家就必须建档）：
+脚本从既有档案逐字命中和稳定NPC/ACTOR编号得到的结构化高置信候选（这些人物若不是玩家就必须建档；普通散文由你通读全文发现，不由脚本猜姓名）：
 ${JSON.stringify(candidates)}
 
 脚本从标题式对白或叙述称谓得到的软提示（请结合正文自行判断，不得因为误识别标题而虚构人物）：

@@ -1,6 +1,6 @@
-# MVU 人物与世界医生（Kemini Clean 0.8.2）
+# MVU 人物与世界医生（Kemini Clean 0.8.3）
 
-0.8.2 延续从运行入口重建的 0.8.0 基线，并保留 0.8.1 的真实宿主生成事件修复；同时把变量复检中“合法非空补丁应用后状态未变化”的结果恢复为 Story Oracle 原版 `nochange` 语义。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
+0.8.3 延续从运行入口重建的 0.8.0 基线，保留 0.8.1 的真实宿主生成事件修复和 0.8.2 的 Story Oracle no-op 语义；同时删除会把动作短语误判成人名的自由散文硬正则。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
 
 ## 当前唯一主链
 
@@ -21,7 +21,7 @@
 
 逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。冻结原件可分别运行：
 
-0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)。
+0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)。
 
 ```bash
 npm run verify:vendor
