@@ -518,7 +518,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.8 reference runtime browser smoke', { timeout: 180000 }, async (t) => {
+test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -735,6 +735,89 @@ test('0.8.8 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.equal(evidence.result.profile.repaired, true);
         assert.match(evidence.result.profile.initialErrors.join('；'), /人物发现/u);
         assert.equal(Object.keys(evidence.profiles).length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a discovered canonical name not present in the accepted reply is repaired to its visible stable name', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          discoveryReplies: [discoveryEnvelope(['露医生']), discoveryEnvelope(['白露'])],
+          profileReplies: [profileEnvelope()],
+        });
+        await runAcceptedReply(page, '白露收起药囊，示意队伍继续向前。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          modelCalls: window.__modelCalls,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+        }));
+        assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'discovery-repair', 'profile']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.result.profile.modelCalls, 3);
+        assert.equal(evidence.result.profile.repaired, true);
+        assert.match(evidence.result.profile.initialErrors.join('；'), /没有使用最终正文逐字出现/u);
+        assert.match(evidence.modelCalls[1].prompt, /每个detectedCharacters项目必须逐字出现在最终正文/u);
+        assert.equal(Object.keys(evidence.profiles).length, 1);
+      } finally { await page.close(); }
+    });
+
+    await t.test('an unbound discovered name cannot be repaired away as an empty no-character turn', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          discoveryReplies: [
+            discoveryEnvelope(['露医生']),
+            discoveryEnvelope([], '本轮没有需要记录的非玩家人物。'),
+          ],
+          profileReplies: [profileEnvelope()],
+        });
+        await runAcceptedReply(page, '白露收起药囊，示意队伍继续向前。');
+        await waitForSettled(page, 'failed');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          modelCalls: window.__modelCalls,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          world: window.WORLD_ENGINE_CORE.loadState(),
+        }));
+        assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'discovery-repair']);
+        assert.deepEqual(evidence.stages, ['diagnosis']);
+        assert.equal(evidence.result.failedStep, 'profile');
+        assert.match(evidence.result.error, /不能把初次报告的1个人物缩减为0个/u);
+        assert.match(evidence.modelCalls[1].prompt, /不得删除人物、缩减人数、返回空数组/u);
+        assert.equal(Object.keys(evidence.profiles).length, 0);
+        assert.equal(Number(evidence.world.round || 0), 0);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a multi-character binding repair cannot silently drop only the unbound person', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          discoveryReplies: [
+            discoveryEnvelope(['白露', '露医生']),
+            discoveryEnvelope(['白露']),
+          ],
+          profileReplies: [profileEnvelope()],
+        });
+        await runAcceptedReply(page, '白露收起药囊；银狼则把纸片藏进袖口。');
+        await waitForSettled(page, 'failed');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          modelCalls: window.__modelCalls,
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          world: window.WORLD_ENGINE_CORE.loadState(),
+        }));
+        assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'discovery-repair']);
+        assert.deepEqual(evidence.stages, ['diagnosis']);
+        assert.equal(evidence.result.failedStep, 'profile');
+        assert.match(evidence.result.error, /不能把初次报告的2个人物缩减为1个/u);
+        assert.match(evidence.modelCalls[1].prompt, /至少返回2个不同称谓/u);
+        assert.equal(Object.keys(evidence.profiles).length, 0);
+        assert.equal(Number(evidence.world.round || 0), 0);
       } finally { await page.close(); }
     });
 
@@ -2074,7 +2157,10 @@ test('0.8.8 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       });
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
-        await installHarness(page, { profileReplies: [empty, empty] });
+        await installHarness(page, {
+          discoveryReplies: [discoveryEnvelope(['NPC-7'])],
+          profileReplies: [empty, empty],
+        });
         await runAcceptedReply(page, 'NPC-7把纸片收进袖中，脸上仍是柔弱的笑。');
         await waitForSettled(page, 'failed');
         const evidence = await page.evaluate(() => ({

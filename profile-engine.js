@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.8-reference-baseline';
+  const ENGINE_VERSION = '0.8.9-reference-baseline';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -955,7 +955,7 @@ ${cropForModel(target.content, 52000)}`;
     const completeRegistry = Object.values(store.profiles || {})
       .filter((profile, index) => validateProfile(profile, index).length === 0)
       .map((profile) => ({ name: profile.name, aliases: profile.aliases || [] }));
-    return `你只执行人物发现，不写人物档案。完整阅读本轮最终正文，列出其中实际出现、需要持续记录的所有非玩家人物；正文信息不全不影响列名。姓名未知时使用正文中稳定且唯一的称谓。不要列玩家、user、主人公、读者，也不要从世界书虚构未在本轮出现的人物。
+    return `你只执行人物发现，不写人物档案。完整阅读本轮最终正文，列出其中实际出现、需要持续记录的所有非玩家人物；正文信息不全不影响列名。姓名未知时使用正文中稳定且唯一的称谓。每个detectedCharacters项目必须逐字出现在最终正文中，或原样来自脚本给出的结构人物线索；即使世界书给出了真名，也不能用正文没有出现的真名替换正文称谓。不要列玩家、user、主人公、读者，也不要从世界书虚构未在本轮出现的人物。
 
 只返回一个JSON对象，不要代码围栏或解释：
 {"detectedCharacters":["人物姓名或稳定称谓"],"noCharacterReason":"仅当正文确实没有非玩家人物时说明原因，否则留空"}
@@ -1002,10 +1002,42 @@ ${cropForModel(target.content, 52000)}`;
     });
   }
 
-  function discoveryRepairPrompt(target, players, candidate, errors) {
-    return `把下面的人物发现结果修成指定JSON。只列最终正文里实际出现的非玩家人物姓名或稳定称谓，不写档案，不列玩家，不增添正文未出现的人物。只返回JSON对象。
+  function validatedDiscoveryResponse(raw, target, players, currentReplyCandidates, options = {}) {
+    const discovery = normalizeDiscoveryResponse(raw, players);
+    const visibleNames = discoveryNamesVisibleInAcceptedReply(discovery.names, target, currentReplyCandidates);
+    if (visibleNames.length !== discovery.names.length) {
+      const error = new Error(`detectedCharacters中有${discovery.names.length - visibleNames.length}项没有使用最终正文逐字出现的姓名、稳定称谓或结构人物线索`);
+      error.code = 'PROFILE_DISCOVERY_UNBOUND_NAMES';
+      error.bindingRepair = {
+        minimumNameCount: discovery.names.length,
+        preserveNames: visibleNames,
+      };
+      throw error;
+    }
+    const minimumNameCount = Math.max(0, Number(options.minimumNameCount) || 0);
+    if (discovery.names.length < minimumNameCount) {
+      throw new Error(`人物发现绑定修复不能把初次报告的${minimumNameCount}个人物缩减为${discovery.names.length}个`);
+    }
+    const repairedKeys = new Set(discovery.names.map((name) => text(name).toLocaleLowerCase()));
+    const missingPreserved = (Array.isArray(options.preserveNames) ? options.preserveNames : [])
+      .filter((name) => !repairedKeys.has(text(name).toLocaleLowerCase()));
+    if (missingPreserved.length > 0) {
+      throw new Error(`人物发现绑定修复删除了${missingPreserved.length}个初次已经正确绑定的称谓`);
+    }
+    return discovery;
+  }
+
+  function discoveryRepairPrompt(target, players, candidate, errors, structuredCandidates = [], options = {}) {
+    const minimumNameCount = Math.max(0, Number(options.minimumNameCount) || 0);
+    const preserveNames = Array.isArray(options.preserveNames) ? options.preserveNames : [];
+    const bindingObligation = minimumNameCount > 0
+      ? `\n失败候选已经报告本轮有${minimumNameCount}个人物。你必须逐项把无法绑定的称谓改成最终正文逐字出现的姓名、稳定称谓或结构人物线索；修复后至少返回${minimumNameCount}个不同称谓，并保留这些已经正确绑定的称谓：${JSON.stringify(preserveNames)}。不得删除人物、缩减人数、返回空数组或改口声称“本轮无人”。`
+      : '';
+    return `把下面的人物发现结果修成指定JSON。只列最终正文里实际出现的非玩家人物姓名或稳定称谓，不写档案，不列玩家，不增添正文未出现的人物。每个detectedCharacters项目必须逐字出现在最终正文中，或原样来自脚本给出的结构人物线索；即使你从世界书知道真名，也不能用正文没有出现的真名替换正文称谓。只返回JSON对象。
 指定结构：{"detectedCharacters":["人物姓名或稳定称谓"],"noCharacterReason":"仅当正文确实没有非玩家人物时填写，否则留空"}
+${bindingObligation}
 玩家身份（不得列入）：${JSON.stringify(players)}
+脚本从本楼正文结构识别的人物线索（可原样使用）：${JSON.stringify(structuredCandidates)}
 错误：${JSON.stringify(errors)}
 失败候选：${cropForModel(String(candidate || ''), 12000)}
 最终接受正文：${cropForModel(target.content, 52000)}`;
@@ -2183,12 +2215,18 @@ ${settings().globalPrompt || '（未设置）'}`;
       requireTaskOwner(owner, target, '人物姓名发现返回');
       let narrativeDiscovery;
       try {
-        narrativeDiscovery = normalizeDiscoveryResponse(discoveryRaw, players);
+        narrativeDiscovery = validatedDiscoveryResponse(
+          discoveryRaw, target, players, currentReplyCandidates,
+        );
       } catch (error) {
         repaired = true;
         initialErrors.push(`人物发现：${error.message || String(error)}`);
+        const bindingRepair = error?.code === 'PROFILE_DISCOVERY_UNBOUND_NAMES'
+          ? error.bindingRepair
+          : null;
         const nameRepairPrompt = discoveryRepairPrompt(
-          target, players, discoveryRaw, [error.message || String(error)],
+          target, players, discoveryRaw, [error.message || String(error)], currentReplyCandidates,
+          bindingRepair || {},
         );
         repairPromptParts.push(`【人物发现修复】\n${nameRepairPrompt}`);
         syncProfileEvidence();
@@ -2198,7 +2236,10 @@ ${settings().globalPrompt || '（未设置）'}`;
         syncProfileEvidence();
         requireTaskOwner(owner, target, '人物姓名发现单次修复返回');
         try {
-          narrativeDiscovery = normalizeDiscoveryResponse(discoveryRaw, players);
+          narrativeDiscovery = validatedDiscoveryResponse(
+            discoveryRaw, target, players, currentReplyCandidates,
+            bindingRepair || {},
+          );
         } catch (repairError) {
           repairErrors.push(`人物发现：${repairError.message || String(repairError)}`);
           throw new Error(`人物发现单次修复后仍不可用：${repairError.message || String(repairError)}`);
