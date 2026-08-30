@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.0-reference-baseline';
+  const ENGINE_VERSION = '0.8.1-reference-baseline';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
   const REPORT_STORAGE_PREFIX = 'mvuDoctorReferenceReport:';
@@ -264,7 +264,8 @@
   function messageText(message) {
     const swipeId = Number(message?.swipe_id);
     if (Array.isArray(message?.swipes) && Number.isInteger(swipeId) && swipeId >= 0 && swipeId < message.swipes.length) {
-      return text(message.swipes[swipeId]);
+      const activeSwipe = message.swipes[swipeId];
+      if (typeof activeSwipe === 'string') return activeSwipe;
     }
     return text(message?.mes);
   }
@@ -298,12 +299,22 @@
   function latestAssistant() {
     const chat = ctx()?.chat || [];
     for (let index = chat.length - 1; index >= 0; index -= 1) {
-      const message = chat[index];
-      if (!message?.is_user && !message?.is_system && messageText(message)) {
-        return decorateTarget({ index, message, swipeId: Number(message.swipe_id) || 0, content: messageText(message) });
-      }
+      const target = assistantAt(index);
+      if (target) return target;
     }
     return null;
+  }
+
+  function assistantAt(index) {
+    const messageId = Number(index);
+    const message = ctx()?.chat?.[messageId];
+    if (!Number.isInteger(messageId) || !message || message.is_user || message.is_system || !messageText(message)) return null;
+    return decorateTarget({
+      index: messageId,
+      message,
+      swipeId: Number(message.swipe_id) || 0,
+      content: messageText(message),
+    });
   }
 
   function targetIsCurrent(target) {
@@ -1015,7 +1026,6 @@ ${settings().globalPrompt || '（未设置）'}`;
     reportPersistence: { ok: true, attemptedCount: 0, savedCount: 0, lastSavedAt: '', error: '' },
     diagnosticPersistence: { ok: true, count: 0, error: '' },
     generationTicketPersistence: { ok: true, status: '', error: '' },
-    generationEventStack: [],
   };
 
   function setPhase(phase, detail, result = null) {
@@ -1385,7 +1395,6 @@ ${settings().globalPrompt || '（未设置）'}`;
     if (cancelPendingGeneration) {
       runtime.generationSerial += 1;
       runtime.acceptedGeneration = null;
-      runtime.generationEventStack = [];
     }
     runtime.diagnostics.unshift({ at: new Date().toISOString(), phase: 'cancel-requested', detail: reason });
     persistDiagnostics();
@@ -1597,25 +1606,58 @@ ${settings().globalPrompt || '（未设置）'}`;
     }
   }
 
-  async function waitForAcceptedFinal(serial) {
+  function ticketInteger(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    return Number.isInteger(numeric) ? numeric : null;
+  }
+
+  function interruptGenerationTicket(ticket, detail, phase = 'failed') {
+    if (!ticket) return false;
+    const active = runtime.acceptedGeneration;
+    if (active?.serial === ticket.serial && active?.generationKey === ticket.generationKey) {
+      runtime.acceptedGeneration = null;
+      runtime.generationSerial += 1;
+    }
+    try { clearGenerationTicket(ticket.chatId || chatId(), ticket.generationKey); }
+    catch (error) { noteGenerationTicketFailure('中断生成票据时清理', error); }
+    setPhase(phase, detail);
+    return true;
+  }
+
+  async function waitForAcceptedFinal(serial, messageId = null, swipeId = null) {
     await new Promise((resolve) => setTimeout(resolve, 650));
     if (serial !== runtime.generationSerial || runtime.acceptedGeneration?.serial !== serial) return;
-    const first = latestAssistant();
-    if (!first) {
-      setPhase('waiting', '正文结束事件已到达，尚未读到最终回复；继续等待宿主落盘');
-      setTimeout(() => { void waitForAcceptedFinal(serial); }, 650);
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 650));
-    if (serial !== runtime.generationSerial || runtime.acceptedGeneration?.serial !== serial) return;
-    const fresh = latestAssistant();
-    if (!fresh || fresh.identity !== first.identity) {
-      setPhase('waiting', '最终回复仍在变化；继续等待两次一致的新鲜读取');
-      setTimeout(() => { void waitForAcceptedFinal(serial); }, 650);
-      return;
-    }
-    const baseline = runtime.acceptedGeneration.baselineIdentity;
     const ticket = runtime.acceptedGeneration;
+    const fixedMessageId = ticketInteger(messageId)
+      ?? ticketInteger(ticket?.targetMessageId ?? ticket?.receivedMessageId);
+    const fixedSwipeId = ticketInteger(swipeId ?? ticket?.targetSwipeId ?? ticket?.receivedSwipeId);
+    const first = Number.isInteger(fixedMessageId) ? assistantAt(fixedMessageId) : latestAssistant();
+    if (!first) {
+      interruptGenerationTicket(ticket, '正文落盘收据指向的助手楼已经不存在；已中断本票据，拒绝跨楼处理');
+      return;
+    }
+    if (fixedSwipeId !== null && first.swipeId !== fixedSwipeId) {
+      interruptGenerationTicket(ticket, `正文落盘收据固定在 swipe ${fixedSwipeId}，但当前已经是 swipe ${first.swipeId}；已中断旧票据`);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    if (serial !== runtime.generationSerial || runtime.acceptedGeneration?.serial !== serial) return;
+    const fresh = Number.isInteger(fixedMessageId) ? assistantAt(fixedMessageId) : latestAssistant();
+    if (!fresh) {
+      interruptGenerationTicket(ticket, '两次新鲜读取之间，正文落盘收据指向的助手楼消失；已中断旧票据');
+      return;
+    }
+    if (fixedSwipeId !== null && fresh.swipeId !== fixedSwipeId) {
+      interruptGenerationTicket(ticket, `两次新鲜读取之间 swipe 从 ${fixedSwipeId} 漂移到 ${fresh.swipeId}；已中断旧票据`);
+      return;
+    }
+    if (fresh.identity !== first.identity) {
+      setPhase('waiting', '最终回复仍在变化；继续等待两次一致的新鲜读取');
+      setTimeout(() => { void waitForAcceptedFinal(serial, fixedMessageId, fixedSwipeId); }, 650);
+      return;
+    }
+    const baseline = ticket.baselineIdentity;
     const liveMessage = ctx()?.chat?.[ticket.expectedIndex];
     const liveSlot = activeSwipeSlot(liveMessage);
     const materializedOverswipe = ticket.slotWasUnmaterialized
@@ -1632,19 +1674,7 @@ ${settings().globalPrompt || '（未设置）'}`;
       .some((message) => message?.is_user === true && Boolean(messageText(message)));
     const type = ticket.type || 'normal';
     if (type === 'normal' && !hasUserAfterBaseline) {
-      runtime.acceptedGeneration = null;
-      try { clearGenerationTicket(ticket.chatId || fresh.chatId, ticket.generationKey); }
-      catch (error) { noteGenerationTicketFailure('忽略后台生成时清理', error); }
-      runtime.phase = text(ticket.priorPhase || (runtime.lastResult?.ok ? 'done' : 'idle'));
-      runtime.detail = ticket.priorPhase === 'idle' && !runtime.lastResult
-        ? '这是没有用户行动的AI开场或后台生成；医生不会推进变量、档案或后台世界'
-        : text(ticket.priorDetail || (runtime.lastResult?.ok ? '上一轮医生任务已完成' : '等待下一条最终回复'));
-      runtime.diagnostics.unshift({
-        at: new Date().toISOString(), phase: 'background-ignored',
-        detail: '生成前锚点之后没有用户楼；已按后台生成忽略，不推进变量、档案或世界',
-      });
-      persistDiagnostics();
-      render();
+      discardBackgroundGeneration(ticket, '生成前锚点之后没有用户楼；已按后台生成忽略，不推进变量、档案或世界');
       return;
     }
     if (baseline && fresh.identity === baseline && !materializedOverswipe && !explicitRerollCompletion) {
@@ -1663,7 +1693,7 @@ ${settings().globalPrompt || '（未设置）'}`;
         return;
       }
       setPhase('waiting', '尚未读到新的最终正文，继续等待对应的主聊天生成完成事件');
-      setTimeout(() => { void waitForAcceptedFinal(serial); }, 650);
+      setTimeout(() => { void waitForAcceptedFinal(serial, fixedMessageId, fixedSwipeId); }, 650);
       return;
     }
     if (type === 'normal' && !hasTurnUser) {
@@ -1692,7 +1722,14 @@ ${settings().globalPrompt || '（未设置）'}`;
       setPhase('failed', `正文已经确认，但流水线检查点无法持久化；完成票据仍保留，刷新后可继续：${error?.message || error}`);
       return;
     }
-    runtime.acceptedGeneration = null;
+    runtime.acceptedGeneration = {
+      ...ticket,
+      status: 'processing',
+      completionScheduled: true,
+      targetMessageId: fresh.index,
+      targetSwipeId: fresh.swipeId,
+      targetIdentity: fresh.identity,
+    };
     // runAcceptedPipeline writes its durable running checkpoint synchronously
     // before its first await. The explicit readback above is the handoff receipt;
     // only after that receipt may the shorter generation ticket be removed.
@@ -1700,6 +1737,8 @@ ${settings().globalPrompt || '（未设置）'}`;
     try { clearGenerationTicket(ticket.chatId || fresh.chatId, ticket.generationKey); }
     catch (error) { noteGenerationTicketFailure('流水线接管时清理', error); }
     await pipeline;
+    if (runtime.acceptedGeneration?.serial === serial
+      && runtime.acceptedGeneration?.status === 'processing') runtime.acceptedGeneration = null;
   }
 
   function eventName(context, key, fallback) {
@@ -1873,11 +1912,13 @@ ${settings().globalPrompt || '（未设置）'}`;
     const pendingTicket = loadGenerationTicket(chatId());
     const checkpointTime = Number.isFinite(Date.parse(checkpoint.updatedAt || '')) ? Date.parse(checkpoint.updatedAt) : 0;
     const ticketTime = Number.isFinite(Date.parse(pendingTicket?.updatedAt || '')) ? Date.parse(pendingTicket.updatedAt) : 0;
-    if (pendingTicket?.generationKey && pendingTicket.generationKey !== checkpoint?.target?.generationKey
+    if (pendingTicket?.generationKey
       && ['started', 'ended'].includes(pendingTicket.status) && ticketTime >= checkpointTime) {
       // A newer main generation supersedes an older failed/running/cancelled
-      // checkpoint.  Its durable ticket owns recovery until it either creates a
-      // new checkpoint or is explicitly cancelled.
+      // checkpoint. This also covers a continuation revision which deliberately
+      // keeps the root generationKey while advancing its serial/timestamp.
+      // Its durable ticket owns recovery until it creates a newer checkpoint or
+      // is explicitly cancelled.
       return false;
     }
     if (pendingTicket?.generationKey && pendingTicket.generationKey === checkpoint?.target?.generationKey) {
@@ -1937,16 +1978,83 @@ ${settings().globalPrompt || '（未设置）'}`;
     // the recovered timer can never both own the same accepted reply.
     runtime.generationSerial = Math.max(runtime.generationSerial, Number(ticket.serial)) + 1;
     runtime.acceptedGeneration = deepClone({ ...ticket, serial: runtime.generationSerial });
-    try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, ticket.status); }
-    catch (error) { noteGenerationTicketFailure('恢复后重签', error); }
     runtime.generationType = text(ticket.type || 'normal');
     runtime.generationTicketPersistence = { ok: true, status: ticket.status, error: '' };
     if (ticket.status === 'ended') {
+      try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'ended'); }
+      catch (error) { noteGenerationTicketFailure('完成票据恢复后重签', error); }
+      const targetMessageId = ticketInteger(ticket.targetMessageId ?? ticket.receivedMessageId);
+      const targetSwipeId = ticketInteger(ticket.targetSwipeId ?? ticket.receivedSwipeId);
+      if (targetMessageId === null || targetSwipeId === null) {
+        interruptGenerationTicket(runtime.acceptedGeneration, '刷新读回的完成票据缺少固定楼层或swipe；已清理，拒绝猜测其他正文');
+        return true;
+      }
       setPhase('waiting', '已读回正文完成票据；继续等待两次一致的新鲜读取');
-      setTimeout(() => { void waitForAcceptedFinal(runtime.generationSerial); }, 0);
-    } else {
-      setPhase('waiting', '已读回正文生成票据；等待对应的主聊天完成事件');
+      setTimeout(() => { void waitForAcceptedFinal(runtime.generationSerial, targetMessageId, targetSwipeId); }, 0);
+      return true;
     }
+    if (ticket.awaitingStart === true) {
+      interruptGenerationTicket(runtime.acceptedGeneration, '刷新时发现用户发送票据从未收到匹配的正文开始事件；已按中断清理，不会消费刷新后的其他正文', 'discarded');
+      return true;
+    }
+    const hasReceipt = ticketInteger(ticket.receivedMessageId) !== null
+      && ticketInteger(ticket.receivedSwipeId) !== null;
+    const hasEnd = ticket.endObserved === true;
+    if (hasReceipt && hasEnd) {
+      try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'started'); }
+      catch (error) { noteGenerationTicketFailure('双收据恢复后重签', error); }
+      setPhase('waiting', '已读回正文结束与落盘双收据；继续汇合本楼任务');
+      setTimeout(() => { scheduleAcceptedGenerationIfReady(); }, 0);
+      return true;
+    }
+    if (hasReceipt && !hasEnd) {
+      const recovered = {
+        ...runtime.acceptedGeneration,
+        endObserved: true,
+        endObservedAt: new Date().toISOString(),
+        hadUserAtEnd: text(ticket.type || 'normal') === 'normal'
+          ? hasUserAfterTicketBaseline(ticket) : true,
+        reloadClosedGeneration: true,
+      };
+      try { runtime.acceptedGeneration = persistGenerationTicket(recovered, 'started'); }
+      catch (error) {
+        noteGenerationTicketFailure('落盘收据刷新闭合', error);
+        interruptGenerationTicket(runtime.acceptedGeneration, `刷新已终止旧生成，但闭合票据无法持久化：${error?.message || error}`);
+        return true;
+      }
+      setPhase('waiting', '已读回正文落盘收据；刷新终止边界已闭合旧生成，正在核对固定楼层与swipe');
+      setTimeout(() => { scheduleAcceptedGenerationIfReady(); }, 0);
+      return true;
+    }
+    if (!hasReceipt && hasEnd) {
+      const target = reconstructEndedTargetWithoutReceipt(runtime.acceptedGeneration);
+      if (!target) {
+        if (ticket.hadUserAtEnd === false) {
+          discardBackgroundGeneration(runtime.acceptedGeneration, '刷新读回的结束票据在结束当时没有用户楼；已按后台输出清理');
+        } else interruptGenerationTicket(
+          runtime.acceptedGeneration,
+          '刷新只读回正文结束信号，无法严格重建同一楼层与swipe的落盘正文；已清理中断票据，拒绝跨正文猜测',
+        );
+        return true;
+      }
+      try {
+        runtime.acceptedGeneration = persistGenerationTicket({
+          ...runtime.acceptedGeneration,
+          receivedMessageId: target.index,
+          receivedSwipeId: target.swipeId,
+          receivedMessageType: 'reload-reconstructed',
+          reloadReconstructedReceipt: true,
+        }, 'started');
+      } catch (error) {
+        noteGenerationTicketFailure('结束票据刷新重建', error);
+        interruptGenerationTicket(runtime.acceptedGeneration, `刷新已严格重建正文，但落盘身份无法持久化：${error?.message || error}`);
+        return true;
+      }
+      setPhase('waiting', '已从刷新后的稳定聊天严格重建正文落盘身份；正在核对固定楼层与swipe');
+      setTimeout(() => { scheduleAcceptedGenerationIfReady(); }, 0);
+      return true;
+    }
+    interruptGenerationTicket(runtime.acceptedGeneration, '刷新时只剩没有结束或落盘收据的正文开始票据；已按中断清理，不会等待不会重放的旧事件', 'discarded');
     return true;
   }
 
@@ -1974,6 +2082,10 @@ ${settings().globalPrompt || '（未设置）'}`;
       priorPhase,
       priorDetail,
       awaitingStart: source === 'message-sent',
+      endObserved: false,
+      receivedMessageId: null,
+      receivedMessageType: '',
+      completionScheduled: false,
       status: 'started',
     };
     try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'started'); }
@@ -1984,15 +2096,6 @@ ${settings().globalPrompt || '（未设置）'}`;
     return runtime.acceptedGeneration?.serial;
   }
 
-  function pushGenerationEvent(kind, serial = null) {
-    runtime.generationEventStack.push({ kind, serial: Number.isFinite(serial) ? serial : null });
-    if (runtime.generationEventStack.length > 32) runtime.generationEventStack.splice(0, runtime.generationEventStack.length - 32);
-  }
-
-  function popGenerationEvent() {
-    return runtime.generationEventStack.pop() || null;
-  }
-
   function mergeContinuationTicket(ticket) {
     runtime.generationSerial += 1;
     runtime.acceptedGeneration = {
@@ -2001,11 +2104,198 @@ ${settings().globalPrompt || '（未设置）'}`;
       status: 'started',
       awaitingStart: false,
       continuationCount: Number(ticket.continuationCount || 0) + 1,
+      endObserved: false,
+      receivedMessageId: null,
+      receivedMessageType: '',
+      completionScheduled: false,
     };
     try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'started'); }
     catch (error) { noteGenerationTicketFailure('正文续写合并', error); }
-    pushGenerationEvent('ticket', runtime.acceptedGeneration.serial);
     setPhase('waiting', '正文正在续写；保持同一用户回合票据');
+  }
+
+  function receiptTargetForTicket(ticket, messageId) {
+    if (messageId === null || messageId === undefined || messageId === '') return null;
+    const targetIndex = Number(messageId);
+    if (!Number.isInteger(targetIndex)) return null;
+    const target = assistantAt(targetIndex);
+    if (!target || target.chatId !== ticket?.chatId) return null;
+    const baselineIndex = Number.isInteger(Number(ticket?.baselineIndex)) ? Number(ticket.baselineIndex) : -1;
+    if (ticket?.type === 'normal' && targetIndex <= baselineIndex) return null;
+    if (['swipe', 'regenerate', 'continue'].includes(text(ticket?.type))) {
+      const expectedIndex = Number(ticket?.expectedIndex);
+      if (!Number.isInteger(expectedIndex) || targetIndex !== expectedIndex) return null;
+    }
+    const receivedSwipeId = ticketInteger(ticket?.receivedSwipeId);
+    if (receivedSwipeId !== null && target.swipeId !== receivedSwipeId) return null;
+    return target;
+  }
+
+  function receiptTypeMatchesTicket(ticket, messageType) {
+    const receivedType = text(messageType).toLocaleLowerCase();
+    if (!receivedType) return true;
+    if (['quiet', 'impersonate', 'first_message', 'command', 'extension'].includes(receivedType)) return false;
+    const generationType = text(ticket?.type || 'normal').toLocaleLowerCase();
+    if (generationType === 'normal') {
+      return Number(ticket?.continuationCount || 0) > 0
+        ? ['continue', 'append', 'appendfinal'].includes(receivedType)
+        : receivedType === 'normal';
+    }
+    if (generationType === 'swipe') return receivedType === 'swipe';
+    if (generationType === 'regenerate') return ['regenerate', 'normal'].includes(receivedType);
+    if (generationType === 'continue') return ['continue', 'append', 'appendfinal'].includes(receivedType);
+    return false;
+  }
+
+  function discardBackgroundGeneration(ticket, detail) {
+    runtime.acceptedGeneration = null;
+    try { clearGenerationTicket(ticket?.chatId || chatId(), ticket?.generationKey); }
+    catch (error) { noteGenerationTicketFailure('忽略后台生成时清理', error); }
+    runtime.phase = text(ticket?.priorPhase || (runtime.lastResult?.ok ? 'done' : 'idle'));
+    runtime.detail = ticket?.priorPhase === 'idle' && !runtime.lastResult
+      ? '这是没有用户行动的AI开场或后台生成；医生不会推进变量、档案或后台世界'
+      : text(ticket?.priorDetail || (runtime.lastResult?.ok ? '上一轮医生任务已完成' : '等待下一条最终回复'));
+    runtime.diagnostics.unshift({
+      at: new Date().toISOString(), phase: 'background-ignored', detail,
+    });
+    persistDiagnostics();
+    render();
+  }
+
+  function hasUserAfterTicketBaseline(ticket, sourceChat = ctx()?.chat || []) {
+    const baselineIndex = ticketInteger(ticket?.baselineIndex) ?? -1;
+    return sourceChat.slice(Math.max(0, baselineIndex + 1))
+      .some((message) => message?.is_user === true && Boolean(messageText(message)));
+  }
+
+  function reconstructEndedTargetWithoutReceipt(ticket) {
+    const sourceChat = ctx()?.chat || [];
+    const generationType = text(ticket?.type || 'normal');
+    if (ticket?.endObserved !== true || ticket?.awaitingStart === true) return null;
+    if (generationType === 'normal') {
+      if (ticket?.hadUserAtEnd === false || !hasUserAfterTicketBaseline(ticket, sourceChat)) return null;
+      const baselineIndex = ticketInteger(ticket?.baselineIndex) ?? -1;
+      let sawUser = false;
+      const candidates = [];
+      for (let index = Math.max(0, baselineIndex + 1); index < sourceChat.length; index += 1) {
+        const message = sourceChat[index];
+        if (!message || message.is_system) continue;
+        if (message.is_user) {
+          if (messageText(message)) sawUser = true;
+          continue;
+        }
+        const target = assistantAt(index);
+        if (target && sawUser) candidates.push(target);
+      }
+      if (candidates.length !== 1) return null;
+      const target = candidates[0];
+      const laterNarrative = sourceChat.slice(target.index + 1)
+        .some((message) => message && !message.is_system && (message.is_user || Boolean(messageText(message))));
+      return laterNarrative ? null : target;
+    }
+    if (!['swipe', 'regenerate', 'continue'].includes(generationType)) return null;
+    // Regenerate does not emit MESSAGE_SWIPED and may materialize an unknown
+    // final slot.  Without MESSAGE_RECEIVED there is no strict swipe identity
+    // to reconstruct, so reload must fail closed instead of guessing.
+    if (generationType === 'regenerate') return null;
+    const expectedIndex = ticketInteger(ticket?.expectedIndex);
+    const expectedSwipeId = ticketInteger(ticket?.expectedSwipeId);
+    const target = expectedIndex === null ? null : assistantAt(expectedIndex);
+    if (!target || expectedSwipeId === null || target.swipeId !== expectedSwipeId
+      || target.identity === ticket?.baselineIdentity) return null;
+    const laterNarrative = sourceChat.slice(target.index + 1)
+      .some((message) => message && !message.is_system && (message.is_user || Boolean(messageText(message))));
+    return laterNarrative ? null : target;
+  }
+
+  function scheduleAcceptedGenerationIfReady() {
+    const ticket = runtime.acceptedGeneration;
+    if (!ticket || ticket.chatId !== chatId() || ticket.completionScheduled === true
+      || ticket.endObserved !== true || ticket.receivedMessageId === null) return false;
+    const target = receiptTargetForTicket(ticket, ticket.receivedMessageId);
+    if (!target) {
+      interruptGenerationTicket(ticket, '正文完成信号已经汇合，但落盘楼层或swipe已漂移；已中断旧票据，拒绝处理其他正文');
+      return false;
+    }
+    try {
+      runtime.acceptedGeneration = persistGenerationTicket({
+        ...ticket,
+        awaitingStart: false,
+        completionScheduled: true,
+        targetMessageId: target.index,
+        targetSwipeId: target.swipeId,
+      }, 'ended');
+    } catch (error) {
+      noteGenerationTicketFailure('正文完成双信号汇合', error);
+      setPhase('failed', `正文已经落盘，但完成票据无法持久化：${error?.message || error}`);
+      return false;
+    }
+    void waitForAcceptedFinal(runtime.acceptedGeneration.serial, target.index, target.swipeId);
+    return true;
+  }
+
+  function observeReceivedMessage(messageId, messageType = '') {
+    const ticket = runtime.acceptedGeneration;
+    if (!ticket || ticket.chatId !== chatId() || ticket.completionScheduled === true) return false;
+    if (ticket.awaitingStart === true) return false;
+    if (!receiptTypeMatchesTicket(ticket, messageType)) return false;
+    const receivedMessageId = ticketInteger(ticket.receivedMessageId);
+    if (receivedMessageId !== null && receivedMessageId !== ticketInteger(messageId)) return false;
+    const target = receiptTargetForTicket(ticket, messageId);
+    if (!target) {
+      if (receivedMessageId !== null) {
+        interruptGenerationTicket(ticket, '已固定的正文落盘收据在同一楼层读到了不同swipe；已中断旧票据');
+      }
+      return false;
+    }
+    try {
+      runtime.acceptedGeneration = persistGenerationTicket({
+        ...ticket,
+        receivedMessageId: target.index,
+        receivedMessageType: text(messageType).toLocaleLowerCase(),
+        receivedSwipeId: target.swipeId,
+      }, ticket.status || 'started');
+    } catch (error) {
+      noteGenerationTicketFailure('正文落盘收据', error);
+      setPhase('failed', `正文已经落盘，但消息收据无法持久化：${error?.message || error}`);
+      return false;
+    }
+    return scheduleAcceptedGenerationIfReady();
+  }
+
+  function observeGenerationEnded() {
+    const ticket = runtime.acceptedGeneration;
+    if (!ticket || ticket.chatId !== chatId() || ticket.completionScheduled === true) return false;
+    // GENERATION_ENDED carries no generation identity.  Until the provisional
+    // MESSAGE_SENT ticket sees its matching START, an END belongs to an older
+    // or background request and must not be latched onto this user turn.
+    if (ticket.awaitingStart === true) return false;
+    const hadUserAtEnd = text(ticket.type || 'normal') === 'normal'
+      ? hasUserAfterTicketBaseline(ticket) : true;
+    try {
+      runtime.acceptedGeneration = persistGenerationTicket({
+        ...ticket,
+        endObserved: true,
+        endObservedAt: new Date().toISOString(),
+        hadUserAtEnd,
+      }, ticket.status || 'started');
+    } catch (error) {
+      noteGenerationTicketFailure('正文结束收据', error);
+      setPhase('failed', `正文结束事件已经到达，但完成收据无法持久化：${error?.message || error}`);
+      return false;
+    }
+    const scheduled = scheduleAcceptedGenerationIfReady();
+    if (!scheduled) {
+      const serial = runtime.acceptedGeneration?.serial;
+      setTimeout(() => {
+        const active = runtime.acceptedGeneration;
+        if (!active || active.serial !== serial || active.receivedMessageId !== null || active.endObserved !== true) return;
+        if (active.hadUserAtEnd === false) {
+          discardBackgroundGeneration(active, '生成结束时没有用户楼和AI落盘收据；已按后台输出忽略，后来出现的用户输入不会被旧票据接管');
+        }
+      }, 900);
+    }
+    return scheduled;
   }
 
   function bindEvents() {
@@ -2017,12 +2307,14 @@ ${settings().globalPrompt || '（未设置）'}`;
       const tail = chat.at(-1);
       const activeTicket = runtime.acceptedGeneration;
       if (tail?.is_user !== true) return;
-      if (activeTicket?.chatId === chatId() && activeTicket.status === 'started') return;
-      const pendingEvent = runtime.generationEventStack.at(-1);
-      if (pendingEvent?.kind === 'guarded-normal') {
-        const serial = beginGenerationTicket('normal', 'generation-started');
-        runtime.generationEventStack[runtime.generationEventStack.length - 1] = { kind: 'ticket', serial };
-        return;
+      if (activeTicket?.chatId === chatId() && activeTicket.status === 'started') {
+        if (activeTicket.endObserved === true && activeTicket.receivedMessageId === null) {
+          interruptGenerationTicket(
+            activeTicket,
+            '上一条生成已经结束但始终没有正文落盘收据；新用户回合到来前已清理旧票据',
+            'discarded',
+          );
+        } else return;
       }
       beginGenerationTicket('normal', 'message-sent');
     });
@@ -2031,32 +2323,44 @@ ${settings().globalPrompt || '（未设置）'}`;
       const hidden = dryRun === true || options?.dryRun === true || options?.quiet === true
         || options?.silent === true || options?.raw === true
         || ['quiet', 'raw', 'silent', 'impersonate'].includes(normalizedType);
-      if (hidden) {
-        pushGenerationEvent('ignored');
-        return;
-      }
+      if (hidden) return;
       enforceManagedScheduling();
       const mainTypes = new Set(['normal', 'swipe', 'regenerate', 'continue']);
-      if (!mainTypes.has(normalizedType)) {
-        pushGenerationEvent('ignored');
-        return;
-      }
+      if (!mainTypes.has(normalizedType)) return;
       const activeTicket = runtime.acceptedGeneration;
       if (normalizedType === 'continue' && activeTicket?.chatId === chatId()
-        && ['started', 'ended'].includes(text(activeTicket.status))) {
+        && ['started', 'ended', 'processing'].includes(text(activeTicket.status))) {
+        if (activeTicket.status === 'processing') {
+          const current = latestAssistant();
+          const checkpoint = loadPipelineCheckpoint(activeTicket.chatId);
+          const processingTarget = runtime.lastAccepted?.generationKey === activeTicket.generationKey
+            ? runtime.lastAccepted
+            : (checkpoint?.target?.generationKey === activeTicket.generationKey ? checkpoint.target : activeTicket);
+          const sameTarget = current
+            && Number(processingTarget.index ?? processingTarget.targetMessageId) === current.index
+            && Number(processingTarget.swipeId ?? processingTarget.targetSwipeId) === current.swipeId
+            && text(processingTarget.identity ?? processingTarget.targetIdentity) === current.identity;
+          const rootWorldReceipt = loadWorldReceipt({
+            chatId: activeTicket.chatId,
+            generationKey: activeTicket.generationKey,
+          });
+          const rootWorldCommitted = rootWorldReceipt?.committed === true && rootWorldReceipt?.valid === true;
+          if (!sameTarget || rootWorldCommitted) {
+            cancelAll(sameTarget ? '正文续写发生在已提交世界之后，改用同楼修订票据' : '正文续写目标已变化，旧半截正文任务作废', true);
+            beginGenerationTicket('continue', 'generation-started');
+            return;
+          }
+          cancelAll('正文续写接管尚未完成的半截正文', false);
+        }
         mergeContinuationTicket(activeTicket);
         return;
       }
-      if (normalizedType === 'continue' && runtime.pipelineBusy) {
-        pushGenerationEvent('ignored');
-        return;
-      }
+      if (normalizedType === 'continue' && runtime.pipelineBusy) return;
       if (activeTicket?.chatId === chatId() && activeTicket.status === 'started'
         && activeTicket.awaitingStart === true && normalizedType === activeTicket.type) {
         runtime.acceptedGeneration = { ...activeTicket, awaitingStart: false };
         try { runtime.acceptedGeneration = persistGenerationTicket(runtime.acceptedGeneration, 'started'); }
         catch (error) { noteGenerationTicketFailure('用户发送后的正文开始', error); }
-        pushGenerationEvent('ticket', runtime.acceptedGeneration.serial);
         return;
       }
       // A generation is only provisional until its final chat layer proves
@@ -2066,46 +2370,41 @@ ${settings().globalPrompt || '（未设置）'}`;
       const explicitReplacement = ['swipe', 'regenerate'].includes(normalizedType);
       if (!explicitReplacement && ((activeTicket?.chatId === chatId()
         && ['started', 'ended'].includes(text(activeTicket.status))) || runtime.pipelineBusy)) {
-        pushGenerationEvent('guarded-normal');
         return;
       }
-      const serial = beginGenerationTicket(normalizedType, 'generation-started');
-      pushGenerationEvent('ticket', serial);
+      beginGenerationTicket(normalizedType, 'generation-started');
+    });
+    // Story Oracle's mature lifecycle uses MESSAGE_RECEIVED(id) as the exact
+    // accepted-row receipt.  SillyTavern emits GENERATION_ENDED separately and
+    // in opposite orders for streaming/non-streaming replies, so the two
+    // signals are latched independently and joined without returning a Promise
+    // to the host event bus.
+    context.eventSource.on(eventName(context, 'MESSAGE_RECEIVED', 'message_received'), (messageId, messageType) => {
+      observeReceivedMessage(messageId, messageType);
     });
     context.eventSource.on(eventName(context, 'GENERATION_ENDED', 'generation_ended'), () => {
-      const event = popGenerationEvent();
-      if (event?.kind === 'ignored' || event?.kind === 'guarded-normal') return;
-      const ticket = runtime.acceptedGeneration;
-      const serial = ticket?.serial;
-      if (event?.kind === 'ticket' && event.serial !== serial) return;
-      if (Number.isFinite(serial)) {
-        try { runtime.acceptedGeneration = persistGenerationTicket({ ...ticket, awaitingStart: false }, 'ended'); }
-        catch (error) { noteGenerationTicketFailure('正文完成', error); }
-        void waitForAcceptedFinal(serial);
-      }
+      observeGenerationEnded();
     });
     context.eventSource.on(eventName(context, 'GENERATION_STOPPED', 'generation_stopped'), () => {
-      const event = popGenerationEvent();
-      if (event?.kind === 'ignored' || event?.kind === 'guarded-normal') return;
       const ticket = runtime.acceptedGeneration;
-      if (!ticket || (event?.kind === 'ticket' && event.serial !== ticket.serial)) return;
+      if (!ticket) return;
       cancelAll('正文生成已停止', true);
       try { clearGenerationTicket(ticket.chatId || chatId(), ticket.generationKey); }
       catch (error) { noteGenerationTicketFailure('正文停止时清理', error); }
       setPhase('cancelled', '正文生成已停止；未推进变量、人物档案或后台世界');
     });
-    context.eventSource.on(eventName(context, 'MESSAGE_SWIPED', 'message_swiped'), () => {
+    context.eventSource.on(eventName(context, 'MESSAGE_SWIPED', 'message_swiped'), (messageId) => {
+      // Real SillyTavern applies swipe_id/mes first and emits MESSAGE_SWIPED
+      // before starting an overswipe Generate('swipe').  Therefore any active
+      // ticket still belongs to the previous selection and must be cancelled;
+      // the following GENERATION_STARTED creates the new ticket from this slot.
       const activeTicket = runtime.acceptedGeneration;
-      const belongsToStartedReroll = activeTicket?.chatId === chatId()
-        && activeTicket.status === 'started'
-        && ['swipe', 'regenerate'].includes(activeTicket.type);
-      if (!belongsToStartedReroll) {
-        cancelAll('swipe已变化', true);
-        try { clearGenerationTicket(chatId()); }
-        catch (error) { noteGenerationTicketFailure('swipe变化时清理', error); }
-      }
+      if (activeTicket) cancelAll('swipe已变化', true);
+      try { clearGenerationTicket(chatId(), activeTicket?.generationKey || ''); }
+      catch (error) { noteGenerationTicketFailure('swipe变化时清理', error); }
       const scheduledChat = chatId();
-      const scheduledTarget = latestAssistant();
+      const numericMessageId = ticketInteger(messageId);
+      const scheduledTarget = numericMessageId === null ? latestAssistant() : assistantAt(numericMessageId);
       void scheduleBranchRestore(async () => {
         await new Promise((resolve) => setTimeout(resolve, 80));
         if (chatId() !== scheduledChat) return true;
@@ -2121,7 +2420,6 @@ ${settings().globalPrompt || '（未设置）'}`;
     context.eventSource.on(eventName(context, 'CHAT_LOADED', 'chat_loaded'), () => {
       cancelAll('聊天已切换', true);
       runtime.branchRestorePromise = Promise.resolve({ ok: true });
-      runtime.generationEventStack = [];
       runtime.lastResult = null;
       runtime.currentTarget = null;
       runtime.lastAccepted = null;

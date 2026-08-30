@@ -20,7 +20,7 @@ test('runtime loads only pinned reference engines and the new profile adapter', 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.8.0');
+  assert.equal(manifest.version, '0.8.1');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -63,31 +63,37 @@ test('host glue pins MVU reads, owns the pipeline and preserves original reroll 
   assert.match(source, /\['quiet', 'raw', 'silent', 'impersonate'\]/);
   assert.match(source, /GENERATION_TICKET_PREFIX/);
   assert.match(source, /persistGenerationTicket\(runtime\.acceptedGeneration, 'started'\)/);
+  const receivedStart = source.indexOf("context.eventSource.on(eventName(context, 'MESSAGE_RECEIVED'");
   const endStart = source.indexOf("context.eventSource.on(eventName(context, 'GENERATION_ENDED'");
   const stopStart = source.indexOf("context.eventSource.on(eventName(context, 'GENERATION_STOPPED'", endStart);
-  assert.ok(endStart >= 0 && stopStart > endStart);
+  assert.ok(receivedStart >= 0 && endStart > receivedStart && stopStart > endStart);
+  const received = source.slice(receivedStart, endStart);
+  assert.match(received, /observeReceivedMessage\(messageId, messageType\)/);
   const ended = source.slice(endStart, stopStart);
-  assert.match(ended, /const event = popGenerationEvent\(\)/);
-  assert.match(ended, /event\?\.kind === 'ignored'.*event\?\.kind === 'guarded-normal'/s);
-  assert.match(ended, /event\?\.kind === 'ticket' && event\.serial !== serial/);
-  assert.match(ended, /persistGenerationTicket\(\{\s*\.\.\.ticket,\s*awaitingStart:\s*false\s*\},\s*'ended'\)/);
-  assert.match(ended, /waitForAcceptedFinal\(serial\)/);
-  assert.ok(ended.indexOf('persistGenerationTicket') < ended.indexOf('waitForAcceptedFinal(serial)'));
+  assert.match(ended, /observeGenerationEnded\(\)/);
+
+  assert.match(source, /function receiptTargetForTicket\(/);
+  assert.match(source, /function receiptTypeMatchesTicket\(/);
+  assert.match(source, /function observeReceivedMessage\(/);
+  assert.match(source, /function observeGenerationEnded\(/);
+  assert.match(source, /function scheduleAcceptedGenerationIfReady\(/);
+  assert.match(source, /ticket\.completionScheduled === true\s*\|\| ticket\.endObserved !== true \|\| ticket\.receivedMessageId === null/);
+  assert.match(source, /completionScheduled:\s*true/);
+  assert.match(source, /'quiet', 'impersonate', 'first_message', 'command', 'extension'/);
+  assert.match(source, /persistGenerationTicket\([\s\S]*?\}, 'ended'\);[\s\S]*?waitForAcceptedFinal\(runtime\.acceptedGeneration\.serial, target\.index, target\.swipeId\)/);
+  assert.match(source, /receivedSwipeId !== null && target\.swipeId !== receivedSwipeId/);
+  assert.match(source, /if \(ticket\.awaitingStart === true\) return false/);
+  assert.doesNotMatch(source, /generationEventStack|pushGenerationEvent|popGenerationEvent/);
 
   const swipeStart = source.indexOf("context.eventSource.on(eventName(context, 'MESSAGE_SWIPED'", stopStart);
   assert.ok(swipeStart > stopStart);
   const stopped = source.slice(stopStart, swipeStart);
-  assert.match(stopped, /const event = popGenerationEvent\(\)/);
-  assert.match(stopped, /event\?\.kind === 'ignored'.*event\?\.kind === 'guarded-normal'/s);
-  assert.match(stopped, /event\?\.kind === 'ticket' && event\.serial !== ticket\.serial/);
   assert.match(stopped, /clearGenerationTicket\(ticket\.chatId \|\| chatId\(\), ticket\.generationKey\)/);
 
-  assert.match(source, /generationEventStack\.push\(\{ kind, serial:/);
   assert.match(source, /const explicitReplacement = \['swipe', 'regenerate'\]\.includes\(normalizedType\)/);
-  assert.match(source, /pushGenerationEvent\('guarded-normal'\)/);
   assert.match(source, /const hasUserAfterBaseline = liveChat\.slice/);
   assert.match(source, /const hasTurnUser = liveChat\.slice/);
-  assert.match(source, /const belongsToStartedReroll = activeTicket\?\.chatId === chatId\(\)/);
+  assert.match(source, /if \(activeTicket\) cancelAll\('swipe已变化', true\)/);
   assert.match(source, /slotWasUnmaterialized/);
   assert.match(source, /explicitRerollCompletion/);
 
@@ -99,15 +105,16 @@ test('host glue pins MVU reads, owns the pipeline and preserves original reroll 
   assert.match(continuation, /\.\.\.ticket,\s*serial: runtime\.generationSerial/s);
   assert.match(continuation, /continuationCount: Number\(ticket\.continuationCount \|\| 0\) \+ 1/);
   assert.match(continuation, /persistGenerationTicket\(runtime\.acceptedGeneration, 'started'\)/);
-  assert.match(continuation, /pushGenerationEvent\('ticket', runtime\.acceptedGeneration\.serial\)/);
   const startHandler = source.slice(bindStart, endStart);
-  assert.match(startHandler, /normalizedType === 'continue'.*\['started', 'ended'\].*mergeContinuationTicket\(activeTicket\)/s);
-  assert.match(startHandler, /normalizedType === 'continue' && runtime\.pipelineBusy.*pushGenerationEvent\('ignored'\)/s);
+  assert.match(startHandler, /normalizedType === 'continue'.*\['started', 'ended', 'processing'\].*mergeContinuationTicket\(activeTicket\)/s);
+  assert.match(startHandler, /activeTicket\.status === 'processing'.*cancelAll\('正文续写接管尚未完成的半截正文', false\)/s);
+  assert.match(startHandler, /normalizedType === 'continue' && runtime\.pipelineBusy\) return/);
   assert.match(source, /checkpoint\.status === 'cancelled'/);
   assert.match(source, /migrateDoctorWrittenAcceptedTarget/);
   assert.match(source, /ensureManualGenerationBinding/);
   assert.match(source, /cancel:\s*\(\)\s*=>\s*cancelCurrentTaskFromUi\(\)/u);
   assert.match(source, /ticketTime >= checkpointTime/);
+  assert.doesNotMatch(source, /pendingTicket\.generationKey !== checkpoint\?\.target\?\.generationKey/);
   assert.match(source, /runtime\.pipelineEpoch !== recoveryEpoch/);
 });
 

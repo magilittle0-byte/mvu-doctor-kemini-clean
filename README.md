@@ -1,6 +1,6 @@
-# MVU 人物与世界医生（Kemini Clean 0.8.0）
+# MVU 人物与世界医生（Kemini Clean 0.8.1）
 
-0.8.0 是一次从运行入口开始的重建。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
+0.8.1 延续从运行入口重建的 0.8.0 基线，并根除真实宿主中的生成事件错配。旧 Doctor 不再参与运行，只以快照保存在 `legacy/0.7.5/`；当前 `manifest.json` 只加载 `index.js` 与 `style.css`，`index.js` 不导入旧核心。
 
 ## 当前唯一主链
 
@@ -20,6 +20,8 @@
 - `profile-engine.js`：只实现三套原件之间确实不存在的宿主胶水，包括最终回复身份、串行顺序、人物档案 Schema/原子提交、恢复收据、共用连接页、完整报告与响应式控制台。
 
 逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。冻结原件可分别运行：
+
+0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)。
 
 ```bash
 npm run verify:vendor

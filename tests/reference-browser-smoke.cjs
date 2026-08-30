@@ -127,7 +127,8 @@ async function installHarness(page, options = {}) {
       eventSource,
       event_types: {
         MESSAGE_SENT: 'message_sent', GENERATION_STARTED: 'generation_started',
-        GENERATION_ENDED: 'generation_ended', MESSAGE_SWIPED: 'message_swiped', CHAT_LOADED: 'chat_loaded',
+        GENERATION_ENDED: 'generation_ended', GENERATION_STOPPED: 'generation_stopped',
+        MESSAGE_RECEIVED: 'message_received', MESSAGE_SWIPED: 'message_swiped', CHAT_LOADED: 'chat_loaded',
       },
       updateChatMetadata(update) { Object.assign(this.chatMetadata, update); },
       async saveMetadata() {
@@ -296,6 +297,7 @@ async function runAcceptedReply(page, assistantText = '白露：我先替你看�
     await window.__emit('message_sent');
     await window.__emit('generation_started', 'normal', {}, false);
     window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+    await window.__emit('message_received', 1, 'normal');
     await window.__emit('generation_ended');
   }, assistantText);
 }
@@ -308,6 +310,7 @@ async function runAcceptedReplyInTauriOrder(page, assistantText = '白露：我�
     window.__append({ is_user: true, mes: '请继续。' });
     window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
     await window.__emit('generation_ended');
+    await window.__emit('message_received', 2, 'normal');
   }, assistantText);
 }
 
@@ -319,6 +322,7 @@ async function runAcceptedReplyWithLateMessageAndBackgroundNormal(page, assistan
     window.__append({ is_user: true, mes: '请继续。' });
     window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
     await window.__emit('generation_ended');
+    await window.__emit('message_received', 2, 'normal');
     // TauriTavern can deliver the matching MESSAGE_SENT after the accepted
     // assistant row.  A separate extension may then run a background normal
     // generation; neither event may replace the accepted main-reply ticket.
@@ -336,6 +340,7 @@ async function runAcceptedReplyWithTauriMessageOrderAndBackgroundNormal(page, as
     window.__append({ is_user: true, mes: '请继续。' });
     await window.__emit('message_sent');
     window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+    await window.__emit('message_received', 2, 'normal');
     await window.__emit('generation_ended');
     await window.__emit('generation_started', 'normal', {}, false);
     await window.__emit('generation_ended');
@@ -348,6 +353,7 @@ async function runNextAcceptedReply(page, assistantText = '白露：我把新发
     await window.__emit('message_sent');
     await window.__emit('generation_started', 'normal', {}, false);
     window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+    await window.__emit('message_received', window.__context.chat.length - 1, 'normal');
     await window.__emit('generation_ended');
   }, assistantText);
 }
@@ -356,7 +362,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
+test('0.8.1 reference runtime browser smoke', { timeout: 100000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -478,7 +484,7 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('nested quiet generation consumes only its own end event', async () => {
+    await t.test('dry-run style start without a matching end cannot swallow the main accepted reply', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
@@ -489,18 +495,179 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           window.__append({ is_user: true, mes: '请继续。' });
           await window.__emit('message_sent');
           await window.__emit('generation_started', 'quiet', { quiet: true }, false);
-          await window.__emit('generation_ended');
           const text = '白露：我先替你看一看伤口。';
           window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+          await window.__emit('message_received', 2, 'normal');
           await window.__emit('generation_ended');
         });
         await waitForSettled(page, 'done');
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,
-          stack: window.MVUDoctorProfileEngine.getRuntime().generationEventStack,
+          ticket: window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration,
         }));
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
-        assert.deepEqual(evidence.stack, []);
+        assert.equal(evidence.ticket, null);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a stale END before the matching START cannot complete the next user turn', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const latch = await page.evaluate(async () => {
+          const oldText = '旧楼层保持不变。';
+          window.__setChat([
+            { is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] },
+            { is_user: true, mes: '请继续。' },
+          ]);
+          await window.__emit('message_sent');
+          const provisional = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          await window.__emit('generation_ended');
+          const afterStaleEnd = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          await window.__emit('generation_started', 'normal', {}, false);
+          const afterStart = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          const reply = '白露：我先替你看一看伤口。';
+          window.__append({ is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] });
+          await window.__emit('message_received', 2, 'normal');
+          const afterReceipt = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          return { provisional, afterStaleEnd, afterStart, afterReceipt };
+        });
+        assert.equal(latch.afterStaleEnd.generationKey, latch.provisional.generationKey);
+        assert.equal(latch.afterStaleEnd.serial, latch.provisional.serial);
+        assert.equal(latch.afterStaleEnd.awaitingStart, true);
+        assert.equal(latch.afterStaleEnd.endObserved, false);
+        assert.equal(latch.afterStart.awaitingStart, false);
+        assert.equal(latch.afterStart.endObserved, false);
+        assert.equal(latch.afterReceipt.receivedMessageId, 2);
+        assert.equal(latch.afterReceipt.completionScheduled, false);
+        await page.waitForTimeout(1400);
+        assert.deepEqual(await page.evaluate(() => window.__stages), []);
+        await page.evaluate(async () => { await window.__emit('generation_ended'); });
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          calls: window.__worldCalls.length,
+          accepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
+          ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.calls, 1);
+        assert.equal(evidence.accepted.index, 2);
+        assert.equal(evidence.ticket, null);
+      } finally { await page.close(); }
+    });
+
+    await t.test('crossed background start and main end join the exact MESSAGE_RECEIVED row once', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const latch = await page.evaluate(async () => {
+          const oldText = '旧楼层保持不变。';
+          window.__setChat([{ is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] }]);
+          await window.__emit('generation_started', 'normal', {}, false);
+          const mainTicket = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          window.__append({ is_user: true, mes: '请继续。' });
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          const afterBackgroundStart = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          await window.__emit('generation_ended');
+          const afterEnd = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          const text = '白露：我先替你看一看伤口。';
+          window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+          const messageId = window.__context.chat.length - 1;
+          await window.__emit('message_received', messageId, 'extension');
+          const afterForeignReceipt = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          await window.__emit('message_received', messageId, 'normal');
+          await window.__emit('message_received', messageId, 'normal');
+          const afterReceipt = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          return { mainTicket, afterBackgroundStart, afterEnd, afterForeignReceipt, afterReceipt, messageId, stages: [...window.__stages] };
+        });
+        assert.equal(latch.afterBackgroundStart.serial, latch.mainTicket.serial);
+        assert.equal(latch.afterBackgroundStart.generationKey, latch.mainTicket.generationKey);
+        assert.equal(latch.afterEnd.endObserved, true);
+        assert.equal(latch.afterEnd.completionScheduled, false);
+        assert.equal(latch.afterForeignReceipt.receivedMessageId, null);
+        assert.equal(latch.afterReceipt.receivedMessageId, latch.messageId);
+        assert.equal(latch.afterReceipt.targetMessageId, latch.messageId);
+        assert.equal(latch.afterReceipt.completionScheduled, true);
+        assert.equal(latch.afterReceipt.status, 'ended');
+        assert.deepEqual(latch.stages, []);
+        await waitForSettled(page, 'done');
+        const beforeLateEnd = await page.evaluate(() => {
+          const runtime = window.MVUDoctorProfileEngine.getRuntime();
+          const store = window.MVUDoctorProfileEngine.getStore();
+          return {
+            stages: [...window.__stages], worldCalls: window.__worldCalls.length,
+            revision: store.revision, history: store.history.length,
+            reports: runtime.runReports.length, identity: runtime.lastResult.identity,
+            acceptedGeneration: runtime.acceptedGeneration,
+            acceptedIndex: runtime.lastAccepted.index,
+          };
+        });
+        assert.deepEqual(beforeLateEnd.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(beforeLateEnd.worldCalls, 1);
+        assert.equal(beforeLateEnd.acceptedGeneration, null);
+        assert.equal(beforeLateEnd.acceptedIndex, latch.messageId);
+        await page.evaluate(async () => {
+          await window.__emit('message_received', 2, 'normal');
+          await window.__emit('generation_ended');
+          await window.__emit('generation_ended');
+        });
+        await page.waitForTimeout(1400);
+        const afterLateEnd = await page.evaluate(() => {
+          const runtime = window.MVUDoctorProfileEngine.getRuntime();
+          const store = window.MVUDoctorProfileEngine.getStore();
+          return {
+            stages: [...window.__stages], worldCalls: window.__worldCalls.length,
+            revision: store.revision, history: store.history.length,
+            reports: runtime.runReports.length, identity: runtime.lastResult.identity,
+          };
+        });
+        assert.deepEqual(afterLateEnd, {
+          stages: beforeLateEnd.stages, worldCalls: beforeLateEnd.worldCalls,
+          revision: beforeLateEnd.revision, history: beforeLateEnd.history,
+          reports: beforeLateEnd.reports, identity: beforeLateEnd.identity,
+        });
+      } finally { await page.close(); }
+    });
+
+    await t.test('an exact receipt cannot retarget to another swipe before END', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const receipt = await page.evaluate(async () => {
+          window.__setChat([{ is_user: true, mes: '请继续。' }]);
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          const accepted = '白露：这是原本落盘的答复。';
+          window.__append({ is_user: false, is_system: false, mes: accepted, swipe_id: 0, swipes: [accepted] });
+          await window.__emit('message_received', 1, 'normal');
+          const fixed = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          const message = window.__context.chat[1];
+          const foreign = '白露：这是后来切换到的另一条swipe。';
+          message.swipe_id = 1;
+          message.swipes = [accepted, foreign];
+          message.mes = foreign;
+          await window.__emit('generation_ended');
+          return fixed;
+        });
+        assert.equal(receipt.receivedMessageId, 1);
+        assert.equal(receipt.receivedSwipeId, 0);
+        assert.equal(receipt.completionScheduled, false);
+        await page.waitForTimeout(200);
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          calls: window.__worldCalls.length,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+          checkpoint: localStorage.getItem('mvuDoctorReferencePipeline:chat-a'),
+        }));
+        assert.deepEqual(evidence.stages, []);
+        assert.equal(evidence.calls, 0);
+        assert.equal(evidence.runtime.phase, 'failed');
+        assert.equal(evidence.runtime.acceptedGeneration, null);
+        assert.equal(evidence.ticket, null);
+        assert.equal(evidence.checkpoint, null);
       } finally { await page.close(); }
     });
 
@@ -532,6 +699,48 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
+    await t.test('background END classification is frozen before a later user message arrives', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const before = await page.evaluate(() => ({
+          stages: [...window.__stages], calls: window.__worldCalls.length,
+          reports: window.MVUDoctorProfileEngine.getRuntime().runReports.length,
+          identity: window.MVUDoctorProfileEngine.getRuntime().lastResult.identity,
+        }));
+        const oldKey = await page.evaluate(async () => {
+          await window.__emit('generation_started', 'normal', {}, false);
+          const key = window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration.generationKey;
+          await window.__emit('generation_ended');
+          window.__append({ is_user: true, mes: '这是END以后才到达的新用户回合。' });
+          return key;
+        });
+        await page.waitForTimeout(1200);
+        const cleared = await page.evaluate(() => ({
+          stages: [...window.__stages], calls: window.__worldCalls.length,
+          reports: window.MVUDoctorProfileEngine.getRuntime().runReports.length,
+          identity: window.MVUDoctorProfileEngine.getRuntime().lastResult.identity,
+          phase: window.MVUDoctorProfileEngine.getRuntime().phase,
+          active: window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration,
+          durable: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+        }));
+        assert.deepEqual(cleared.stages, before.stages);
+        assert.equal(cleared.calls, before.calls);
+        assert.equal(cleared.reports, before.reports);
+        assert.equal(cleared.identity, before.identity);
+        assert.equal(cleared.phase, 'done');
+        assert.equal(cleared.active, null);
+        assert.equal(cleared.durable, null);
+        const nextKey = await page.evaluate(async () => {
+          await window.__emit('message_sent');
+          return window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration.generationKey;
+        });
+        assert.notEqual(nextKey, oldKey);
+      } finally { await page.close(); }
+    });
+
     await t.test('ended generation ticket survives a chat reload during the accepted-final wait window', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
@@ -542,6 +751,7 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           await window.__emit('generation_started', 'normal', {}, false);
           const reply = '白露：我会把这件事记下来。';
           window.__append({ is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] });
+          await window.__emit('message_received', 1, 'normal');
           await window.__emit('generation_ended');
           const persisted = JSON.parse(localStorage.getItem('mvuDoctorReferenceGeneration:chat-a') || 'null');
           await window.__emit('chat_loaded');
@@ -561,6 +771,163 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
       } finally { await page.close(); }
     });
 
+    await t.test('a received-only ticket closes at reload and processes its fixed reply once', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const before = await page.evaluate(async () => {
+          window.__setChat([{ is_user: true, mes: '请继续。' }]);
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          const reply = '白露：刷新以后也只能处理这一条。';
+          window.__append({ is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] });
+          await window.__emit('message_received', 1, 'normal');
+          const ticket = JSON.parse(localStorage.getItem('mvuDoctorReferenceGeneration:chat-a') || 'null');
+          await window.__emit('chat_loaded');
+          return ticket;
+        });
+        assert.equal(before.endObserved, false);
+        assert.equal(before.receivedMessageId, 1);
+        assert.equal(before.receivedSwipeId, 0);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages, calls: window.__worldCalls.length,
+          accepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
+          ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.calls, 1);
+        assert.equal(evidence.accepted.index, 1);
+        assert.equal(evidence.accepted.swipeId, 0);
+        assert.equal(evidence.ticket, null);
+      } finally { await page.close(); }
+    });
+
+    await t.test('an END-only ticket is reconstructed strictly at reload and processed once', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const before = await page.evaluate(async () => {
+          window.__setChat([{ is_user: true, mes: '请继续。' }]);
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          const reply = '白露：结束信号虽先到，刷新后仍只认这一楼。';
+          window.__append({ is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] });
+          await window.__emit('generation_ended');
+          const ticket = JSON.parse(localStorage.getItem('mvuDoctorReferenceGeneration:chat-a') || 'null');
+          await window.__emit('chat_loaded');
+          return ticket;
+        });
+        assert.equal(before.endObserved, true);
+        assert.equal(before.receivedMessageId, null);
+        assert.equal(before.hadUserAtEnd, true);
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages, calls: window.__worldCalls.length,
+          accepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
+          ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.equal(evidence.calls, 1);
+        assert.equal(evidence.accepted.index, 1);
+        assert.equal(evidence.accepted.swipeId, 0);
+        assert.equal(evidence.ticket, null);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a pure START ticket is cleared at reload instead of waiting for dead events', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await page.evaluate(async () => {
+          window.__setChat([{ is_user: true, mes: '请继续。' }]);
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          await window.__emit('chat_loaded');
+        });
+        await page.waitForTimeout(100);
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+        }));
+        assert.deepEqual(evidence.stages, []);
+        assert.equal(evidence.runtime.phase, 'discarded');
+        assert.equal(evidence.runtime.acceptedGeneration, null);
+        assert.equal(evidence.ticket, null);
+      } finally { await page.close(); }
+    });
+
+    await t.test('reload clears a received-only ticket when its exact target vanished', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await page.evaluate(async () => {
+          window.__setChat([{ is_user: true, mes: '请继续。' }]);
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          const reply = '白露：这条正文随后被宿主删除。';
+          window.__append({ is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] });
+          await window.__emit('message_received', 1, 'normal');
+          window.__context.chat.splice(1, 1);
+          await window.__emit('chat_loaded');
+        });
+        await page.waitForTimeout(150);
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages, calls: window.__worldCalls.length,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+          checkpoint: localStorage.getItem('mvuDoctorReferencePipeline:chat-a'),
+        }));
+        assert.deepEqual(evidence.stages, []);
+        assert.equal(evidence.calls, 0);
+        assert.equal(evidence.runtime.phase, 'failed');
+        assert.equal(evidence.runtime.acceptedGeneration, null);
+        assert.equal(evidence.ticket, null);
+        assert.equal(evidence.checkpoint, null);
+      } finally { await page.close(); }
+    });
+
+    await t.test('reload clears a receipt whose fixed swipe has drifted', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const receipt = await page.evaluate(async () => {
+          const oldText = '白露：旧的答复。';
+          window.__setChat([
+            { is_user: true, mes: '请回答。' },
+            { is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] },
+          ]);
+          await window.__emit('generation_started', 'regenerate', {}, false);
+          const nextText = '白露：这是重写后的答复。';
+          const message = window.__context.chat[1];
+          message.mes = nextText;
+          message.swipe_id = 1;
+          message.swipes = [oldText, nextText];
+          await window.__emit('message_received', 1, 'normal');
+          const fixed = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          const foreign = '白露：这是刷新前切换到的第三条答复。';
+          message.swipe_id = 2;
+          message.swipes.push(foreign);
+          message.mes = foreign;
+          await window.__emit('chat_loaded');
+          return fixed;
+        });
+        assert.equal(receipt.receivedSwipeId, 1);
+        await page.waitForTimeout(150);
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages, calls: window.__worldCalls.length,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
+        }));
+        assert.deepEqual(evidence.stages, []);
+        assert.equal(evidence.calls, 0);
+        assert.equal(evidence.runtime.phase, 'failed');
+        assert.equal(evidence.runtime.acceptedGeneration, null);
+        assert.equal(evidence.ticket, null);
+      } finally { await page.close(); }
+    });
+
     await t.test('a newer ended ticket supersedes an older failed checkpoint after reload', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
@@ -573,6 +940,7 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           await window.__emit('generation_started', 'normal', {}, false);
           const reply = '白露：这一次我会继续处理新的线索。';
           window.__append({ is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] });
+          await window.__emit('message_received', window.__context.chat.length - 1, 'normal');
           await window.__emit('generation_ended');
           const persisted = JSON.parse(localStorage.getItem('mvuDoctorReferenceGeneration:chat-a') || 'null');
           await window.__emit('chat_loaded');
@@ -679,6 +1047,7 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           await window.__emit('generation_started', 'normal', {}, false);
           const text = '这里是角色卡的默认开场。';
           window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+          await window.__emit('message_received', 0, 'first_message');
           await window.__emit('generation_ended');
         });
         await page.waitForTimeout(1700);
@@ -815,18 +1184,34 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           const message = window.__context.chat[1];
           message.mes = nextText;
           message.swipe_id = 1;
-          message.swipes = [oldText, nextText];
-          await window.__emit('message_swiped');
+          message.swipes = [oldText];
+          message.swipes.length = 2;
+          await window.__emit('message_received', 1, 'normal');
+          window.__rerollReceipt = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          message.swipes[1] = nextText;
           await window.__emit('generation_ended');
         });
         await waitForSettled(page, 'done');
         const evidence = await page.evaluate(() => ({
           call: window.__worldCalls[0],
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          accepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
+          stages: window.__stages,
+          receipt: window.__rerollReceipt,
         }));
+        assert.equal(evidence.receipt.type, 'regenerate');
+        assert.equal(evidence.receipt.receivedMessageType, 'normal');
+        assert.equal(evidence.receipt.receivedMessageId, 1);
+        assert.equal(evidence.receipt.receivedSwipeId, 1);
+        assert.equal(evidence.receipt.endObserved, false);
+        assert.equal(evidence.receipt.completionScheduled, false);
         assert.equal(evidence.call.mode, undefined);
         assert.equal(evidence.call.reason, 'reroll');
         assert.equal(evidence.result.world.beforeRound, evidence.result.world.afterRound);
+        assert.equal(evidence.result.generationType, 'regenerate');
+        assert.equal(evidence.accepted.index, 1);
+        assert.equal(evidence.accepted.swipeId, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
       } finally { await page.close(); }
     });
 
@@ -842,22 +1227,71 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           await window.__emit('message_sent');
           const partial = '白露：这是尚未完成的答复。';
           window.__append({ is_user: false, is_system: false, mes: partial, swipe_id: 0, swipes: [partial] });
+          await window.__emit('message_received', 2, 'normal');
           await window.__emit('generation_ended');
           await window.__emit('generation_started', 'continue', {}, false);
           const message = window.__context.chat.at(-1);
           const complete = `${partial}现在补完。`;
           message.mes = complete;
           message.swipes[message.swipe_id] = complete;
+          await window.__emit('message_received', 2, 'appendFinal');
           await window.__emit('generation_ended');
         });
         await waitForSettled(page, 'done');
         const evidence = await page.evaluate(() => ({
           calls: window.__worldCalls,
+          stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          lastAccepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
+          finalText: window.__context.chat.at(-1).mes,
         }));
         assert.equal(evidence.calls.length, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
         assert.equal(evidence.calls[0].mode, 'forward');
         assert.equal(evidence.result.generationType, 'normal');
+        assert.equal(evidence.result.identity, evidence.lastAccepted.identity);
+        assert.match(evidence.finalText, /现在补完/u);
+      } finally { await page.close(); }
+    });
+
+    await t.test('delayed continue cancels a partial pipeline and processes only the completed text', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowProfile: true });
+        await runAcceptedReply(page, '白露：这是尚未完成的答复。');
+        await page.waitForFunction(() => window.__stages.filter((stage) => stage === 'profile').length === 1
+          && window.MVUDoctorProfileEngine.getRuntime().pipelineBusy === true);
+        const continuation = await page.evaluate(async () => {
+          const before = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          await window.__emit('generation_started', 'continue', {}, false);
+          const message = window.__context.chat.at(-1);
+          message.mes = `${message.mes}现在补完。`;
+          message.swipes[message.swipe_id] = message.mes;
+          await window.__emit('message_received', window.__context.chat.length - 1, 'appendFinal');
+          await window.__emit('generation_ended');
+          const after = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+          await window.__emit('chat_loaded');
+          return { before, after };
+        });
+        assert.equal(continuation.before.status, 'processing');
+        assert.equal(continuation.after.generationKey, continuation.before.generationKey);
+        assert.ok(continuation.after.serial > continuation.before.serial);
+        await page.waitForFunction(() => window.__stages.filter((stage) => stage === 'profile').length === 2);
+        await page.evaluate((reply) => window.__resolveProfile(reply), profileEnvelope());
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          stages: window.__stages,
+          worldCalls: window.__worldCalls,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          finalText: window.__context.chat.at(-1).mes,
+        }));
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'diagnosis', 'profile', 'world']);
+        assert.equal(evidence.worldCalls.length, 1);
+        assert.equal(evidence.worldCalls[0].mode, 'forward');
+        assert.equal(evidence.runtime.lastResult.identity, evidence.runtime.lastAccepted.identity);
+        assert.match(evidence.finalText, /现在补完/u);
+        assert.equal(Object.keys(evidence.profiles).length, 1);
       } finally { await page.close(); }
     });
 
@@ -873,10 +1307,11 @@ test('0.8.0 reference runtime browser smoke', { timeout: 100000 }, async (t) => 
           message.swipe_id = 1;
           message.swipes = [text];
           message.mes = text;
-          await window.__emit('message_swiped', { messageId: 1, swipeId: 1 });
+          await window.__emit('message_swiped', 1);
           await window.__emit('generation_started', 'swipe', {}, false);
           message.swipes = [text, text];
           message.mes = text;
+          await window.__emit('message_received', 1, 'swipe');
           await window.__emit('generation_ended');
         }, accepted);
         await page.waitForFunction(() => window.__worldCalls.length === 2
