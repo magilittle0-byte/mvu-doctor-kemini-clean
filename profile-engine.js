@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.8.9-reference-baseline';
+  const ENGINE_VERSION = '0.9.0';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -10,7 +10,6 @@
   const DIAGNOSTIC_INTEGRITY_STORAGE_PREFIX = 'mvuDoctorReferenceDiagnosticIntegrity:';
   const PIPELINE_STORAGE_PREFIX = 'mvuDoctorReferencePipeline:';
   const GENERATION_TICKET_PREFIX = 'mvuDoctorReferenceGeneration:';
-  const WORLD_RECEIPT_STORAGE_PREFIX = 'mvuDoctorReferenceWorldReceipt:';
   const MAX_HISTORY = 24;
   const MAX_BRANCH_MESSAGES = 8;
   // Directly retained from the mature 0.7.x completeness contract: a
@@ -22,8 +21,8 @@
   // but do not reject a substantive role merely because it describes an
   // unknown object in the middle of the sentence.
   const PROFILE_EDGE_PLACEHOLDER = /(?:^(?:未知|不详|待定|未登记|未设定|暂无|正文未提及)(?:$|[\s（(：:，,。；;])|(?:未知|不详|待定|未登记|未设定|暂无|正文未提及)[\s）)】\]}》〉”’"'」』。；;，,:：、!?！？]*$)/iu;
-  const WORLD_CONTEXT_BRIDGE = Symbol.for('mvu-doctor.reference.world-context-bridge');
   const WORLD_PUBLIC_PROJECTION_BRIDGE = Symbol.for('mvu-doctor.reference.world-public-projection-bridge');
+  const WORLD_MEMORY_PUBLIC_PROJECTION_BRIDGE = Symbol.for('mvu-doctor.reference.world-memory-public-projection-bridge');
   const STALE_TASK = 'stale_accepted_target';
   const PROFILE_BRANCH_ROLLBACK_FAILED = 'profile_branch_rollback_failed';
 
@@ -303,7 +302,6 @@
       enabled: current?.enabled !== false,
       diagnoseEnabled: current?.diagnoseEnabled !== false,
       profileEnabled: current?.profileEnabled !== false,
-      worldEnabled: current?.worldEnabled !== false,
       globalPrompt: text(current?.globalPrompt),
       maxTokens: Math.max(3000, Number(current?.maxTokens) || 12000),
       temperature: Math.max(0, Math.min(1.5, Number(current?.temperature) || 0.35)),
@@ -1073,28 +1071,13 @@ ${bindingObligation}
     return /\/chat\/completions$/iu.test(endpoint) ? endpoint : `${endpoint}/chat/completions`;
   }
 
-  function enforceManagedScheduling() {
+  function enforceDoctorStoryScheduling() {
     const context = ctx();
     const story = context?.extensionSettings?.storyOracle;
     if (story && story.autoDiagnoseEnabled !== false) {
       story.autoDiagnoseEnabled = false;
       context.saveSettingsDebounced?.();
     }
-    const store = window.WORLD_ENGINE_STORE;
-    if (store?.getItem && store?.setItem) {
-      let current = {};
-      try { current = JSON.parse(store.getItem('world_engine_settings') || '{}'); } catch { current = {}; }
-      if (current.evolveMode !== 'manual') {
-        store.setItem('world_engine_settings', JSON.stringify({ ...current, evolveMode: 'manual' }));
-        window.WORLD_ENGINE_API?.getSettings?.(true);
-      }
-    }
-    try {
-      const memory = window.MEMORY_ENGINE_SETTINGS?.getSettings?.(true);
-      if (memory && (memory.engineEnabled !== false || memory.evolveMode !== 'manual')) {
-        window.MEMORY_ENGINE_SETTINGS.patchSettings({ engineEnabled: false, evolveMode: 'manual' });
-      }
-    } catch { /* optional original subsystem */ }
     try { disableNativeStoryPostReply(); } catch { /* Story may still be mounting */ }
   }
 
@@ -1183,7 +1166,7 @@ ${bindingObligation}
     await so.awaitMvuIdle?.(Mvu, { capMs: 120000, pollMs: 250 });
     requireTaskOwner(owner, target, '等待MVU自身更新完成后');
     if (so.mvuIsBusy?.(Mvu)) throw new Error('MVU自身的额外解析仍在运行，拒绝与它并发覆盖同一楼层');
-    if (storySettings.mode === 'direct' && (!storySettings.endpoint || !storySettings.model)) throw new Error('请先在医生“连接”页填写API地址和模型');
+    if (storySettings.mode === 'direct' && (!storySettings.endpoint || !storySettings.model)) throw new Error('Story Oracle变量医生尚未配置API地址或模型；请在Story Oracle原版设置中填写');
     if (storySettings.mode === 'profile' && !storySettings.profileId) throw new Error('故事神谕没有选择连接配置');
 
     let wiBlock;
@@ -1342,170 +1325,287 @@ ${bindingObligation}
     };
   }
 
-  function installWorldContextBridge() {
-    const worldbook = window.WORLD_ENGINE_WORLDBOOK;
+  function projectObservableWorld(worldState) {
+    const source = deepClone(worldState || {});
+    const events = Array.isArray(source.events)
+      ? source.events.filter((event) => ['已爆发', '已完成'].includes(text(event?.stage))).map((event) => ({
+        id: event?.id,
+        name: text(event?.name),
+        type: text(event?.type),
+        level: Number(event?.level || 0),
+        stage: text(event?.stage),
+        stageRound: Number(event?.stageRound || 0),
+        evolveResult: text(event?.evolveResult),
+      }))
+      : [];
+    const factions = Array.isArray(source.factions)
+      ? source.factions.map((faction) => ({
+        id: faction?.id,
+        name: text(faction?.name),
+        status: text(faction?.status),
+        relation: text(faction?.relation),
+        scope: text(faction?.scope),
+      }))
+      : [];
+    const winds = Array.isArray(source.winds)
+      ? source.winds.map((wind) => ({
+        id: wind?.id,
+        type: text(wind?.type),
+        level: Number(wind?.level || 0),
+        scope: text(wind?.scope),
+        content: text(wind?.content),
+      }))
+      : [];
+    const worldTrends = Array.isArray(source.worldTrends)
+      ? source.worldTrends.map((trend) => ({
+        id: trend?.id,
+        name: text(trend?.name),
+        scope: text(trend?.scope),
+        description: text(trend?.description),
+        status: text(trend?.status),
+      }))
+      : [];
+    const economy = source.economy && typeof source.economy === 'object' ? {
+      climate: text(source.economy.climate),
+      signals: Array.isArray(source.economy.signals)
+        ? source.economy.signals.map((signal) => ({
+          summary: text(signal?.summary), scope: text(signal?.scope),
+        })) : [],
+    } : { climate: '', signals: [] };
+    const reputation = source.reputation && typeof source.reputation === 'object' ? {
+      authority: text(source.reputation.authority),
+      common: text(source.reputation.common),
+      shadow: text(source.reputation.shadow),
+      circuit: text(source.reputation.circuit),
+      lastChange: text(source.reputation.lastChange),
+    } : {};
+    const regional = source.regionalIncident && typeof source.regionalIncident === 'object'
+      ? source.regionalIncident : {};
+    return {
+      round: Number(source.round || 0),
+      worldDigest: '后台摘要已隔离；正文只使用下列已公开或可观察信息。',
+      world_digest: '后台摘要已隔离；正文只使用下列已公开或可观察信息。',
+      events,
+      factions,
+      winds,
+      worldTrends,
+      economy,
+      reputation,
+      regionalIncident: {
+        active: regional.active === true,
+        title: text(regional.title),
+        type: text(regional.type),
+        scope: text(regional.scope),
+        impact: text(regional.impact),
+      },
+      enemies: [],
+      influenceChain: [],
+      blackbox: { secretActions: [], secretAssets: [] },
+    };
+  }
+
+  function observableWorldDigest(publicUpdate) {
+    const parts = [];
+    for (const event of publicUpdate.events || []) {
+      if (event.name) parts.push(`事件“${event.name}”${event.stage || '已公开'}`);
+    }
+    for (const wind of publicUpdate.winds || []) {
+      if (wind.content) parts.push(wind.content);
+    }
+    for (const trend of publicUpdate.worldTrends || []) {
+      if (trend.name || trend.description) parts.push([trend.name, trend.description].filter(Boolean).join('：'));
+    }
+    for (const faction of publicUpdate.factions || []) {
+      if (faction.name) parts.push(`${faction.name}${faction.status ? `处于${faction.status}` : '出现公开变化'}`);
+    }
+    for (const signal of publicUpdate.economy?.signals || []) {
+      if (signal.summary) parts.push(signal.summary);
+    }
+    if (publicUpdate.reputation?.lastChange) parts.push(publicUpdate.reputation.lastChange);
+    if (publicUpdate.regionalIncident?.active) {
+      parts.push([publicUpdate.regionalIncident.title, publicUpdate.regionalIncident.impact].filter(Boolean).join('：'));
+    }
+    const digest = parts.filter(Boolean).join('；');
+    // Empty is meaningful to the mature Memory transaction: it performs a
+    // requested replace rollback first, then skips creating a new minute.
+    // Hidden-only world turns therefore do not accumulate no-op summaries.
+    return digest ? `公开世界变化：${digest}`.slice(0, 1000) : '';
+  }
+
+  function installWorldMemoryPublicProjection() {
+    const memory = window.MEMORY_ENGINE;
+    if (!memory?.ingestWorldEvolution) return false;
+    if (memory[WORLD_MEMORY_PUBLIC_PROJECTION_BRIDGE]) return true;
+    const originalIngest = memory.ingestWorldEvolution.bind(memory);
+    memory.ingestWorldEvolution = function(payload) {
+      const publicUpdate = projectObservableWorld(payload?.worldUpdate || {});
+      const worldSettings = (() => {
+        try { return window.WORLD_ENGINE_API?.getSettings?.() || {}; }
+        catch { return {}; }
+      })();
+      if (worldSettings.injectAllLevels !== true) {
+        // Match the mature injector's public wind threshold so low-level
+        // background signals cannot bypass it through Memory linkage.
+        publicUpdate.winds = (publicUpdate.winds || []).filter((wind) => Number(wind.level || 0) >= 3);
+      }
+      return originalIngest({
+        ...(payload || {}),
+        worldDigest: observableWorldDigest(publicUpdate),
+        worldUpdate: publicUpdate,
+      });
+    };
+    Object.defineProperty(memory, WORLD_MEMORY_PUBLIC_PROJECTION_BRIDGE, {
+      value: { original: originalIngest }, configurable: false,
+    });
+    return true;
+  }
+
+  function installWorldPublicProjection() {
     const injector = window.WORLD_ENGINE_INJECT;
     let installed = false;
-    if (worldbook?.buildPromptSection && !worldbook[WORLD_CONTEXT_BRIDGE]) {
-      const original = worldbook.buildPromptSection.bind(worldbook);
-      worldbook.buildPromptSection = async function(...args) {
-        const base = await original(...args);
-        const pinnedTarget = runtime.worldContextTarget || latestAssistant();
-        if (!pinnedTarget) return base;
-        requireCurrentTarget(pinnedTarget, '世界推演读取私密上下文');
-        const profileStore = readStore();
-        const mvu = await currentMvuState(pinnedTarget.index);
-        const privateContext = `【Doctor私密权威快照｜仅供后台世界推演】
-以下人物档案和MVU状态不是玩家知识，不得据此让不知情人物全知，也不得直接泄露到正文。人物必须按自己的欲望、知识、资源、阻力和行动习惯决定下一步；尝试不等于成功，结果仍由世界规则裁决。
-
-完整人物档案：
-${JSON.stringify(profileStore.profiles, null, 2)}
-
-变量医生修复后的MVU状态：
-${JSON.stringify(mvu, null, 2)}
-
-用户的全局自定义模型适配附加提示词：
-${settings().globalPrompt || '（未设置）'}`;
-        return [base, privateContext].filter(Boolean).join('\n\n');
-      };
-      Object.defineProperty(worldbook, WORLD_CONTEXT_BRIDGE, { value: { original }, configurable: false });
-      installed = true;
-    } else if (worldbook?.[WORLD_CONTEXT_BRIDGE]) installed = true;
-
     if (injector?.buildContext && !injector[WORLD_PUBLIC_PROJECTION_BRIDGE]) {
       const originalBuildContext = injector.buildContext.bind(injector);
       injector.buildContext = function(worldState, tags) {
-        const publicState = deepClone(worldState || {});
-        if (publicState.blackbox && typeof publicState.blackbox === 'object') {
-          publicState.blackbox.secretActions = [];
-          publicState.blackbox.secretAssets = [];
-        }
-        return originalBuildContext(publicState, tags);
+        // World keeps the complete backstage simulation.  Project a strict
+        // observable whitelist into the narrative copy; never mutate native
+        // state or its evolution input.
+        return originalBuildContext(projectObservableWorld(worldState), tags);
       };
       Object.defineProperty(injector, WORLD_PUBLIC_PROJECTION_BRIDGE, {
         value: { original: originalBuildContext }, configurable: false,
       });
       installed = true;
     } else if (injector?.[WORLD_PUBLIC_PROJECTION_BRIDGE]) installed = true;
-    return installed;
+    return installWorldMemoryPublicProjection() || installed;
   }
 
-  function committedWorldReceipt(target) {
-    const durable = loadWorldReceipt(target);
-    if (durable?.committed === true) return deepClone(durable);
-    if (durable?.status === 'pending') {
-      const current = window.WORLD_ENGINE_CORE?.loadState?.() || {};
-      const currentRound = Number(current.round || 0);
-      const currentDigest = contentFingerprint(JSON.stringify(current));
-      if (currentRound !== Number(durable.beforeRound || 0) || currentDigest !== durable.beforeStateDigest) {
-        const ambiguous = {
-          ...durable, committed: true, valid: false, status: 'ambiguous-after-pending',
-          afterRound: currentRound, afterStateDigest: currentDigest,
-          error: '世界引擎调用开始后中断，当前世界已不同于写前快照；拒绝盲目重复推进',
-        };
-        try { persistWorldReceipt(target, ambiguous); } catch { /* pending intent still prevents a blind retry */ }
-        return ambiguous;
-      }
-    }
-    for (const entry of runtime.runReports) {
-      if (worldSourceKey(entry?.target) !== worldSourceKey(target)) continue;
-      const receipt = entry?.result?.world;
-      if (receipt?.committed === true && receipt?.sourceKey === worldSourceKey(target)) return deepClone(receipt);
-    }
-    return null;
-  }
-
-  async function runWorldEvolution(target, isReroll, owner = null) {
-    if (!settings().worldEnabled) return { ok: true, status: 'disabled' };
-    if (!target?.generationKey) throw new Error('世界推进缺少稳定generationKey；请先让变量医生绑定当前正文');
-    requireTaskOwner(owner, target, '世界推进开始');
-    const prior = committedWorldReceipt(target);
-    if (prior) {
-      if (prior.valid !== true) throw Object.assign(new Error('同一正文已有世界写入收据，但轮次读回异常；拒绝再次推进造成重复'), { worldReceipt: prior });
-      return { ...prior, status: 'already-committed', reused: true };
-    }
-    const liveChat = ctx()?.chat || [];
-    if (target.index !== liveChat.length - 1 || liveChat[target.index]?.is_system || liveChat[target.index]?.is_user
-      || messageText(liveChat[target.index]) !== target.content) {
-      throw Object.assign(new Error('原版世界引擎只读取聊天数组尾部；当前尾部不是被接受的固定正文，拒绝推进错误文本'), { code: STALE_TASK });
-    }
-    installWorldContextBridge();
-    const worldCore = window.WORLD_ENGINE_CORE;
-    let restoredCheckpoint = false;
-    if (isReroll) {
-      // World Engine 3.0.2 already owns the a/b checkpoint contract.  A Doctor
-      // reroll must put b back on a before asking the frozen engine to perform
-      // the replacement forward; otherwise its automatic-reroll path evolves
-      // the rejected swipe's b state and carries that branch into the result.
-      const checkpoint = worldCore?.restoreCheckpoint?.();
-      if (checkpoint) {
-        worldCore.saveState(checkpoint);
-        restoredCheckpoint = true;
-      }
-    }
-    const before = worldCore?.loadState?.() || {};
-    const mode = restoredCheckpoint || !isReroll ? 'forward' : undefined;
-    const intent = {
-      ok: false, status: 'pending', committed: false, valid: false, sourceKey: worldSourceKey(target),
-      mode: isReroll ? 'reroll' : 'forward', beforeRound: Number(before.round || 0),
-      beforeStateDigest: contentFingerprint(JSON.stringify(before)), startedAt: new Date().toISOString(),
-    };
-    persistWorldReceipt(target, intent);
-    runtime.worldContextTarget = deepClone(target);
-    let ok;
+  function worldFilteredDialogue(value) {
+    const raw = text(value)
+      .replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/gi, '')
+      .replace(/<UpdateVariable>[\s\S]*$/i, '')
+      .trim();
     try {
-      ok = await window.WORLD_ENGINE?.manualEvolve?.(mode, isReroll ? 'reroll' : 'state');
-    } catch (error) {
-      const interrupted = committedWorldReceipt(target);
-      if (interrupted) error.worldReceipt = deepClone(interrupted);
-      throw error;
-    } finally {
-      runtime.worldContextTarget = null;
+      const worldSettings = window.WORLD_ENGINE_API?.getSettings?.() || {};
+      return text(window.WORLD_ENGINE_CORE?.filterDialogue?.(raw, worldSettings) ?? raw).trim();
+    } catch {
+      return raw;
     }
-    const after = window.WORLD_ENGINE_CORE?.loadState?.() || {};
-    if (!ok) {
-      // World 3.0.2 intentionally refreshes lastUpdated and can retain pending
-      // dice while rolling an API failure back.  Its explicit false + unchanged
-      // round is therefore the authoritative retryable failure receipt; a full
-      // JSON digest comparison would permanently lock an ordinary model error.
-      if (Number(after.round || 0) === intent.beforeRound) {
-        try { localStorage.removeItem(worldReceiptStorageKey(target)); } catch { /* a stale pending intent is safer than a duplicate */ }
-        throw new Error(window.WORLD_ENGINE_EVOLUTION?.getLastError?.() || '原版世界引擎推进失败');
-      }
-      const interrupted = committedWorldReceipt(target) || { ...intent, committed: true, valid: false, status: 'ambiguous-after-failed-call' };
-      throw Object.assign(new Error(window.WORLD_ENGINE_EVOLUTION?.getLastError?.() || '原版世界引擎返回失败但世界状态已经变化；拒绝重复推进'), {
-        worldReceipt: deepClone(interrupted),
-      });
+  }
+
+  function worldGateTargetMatches(candidate, expected) {
+    if (!candidate || !expected) return false;
+    return candidate.chatId === expected.chatId
+      && Number(candidate.index) === expected.index
+      && Number(candidate.swipeId) === expected.swipeId
+      && worldFilteredDialogue(candidate.content) === expected.filteredDialogue;
+  }
+
+  function worldGateScopeMatches(candidate, expected) {
+    return Boolean(candidate && expected
+      && candidate.chatId === expected.chatId
+      && Number(candidate.index) === expected.index
+      && Number(candidate.swipeId) === expected.swipeId);
+  }
+
+  function diagnosisCheckpointSettled(checkpoint) {
+    if (!checkpoint) return false;
+    if (['failed', 'stale', 'cancelled', 'complete'].includes(text(checkpoint.status))) return true;
+    return text(checkpoint.nextStep) !== 'diagnosis';
+  }
+
+  async function waitForWorldDiagnosis(input = {}) {
+    const liveAtStart = latestAssistant();
+    if (!liveAtStart) return { ok: true, status: 'unbound' };
+    const filteredDialogue = worldFilteredDialogue(input.aiMsg);
+    if (!filteredDialogue || worldFilteredDialogue(liveAtStart.content) !== filteredDialogue) {
+      return { ok: false, status: 'stale' };
     }
-    const roundValid = restoredCheckpoint || !isReroll
-      ? Number(after.round) === Number(before.round || 0) + 1
-      : Number(after.round || 0) === Number(before.round || 0);
-    const receipt = {
-      ok: roundValid, status: roundValid ? 'advanced' : 'committed-with-invalid-round',
-      committed: true, valid: roundValid, sourceKey: worldSourceKey(target),
-      mode: isReroll ? (restoredCheckpoint ? 'checkpoint-forward' : 'reroll-without-checkpoint') : 'forward',
-      beforeRound: Number(before.round || 0), afterRound: Number(after.round || 0),
-      afterStateDigest: contentFingerprint(JSON.stringify(after)),
+    const expected = {
+      chatId: liveAtStart.chatId,
+      index: liveAtStart.index,
+      swipeId: liveAtStart.swipeId,
+      filteredDialogue,
     };
-    try { persistWorldReceipt(target, receipt); }
-    catch (error) {
-      throw Object.assign(new Error(`世界已经提交，但持久收据写入失败；本会话已锁定为禁止重复推进：${error?.message || error}`), {
-        worldReceipt: deepClone(receipt),
-      });
+    let bindingGenerationKey = '';
+    let missingHandoffPolls = 0;
+    for (;;) {
+      const live = latestAssistant();
+      if (!worldGateTargetMatches(live, expected)) return { ok: false, status: 'stale' };
+
+      const active = runtime.acceptedGeneration;
+      const activeReceiptIndex = ticketInteger(active?.targetMessageId ?? active?.receivedMessageId);
+      const activeReceiptSwipe = ticketInteger(active?.targetSwipeId ?? active?.receivedSwipeId);
+      const activeGenerationKey = text(active?.generationKey);
+      const activeMatches = Boolean(activeGenerationKey && active?.chatId === expected.chatId
+        && activeReceiptIndex === expected.index && activeReceiptSwipe === expected.swipeId);
+      const checkpoint = loadPipelineCheckpoint(expected.chatId);
+      const checkpointMatches = worldGateTargetMatches(checkpoint?.target, expected);
+      const checkpointGenerationKey = text(checkpoint?.target?.generationKey);
+      const livePipelineCheckpoint = Boolean(checkpointMatches && checkpointGenerationKey
+        && runtime.pipelineBusy
+        && worldGateScopeMatches(runtime.lastAccepted, expected)
+        && text(runtime.lastAccepted?.generationKey) === checkpointGenerationKey);
+
+      if (!bindingGenerationKey) {
+        if (activeMatches) bindingGenerationKey = activeGenerationKey;
+        else if (livePipelineCheckpoint) bindingGenerationKey = checkpointGenerationKey;
+        else return { ok: true, status: 'unbound' };
+      }
+
+      // A same-floor reroll can produce identical visible text.  The durable
+      // generation key, not text equality, owns this wait.
+      if (activeMatches && activeGenerationKey !== bindingGenerationKey) {
+        return { ok: false, status: 'stale' };
+      }
+
+      const boundCheckpoint = Boolean(checkpointMatches
+        && checkpointGenerationKey === bindingGenerationKey);
+      const manualDiagnosisOwns = Boolean(runtime.pipelineBusy
+        && worldGateScopeMatches(runtime.manualDiagnosisBinding, expected)
+        && text(runtime.manualDiagnosisBinding?.generationKey) === bindingGenerationKey);
+      if (boundCheckpoint) {
+        if (diagnosisCheckpointSettled(checkpoint) && !manualDiagnosisOwns) {
+          return {
+            ok: checkpoint.status !== 'failed',
+            status: checkpoint.status === 'failed' ? 'diagnosis-failed' : 'diagnosis-complete',
+          };
+        }
+        if (!manualDiagnosisOwns && runtime.lastResult?.failedStep === 'diagnosis'
+          && worldGateScopeMatches(runtime.lastAccepted, expected)) {
+          return { ok: false, status: 'diagnosis-failed' };
+        }
+        // A durable "running" row is not proof that an in-memory diagnosis
+        // still owns it.  If the pipeline died before it could persist its
+        // terminal state, give the existing handoff a short chance to appear,
+        // then release native World instead of waiting on an orphan forever.
+        if (livePipelineCheckpoint || manualDiagnosisOwns) missingHandoffPolls = 0;
+        else {
+          missingHandoffPolls += 1;
+          if (missingHandoffPolls >= 20) {
+            return { ok: false, status: 'diagnosis-handoff-failed' };
+          }
+        }
+      } else {
+        // `processing` is assigned only after the checkpoint handoff succeeds.
+        // Seeing it without its exact checkpoint means persistence/readback
+        // failed; fail open so native World cannot be held forever.
+        if (activeMatches && active?.status === 'processing') {
+          return { ok: false, status: 'diagnosis-handoff-failed' };
+        }
+        if (['failed', 'cancelled', 'discarded'].includes(text(runtime.phase))) {
+          return { ok: false, status: 'diagnosis-failed' };
+        }
+        if (!activeMatches) return { ok: false, status: 'stale' };
+        missingHandoffPolls += 1;
+        // This is a short transaction-handoff grace period, not a model/task
+        // timeout.  The real diagnosis may run without an arbitrary deadline
+        // once its exact durable checkpoint exists.
+        if (missingHandoffPolls >= 20) {
+          return { ok: false, status: 'diagnosis-handoff-missing' };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    await recordRunReport({
-      at: new Date().toISOString(), target: deepClone(target),
-      result: { ok: true, stageReceipt: 'world', world: deepClone(receipt) },
-      worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null,
-    });
-    if (!roundValid) {
-      const message = isReroll
-        ? `世界重roll返回成功但轮次发生了变化（${receipt.beforeRound}→${receipt.afterRound}）`
-        : `世界推进返回成功但轮次没有恰好增加一次（${receipt.beforeRound}→${receipt.afterRound}）`;
-      throw Object.assign(new Error(message), { worldReceipt: receipt });
-    }
-    requireTaskOwner(owner, target, '世界推进完成');
-    return receipt;
   }
 
   const runtime = {
@@ -1527,11 +1627,12 @@ ${settings().globalPrompt || '（未设置）'}`;
     branchRestoreTail: Promise.resolve({ ok: true }),
     branchRestorePromise: Promise.resolve({ ok: true }),
     branchRestoreSerial: 0,
-    worldContextTarget: null,
     runReports: [],
     reportPersistence: { ok: true, attemptedCount: 0, savedCount: 0, lastSavedAt: '', error: '' },
     diagnosticPersistence: { ok: true, blocked: false, integrityCompromised: false, count: 0, error: '' },
     generationTicketPersistence: { ok: true, status: '', error: '' },
+    manualDiagnosisBinding: null,
+    manualDiagnosisSerial: 0,
     exportBusy: false,
     exportSerial: 0,
   };
@@ -1912,35 +2013,6 @@ ${settings().globalPrompt || '（未设置）'}`;
       detail: `${stage}生成票据失败：${runtime.generationTicketPersistence.error}`,
     });
     persistDiagnostics();
-  }
-
-  function worldReceiptStorageKey(target) {
-    const currentChatId = text(target?.chatId);
-    if (!currentChatId) throw new Error('世界推进收据缺少聊天身份');
-    return `${WORLD_RECEIPT_STORAGE_PREFIX}${encodeURIComponent(currentChatId)}:${encodeURIComponent(worldSourceKey(target))}`;
-  }
-
-  function worldSourceKey(target) { return text(target?.generationKey) || text(target?.identity); }
-
-  function persistWorldReceipt(target, receipt) {
-    const key = worldReceiptStorageKey(target);
-    const safe = {
-      ...deepClone(receipt), chatId: target.chatId, sourceKey: worldSourceKey(target),
-    };
-    localStorage.setItem(key, JSON.stringify(safe));
-    const readback = JSON.parse(localStorage.getItem(key) || 'null');
-    if (!readback || readback.sourceKey !== worldSourceKey(target) || readback.status !== receipt.status
-      || Boolean(readback.committed) !== Boolean(receipt.committed)) {
-      throw new Error('世界推进收据保存后读回不一致');
-    }
-    return readback;
-  }
-
-  function loadWorldReceipt(target) {
-    try {
-      const receipt = JSON.parse(localStorage.getItem(worldReceiptStorageKey(target)) || 'null');
-      return receipt?.sourceKey === worldSourceKey(target) ? receipt : null;
-    } catch { return null; }
   }
 
   let reportPersistTail = Promise.resolve();
@@ -2426,9 +2498,7 @@ ${settings().globalPrompt || '（未设置）'}`;
     });
     runtime.abortController?.abort();
     try { cachedStoryInternals?.cancelPostReply?.(); } catch { /* optional */ }
-    try { window.WORLD_ENGINE_EVOLUTION?.abort?.(); } catch { /* optional */ }
     runtime.pipelineBusy = false;
-    runtime.worldContextTarget = null;
     if (cancelPendingGeneration) {
       runtime.generationSerial += 1;
       runtime.acceptedGeneration = null;
@@ -2482,7 +2552,6 @@ ${settings().globalPrompt || '（未设置）'}`;
           ok: false, manualStage: stage, error: error?.message || String(error), raw: String(error?.raw || ''),
           identityMigrationError: String(error?.identityMigrationError || ''),
           request: error?.request ? deepClone(error.request) : null,
-          world: error?.worldReceipt ? deepClone(error.worldReceipt) : null,
         },
         worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null,
       });
@@ -2593,7 +2662,11 @@ ${settings().globalPrompt || '（未设置）'}`;
     rememberAccepted(initialTarget);
     let target = initialTarget;
     let step = startAt;
-    const result = { ok: false, identity: target.identity, reason, generationType, diagnosis: null, profile: null, world: null };
+    const result = {
+      ok: false, identity: target.identity, reason, generationType,
+      diagnosis: null, profile: null,
+      world: { status: 'native-independent', round: Number(window.WORLD_ENGINE_CORE?.loadState?.()?.round || 0) },
+    };
     try {
       persistPipelineCheckpoint({ status: 'running', target: deepClone(target), generationType, nextStep: startAt, reason });
       await requireBranchRestore(owner);
@@ -2621,24 +2694,25 @@ ${settings().globalPrompt || '（未设置）'}`;
         target = refreshAcceptedTarget(target);
         rememberAccepted(target);
         requirePipelineOwner(owner, target, '人物阶段完成');
-        persistPipelineCheckpoint({ status: 'running', target: deepClone(target), generationType, nextStep: 'world', reason, lastCompletedStep: 'profile' });
+        persistPipelineCheckpoint({ status: 'running', target: deepClone(target), generationType, nextStep: '', reason, lastCompletedStep: 'profile' });
         await recordRunReport({
           at: new Date().toISOString(), target: deepClone(target),
           result: { ok: true, stageReceipt: 'profile', generationType, profile: deepClone(result.profile) },
         });
       }
-      step = 'world';
-      setPhase('world-running', '变量与人物已确认，原版世界引擎正在推进后台世界');
-      result.world = await runWorldEvolution(target, ['swipe', 'regenerate', 'continue'].includes(generationType), owner);
-      requirePipelineOwner(owner, target, '世界阶段完成');
       result.ok = true;
       result.status = 'complete';
       result.identity = target.identity;
-      persistPipelineCheckpoint({ status: 'complete', target: deepClone(target), generationType, nextStep: '', reason, lastCompletedStep: 'world' });
+      result.world = {
+        status: 'native-independent',
+        round: Number(window.WORLD_ENGINE_CORE?.loadState?.()?.round || 0),
+        detail: '世界由原版 World Engine 3.0.2 的自动生命周期独立推进，不受人物填表成败控制',
+      };
+      persistPipelineCheckpoint({ status: 'complete', target: deepClone(target), generationType, nextStep: '', reason, lastCompletedStep: 'profile' });
       runtime.lastResult = result;
       runtime.failedStep = '';
       await recordRunReport({ at: new Date().toISOString(), target: deepClone(target), result: deepClone(result), worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null });
-      setPhase('done', `本楼医生完成：变量${result.diagnosis?.status || '已保留'}；档案${result.profile?.count ?? 0}张；世界第${result.world?.afterRound ?? '—'}轮`, result);
+      setPhase('done', `本楼变量与人物完成：变量${result.diagnosis?.status || '已保留'}；档案${result.profile?.count ?? 0}张。原版世界引擎独立运行，当前第${result.world.round}轮`, result);
       return result;
     } catch (error) {
       if (error?.doctorWrittenTarget && target?.generationKey && runtime.pipelineEpoch === owner) {
@@ -2661,7 +2735,6 @@ ${settings().globalPrompt || '（未设置）'}`;
       if (error?.raw) result.raw = String(error.raw);
       if (error?.request) result.request = deepClone(error.request);
       if (error?.diagnosisAttempts) result.diagnosisAttempts = deepClone(error.diagnosisAttempts);
-      if (error?.worldReceipt) result.world = deepClone(error.worldReceipt);
       if (runtime.pipelineEpoch === owner) {
         try {
           persistPipelineCheckpoint({ status: stale ? 'stale' : 'failed', target: deepClone(target), generationType, nextStep: step, reason, error: result.error });
@@ -2747,7 +2820,7 @@ ${settings().globalPrompt || '（未设置）'}`;
       .some((message) => message?.is_user === true && Boolean(messageText(message)));
     const type = ticket.type || 'normal';
     if (type === 'normal' && !hasUserAfterBaseline) {
-      discardBackgroundGeneration(ticket, '生成前锚点之后没有用户楼；已按后台生成忽略，不推进变量、档案或世界');
+      discardBackgroundGeneration(ticket, '生成前锚点之后没有用户楼；Doctor已按后台生成忽略，不复检变量或填人物档案；原版World拥有自己的事件判定');
       return;
     }
     if (baseline && fresh.identity === baseline && !materializedOverswipe && !explicitRerollCompletion) {
@@ -2759,7 +2832,7 @@ ${settings().globalPrompt || '（未设置）'}`;
         runtime.detail = text(ticket.priorDetail || '续写没有产生新的最终正文；医生未重复推进');
         runtime.diagnostics.unshift({
           at: new Date().toISOString(), phase: 'continue-empty',
-          detail: '续写结束后正文指纹未变化；已清理票据，不重复推进变量、档案或世界',
+          detail: '续写结束后正文指纹未变化；已清理Doctor票据，不重复复检变量或填人物档案',
         });
         persistDiagnostics();
         render();
@@ -2843,7 +2916,7 @@ ${settings().globalPrompt || '（未设置）'}`;
     }
     const checkpoint = loadPipelineCheckpoint(target.chatId);
     if (checkpoint?.target?.identity && checkpoint.target.identity !== target.identity) {
-      throw new Error('当前正文已不同于已保存的医生任务；请先手动复检MVU，不能为外部改写直接新开世界收据');
+      throw new Error('当前正文已不同于已保存的医生任务；请先手动复检MVU，不能把旧任务身份套到外部改写正文');
     }
     return establishManualGenerationBinding(target, 'manual-generation-anchor');
   }
@@ -2897,7 +2970,7 @@ ${settings().globalPrompt || '（未设置）'}`;
     if (!binding?.generationKey) return fresh;
     if (!original || !fresh || original.chatId !== fresh.chatId
       || original.index !== fresh.index || original.swipeId !== fresh.swipeId) {
-      throw new Error('医生写回后的正文不再属于原楼层或原swipe，拒绝迁移世界收据身份');
+      throw new Error('医生写回后的正文不再属于原楼层或原swipe，拒绝迁移任务身份');
     }
     fresh.generationKey = binding.generationKey;
     runtime.lastAccepted = deepClone({
@@ -2919,9 +2992,14 @@ ${settings().globalPrompt || '（未设置）'}`;
   }
 
   async function runManualDiagnosisAndResume(rawTarget) {
-    const target = attachKnownGeneration(rawTarget);
+    let target = attachKnownGeneration(rawTarget);
     if (!target) throw new Error('当前没有可复检的最终AI回复');
-    const binding = knownGenerationBinding(target);
+    let binding = knownGenerationBinding(target);
+    if (!binding?.generationKey) {
+      target = establishManualGenerationBinding(target, 'manual-diagnosis-anchor');
+      binding = knownGenerationBinding(target);
+    }
+    if (!binding?.generationKey) throw new Error('手动MVU复检无法建立本楼事务身份');
     const checkpoint = loadPipelineCheckpoint(target.chatId);
     const resumesFailedDiagnosis = Boolean(
       binding?.generationKey
@@ -2931,24 +3009,35 @@ ${settings().globalPrompt || '（未设置）'}`;
       && ['running', 'failed', 'stale'].includes(checkpoint.status),
     );
     let resumeTarget = null;
-    const value = await runExclusiveStage(
-      'MVU复检',
-      target,
-      (owner) => runStoryDiagnosis(target, owner),
-      async (fresh) => {
-        let migrated = migrateDoctorWrittenAcceptedTarget(target, fresh, binding);
-        if (!binding?.generationKey) {
-          migrated = establishManualGenerationBinding(migrated, 'manual-diagnosis-anchor');
-        }
-        if (!resumesFailedDiagnosis) return;
-        persistPipelineCheckpoint({
-          status: 'running', target: deepClone(migrated), generationType: binding.generationType,
-          nextStep: 'profile', reason: 'manual-diagnosis-recovery', lastCompletedStep: 'diagnosis',
-        });
-        runtime.failedStep = 'profile';
-        resumeTarget = deepClone(migrated);
-      },
-    );
+    const manualBinding = {
+      chatId: target.chatId, index: target.index, swipeId: target.swipeId,
+      generationKey: binding.generationKey,
+      token: ++runtime.manualDiagnosisSerial,
+    };
+    runtime.manualDiagnosisBinding = deepClone(manualBinding);
+    setPhase('diagnosing', '正在手动复检本楼MVU');
+    let value;
+    try {
+      value = await runExclusiveStage(
+        'MVU复检',
+        target,
+        (owner) => runStoryDiagnosis(target, owner),
+        async (fresh) => {
+          const migrated = migrateDoctorWrittenAcceptedTarget(target, fresh, binding);
+          if (!resumesFailedDiagnosis) return;
+          persistPipelineCheckpoint({
+            status: 'running', target: deepClone(migrated), generationType: binding.generationType,
+            nextStep: 'profile', reason: 'manual-diagnosis-recovery', lastCompletedStep: 'diagnosis',
+          });
+          runtime.failedStep = 'profile';
+          resumeTarget = deepClone(migrated);
+        },
+      );
+    } finally {
+      if (runtime.manualDiagnosisBinding?.token === manualBinding.token) {
+        runtime.manualDiagnosisBinding = null;
+      }
+    }
     if (resumeTarget) {
       return runAcceptedPipeline(resumeTarget, 'manual-diagnosis-recovery', binding.generationType, 'profile');
     }
@@ -3012,7 +3101,17 @@ ${settings().globalPrompt || '（未设置）'}`;
       setPhase('cancelled', '已读回用户取消状态；本楼任务不会自动恢复');
       return true;
     }
-    const nextStep = ['diagnosis', 'profile', 'world'].includes(checkpoint.nextStep) ? checkpoint.nextStep : 'diagnosis';
+    if (checkpoint.nextStep === 'world') {
+      persistPipelineCheckpoint({
+        ...checkpoint, status: 'complete', nextStep: '', lastCompletedStep: 'profile',
+        migratedAt: new Date().toISOString(),
+        migrationDetail: '0.9.0起世界推进由World Engine原生生命周期独立拥有',
+      });
+      runtime.failedStep = '';
+      setPhase('idle', '已移除旧版Doctor世界步骤；世界状态未改写。需要补推旧楼时请打开原版World面板。');
+      return true;
+    }
+    const nextStep = ['diagnosis', 'profile'].includes(checkpoint.nextStep) ? checkpoint.nextStep : 'diagnosis';
     runtime.lastAccepted = deepClone({ ...checkpoint.target, generationType });
     if (!latest || latest.identity !== checkpoint?.target?.identity) {
       runtime.failedStep = '';
@@ -3232,7 +3331,7 @@ ${settings().globalPrompt || '（未设置）'}`;
     catch (error) { noteGenerationTicketFailure('忽略后台生成时清理', error); }
     runtime.phase = text(ticket?.priorPhase || (runtime.lastResult?.ok ? 'done' : 'idle'));
     runtime.detail = ticket?.priorPhase === 'idle' && !runtime.lastResult
-      ? '这是没有用户行动的AI开场或后台生成；医生不会推进变量、档案或后台世界'
+      ? '这是没有用户行动的AI开场或后台生成；Doctor不会复检变量或填人物档案，World仍按原版生命周期独立判断'
       : text(ticket?.priorDetail || (runtime.lastResult?.ok ? '上一轮医生任务已完成' : '等待下一条最终回复'));
     runtime.diagnostics.unshift({
       at: new Date().toISOString(), phase: 'background-ignored', detail,
@@ -3408,7 +3507,7 @@ ${settings().globalPrompt || '（未设置）'}`;
         || options?.silent === true || options?.raw === true
         || ['quiet', 'raw', 'silent', 'impersonate'].includes(normalizedType);
       if (hidden) return;
-      enforceManagedScheduling();
+      enforceDoctorStoryScheduling();
       const mainTypes = new Set(['normal', 'swipe', 'regenerate', 'continue']);
       if (!mainTypes.has(normalizedType)) return;
       const activeTicket = runtime.acceptedGeneration;
@@ -3424,13 +3523,8 @@ ${settings().globalPrompt || '（未设置）'}`;
             && Number(processingTarget.index ?? processingTarget.targetMessageId) === current.index
             && Number(processingTarget.swipeId ?? processingTarget.targetSwipeId) === current.swipeId
             && text(processingTarget.identity ?? processingTarget.targetIdentity) === current.identity;
-          const rootWorldReceipt = loadWorldReceipt({
-            chatId: activeTicket.chatId,
-            generationKey: activeTicket.generationKey,
-          });
-          const rootWorldCommitted = rootWorldReceipt?.committed === true && rootWorldReceipt?.valid === true;
-          if (!sameTarget || rootWorldCommitted) {
-            cancelAll(sameTarget ? '正文续写发生在已提交世界之后，改用同楼修订票据' : '正文续写目标已变化，旧半截正文任务作废', true);
+          if (!sameTarget) {
+            cancelAll('正文续写目标已变化，旧半截正文任务作废', true);
             beginGenerationTicket('continue', 'generation-started');
             return;
           }
@@ -3476,7 +3570,7 @@ ${settings().globalPrompt || '（未设置）'}`;
       cancelAll('正文生成已停止', true);
       try { clearGenerationTicket(ticket.chatId || chatId(), ticket.generationKey); }
       catch (error) { noteGenerationTicketFailure('正文停止时清理', error); }
-      setPhase('cancelled', '正文生成已停止；未推进变量、人物档案或后台世界');
+      setPhase('cancelled', '正文生成已停止；Doctor未复检变量或填人物档案。原版World任务不由Doctor取消');
     });
     context.eventSource.on(eventName(context, 'MESSAGE_SWIPED', 'message_swiped'), (messageId) => {
       // Real SillyTavern applies swipe_id/mes first and emits MESSAGE_SWIPED
@@ -3694,6 +3788,9 @@ ${settings().globalPrompt || '（未设置）'}`;
       profiles: readStore(),
       world: (() => { try { return window.WORLD_ENGINE_CORE?.loadState?.() || null; } catch { return null; } })(),
       worldDebug: (() => { try { return window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null; } catch { return null; } })(),
+      worldDiagnostics: (() => { try { return window.WORLD_ENGINE_DIAG?.collect?.('world') || null; } catch { return null; } })(),
+      worldInjectionInspector: (() => { try { return window.WORLD_ENGINE_INJECT_INSPECTOR?.getLastSnapshot?.('world') || null; } catch { return null; } })(),
+      worldbookBridge: deepClone(window.MVUDoctorWorldbookBridgeStatus || null),
       mvu,
       storyOracle: {
         loaded: Boolean(window.StoryOracleAPI),
@@ -3741,40 +3838,30 @@ ${settings().globalPrompt || '（未设置）'}`;
     const model = text(panel.querySelector('[name=api-model]')?.value);
     const apiKey = String(panel.querySelector('[name=api-key]')?.value || '');
     const connectionMode = panel.querySelector('[name=api-proxy]')?.checked ? 'proxy' : 'direct';
+    const globalPrompt = text(panel.querySelector('[name=global-prompt]')?.value);
     store.setItem('world_engine_settings', JSON.stringify({
       ...current, apiUrl: endpoint, model, apiKey, connectionMode,
-      engineEnabled: true, syncToChat: true, injectIntoPrompt: true, evolveMode: 'manual',
+      tonePrompt: globalPrompt,
     }));
     const worldReadback = api.getSettings(true);
     const context = ctx();
     if (context?.extensionSettings) {
-      const story = context.extensionSettings.storyOracle ||= {};
-      story.mode = 'direct';
-      story.endpoint = endpoint;
-      story.model = model;
-      story.apiKey = apiKey;
-      story.directViaBackend = connectionMode === 'proxy';
-      story.directRawUrl = true;
-      story.autoDiagnoseEnabled = false;
       const doctor = context.extensionSettings['mvu-doctor-kemini-clean'] ||= {};
       doctor[SETTINGS_KEY] = {
         ...settings(),
         diagnoseEnabled: panel.querySelector('[name=stage-diagnosis]')?.checked !== false,
         profileEnabled: panel.querySelector('[name=stage-profile]')?.checked !== false,
-        worldEnabled: panel.querySelector('[name=stage-world]')?.checked !== false,
-        globalPrompt: text(panel.querySelector('[name=global-prompt]')?.value),
+        globalPrompt,
       };
       if (typeof context.saveSettings === 'function') await context.saveSettings();
       else context.saveSettingsDebounced?.();
     }
-    const storyReadback = context?.extensionSettings?.storyOracle || {};
     if (normalizeSharedEndpoint(worldReadback?.apiUrl) !== endpoint || text(worldReadback?.model) !== model
       || String(worldReadback?.apiKey || '') !== apiKey || worldReadback?.connectionMode !== connectionMode
-      || normalizeSharedEndpoint(storyReadback.endpoint) !== endpoint || text(storyReadback.model) !== model
-      || String(storyReadback.apiKey || '') !== apiKey || storyReadback.directRawUrl !== true) {
-      throw new Error('共用API保存后，Story Oracle与World Engine的内存读回不一致');
+      || text(worldReadback?.tonePrompt) !== globalPrompt) {
+      throw new Error('人物档案与World原生连接保存后的内存读回不一致');
     }
-    setPhase('idle', '连接与三阶段开关已保存；原件的并发自动触发保持关闭');
+    setPhase('idle', '人物档案与World原生连接已保存；World的自动节拍、存档和注入设置未被Doctor改写');
     settingsDraft = null;
     settingsDraftDirty = false;
   }
@@ -3791,7 +3878,6 @@ ${settings().globalPrompt || '（未设置）'}`;
       proxy: panel.querySelector('[name=api-proxy]')?.checked === true,
       diagnoseEnabled: panel.querySelector('[name=stage-diagnosis]')?.checked !== false,
       profileEnabled: panel.querySelector('[name=stage-profile]')?.checked !== false,
-      worldEnabled: panel.querySelector('[name=stage-world]')?.checked !== false,
       globalPrompt: panel.querySelector('[name=global-prompt]')?.value || '',
     };
     settingsDraftDirty = true;
@@ -3802,7 +3888,7 @@ ${settings().globalPrompt || '（未设置）'}`;
       endpoint: apiState.config.apiUrl || '', model: apiState.config.model || '',
       apiKey: apiState.config.apiKey || '', proxy: apiState.config.connectionMode === 'proxy',
       diagnoseEnabled: settings().diagnoseEnabled, profileEnabled: settings().profileEnabled,
-      worldEnabled: settings().worldEnabled, globalPrompt: settings().globalPrompt,
+      globalPrompt: settings().globalPrompt,
     };
   }
 
@@ -3817,6 +3903,9 @@ ${settings().globalPrompt || '（未设置）'}`;
   function panelHtml(activeTab = 'overview') {
     const store = readStore();
     const world = (() => { try { return window.WORLD_ENGINE_CORE?.loadState?.() || {}; } catch { return {}; } })();
+    const worldbookBridge = deepClone(window.MVUDoctorWorldbookBridgeStatus || {
+      status: 'pending', ready: false, detail: '等待当前聊天的内嵌世界书初始化状态',
+    });
     const apiState = worldApiConfig();
     const form = settingsFormState(apiState);
     const profiles = Object.values(store.profiles);
@@ -3832,6 +3921,7 @@ ${settings().globalPrompt || '（未设置）'}`;
       currentTarget: runtime.currentTarget, lastAccepted: runtime.lastAccepted,
       reportPersistence: runtime.reportPersistence, diagnosticPersistence: runtime.diagnosticPersistence,
       generationTicketPersistence: runtime.generationTicketPersistence,
+      worldbookBridge,
       lastResult: compactResult(runtime.lastResult),
       diagnostics: runtime.diagnostics.slice(0, 40),
       runReports: runtime.runReports.slice(0, 6).map((entry) => ({
@@ -3860,25 +3950,25 @@ ${settings().globalPrompt || '（未设置）'}`;
       <nav><button data-tab="overview" class="active">总览</button><button data-tab="profiles">人物 ${profiles.length}</button><button data-tab="world">世界</button><button data-tab="settings">连接</button><button data-tab="diagnostics">诊断</button></nav>
       <section data-page="overview" class="active">
         <div class="mvu-ref-status ${escapeHtml(displayPhase)}"><strong>${escapeHtml(displayPhase)}</strong><span>${escapeHtml(displayDetail)}</span></div>
-        <div class="mvu-ref-metrics"><div><b>${completeProfiles.length}</b><span>完整档案</span></div><div><b>${invalidProfiles.length}</b><span>异常档案</span></div><div><b>${Number(world.round || 0)}</b><span>世界轮次</span></div><div><b>${apiState.configured ? '已配置' : '未配置'}</b><span>共用API</span></div></div>
-        <div class="mvu-ref-actions"><button data-action="retry-failed">重试失败步骤</button><button data-action="retry-diagnosis">手动复检MVU</button><button data-action="retry-profile">重填本楼人物</button><button data-action="retry-world">重试世界推进</button><button data-action="cancel">取消当前医生任务</button><button data-action="export" ${runtime.exportBusy ? 'disabled' : ''}>${runtime.exportBusy ? '正在生成报告…' : (persistenceFailure ? '导出不完整取证包（排除API）' : '导出本页会话完整报告（排除API）')}</button></div>
-        <p class="mvu-ref-note">唯一顺序：最终正文确认 → 复用Story Oracle原版诊断组件的固定楼层适配链 → 采用ver5.35宽容解析与单次定向修复模式的人物填表 → Disnight World Engine 3.0.2。旧Doctor核心未运行。</p>
+        <div class="mvu-ref-metrics"><div><b>${completeProfiles.length}</b><span>完整档案</span></div><div><b>${invalidProfiles.length}</b><span>异常档案</span></div><div><b>${Number(world.round || 0)}</b><span>原版世界轮次</span></div><div><b>${apiState.configured ? '已配置' : '未配置'}</b><span>人物/世界API</span></div></div>
+        <div class="mvu-ref-actions"><button data-action="retry-failed">重试失败步骤</button><button data-action="retry-diagnosis">手动复检MVU</button><button data-action="retry-profile">重填本楼人物</button><button data-action="open-native-world">打开原版World面板</button><button data-action="cancel">取消当前医生任务</button><button data-action="export" ${runtime.exportBusy ? 'disabled' : ''}>${runtime.exportBusy ? '正在生成报告…' : (persistenceFailure ? '导出不完整取证包（排除API）' : '导出本页会话完整报告（排除API）')}</button></div>
+        <p class="mvu-ref-note">变量复检与人物填表只处理各自任务；Disnight World Engine 3.0.2 保留原生自动节拍、重roll、存档、回滚、注入和完整面板，不再受人物填表失败阻塞。</p>
       </section>
       <section data-page="profiles">${profileCards}</section>
-      <section data-page="world">${activeTab === 'world' ? `<pre>${escapeHtml(JSON.stringify(world, null, 2))}</pre>` : ''}</section>
+      <section data-page="world">${activeTab === 'world' ? `<div class="mvu-ref-actions"><button data-action="open-native-world">打开原版World完整面板与诊断</button></div><p class="mvu-ref-note">世界书：${escapeHtml(worldbookBridge.ready ? '已就绪' : '未就绪')}；${escapeHtml(worldbookBridge.detail || '')}</p><p class="mvu-ref-note">本页只读镜像原版状态，不写世界、不判定提交成功，也不替代原版设置。</p><pre>${escapeHtml(JSON.stringify(world, null, 2))}</pre>` : ''}</section>
       <section data-page="settings">
         ${settingsDraftDirty ? '<p class="mvu-ref-note mvu-ref-draft-note">尚未保存的修改会在切换标签或关闭面板后保留。</p>' : ''}
-        <label>API地址<input name="api-endpoint" value="${escapeAttr(form.endpoint)}" placeholder="https://host/v1/chat/completions"></label>
-        <label>模型<input name="api-model" value="${escapeAttr(form.model)}" placeholder="model-name"></label>
-        <label>API密钥<input name="api-key" type="password" value="${escapeAttr(form.apiKey)}" autocomplete="off"></label>
+        <p class="mvu-ref-note">以下连接由人物档案填表与原版World共用；只保存连接字段，不改World的自动节拍、存档、备份或注入开关。变量复检仍使用Story Oracle原版连接。</p>
+        <label>人物/World API地址<input name="api-endpoint" value="${escapeAttr(form.endpoint)}" placeholder="https://host/v1/chat/completions"></label>
+        <label>人物/World模型<input name="api-model" value="${escapeAttr(form.model)}" placeholder="model-name"></label>
+        <label>人物/World API密钥<input name="api-key" type="password" value="${escapeAttr(form.apiKey)}" autocomplete="off"></label>
         <label class="mvu-ref-check"><input name="api-proxy" type="checkbox" ${form.proxy ? 'checked' : ''}>经酒馆后端转发（推荐，避免CORS）</label>
-        <label>全局自定义模型适配附加提示词<textarea name="global-prompt" rows="5" placeholder="同时追加给变量、人物和世界模型；留空即不追加">${escapeHtml(form.globalPrompt)}</textarea></label>
-        <fieldset><legend>医生阶段</legend>
+        <label>全局自定义模型适配附加提示词<textarea name="global-prompt" rows="5" placeholder="追加给变量、人物，并写入World原版tonePrompt；留空即不追加">${escapeHtml(form.globalPrompt)}</textarea></label>
+        <fieldset><legend>医生自己的阶段</legend>
           <label class="mvu-ref-check"><input name="stage-diagnosis" type="checkbox" ${form.diagnoseEnabled ? 'checked' : ''}>Story Oracle变量复检</label>
           <label class="mvu-ref-check"><input name="stage-profile" type="checkbox" ${form.profileEnabled ? 'checked' : ''}>完整人物档案填表</label>
-          <label class="mvu-ref-check"><input name="stage-world" type="checkbox" ${form.worldEnabled ? 'checked' : ''}>后台世界推进</label>
         </fieldset>
-        <button data-action="save-api">保存连接与阶段设置</button>
+        <div class="mvu-ref-actions"><button data-action="save-api">保存人物/World连接与Doctor设置</button><button data-action="open-native-world">打开原版World设置</button></div>
       </section>
       <section data-page="diagnostics">${activeTab === 'diagnostics' ? `<p class="mvu-ref-note">界面只显示最近40条状态和6次运行的摘要；完整提示词与模型返回只保留在持久报告中，不在手机面板反复重绘。</p><pre>${escapeHtml(JSON.stringify({ runtime: diagnosticView, store: { revision: store.revision, history: store.history }, boot: window.MVUDoctorReferenceBaseline }, null, 2))}</pre>` : ''}</section>`;
   }
@@ -3980,17 +4070,9 @@ ${settings().globalPrompt || '（未设置）'}`;
           }
           catch (error) { if (error?.code !== STALE_TASK) setPhase('failed', `人物手动补档失败：${error.message || error}`); }
         }
-        else if (action === 'retry-world') {
-          try {
-            const target = ensureManualGenerationBinding(latestAssistant());
-            const reroll = runtime.failedStep === 'world'
-              ? ['swipe', 'regenerate'].includes(runtime.lastAccepted?.generationType)
-              : false;
-            setPhase('world-running', '正在重试世界推进');
-            const value = await runExclusiveStage('世界推进', target, (owner) => runWorldEvolution(target, reroll, owner));
-            setPhase('done', `世界推进重试完成：第${value.afterRound}轮`, value);
-          }
-          catch (error) { if (error?.code !== STALE_TASK) setPhase('failed', `世界推进重试失败：${error.message || error}`); }
+        else if (action === 'open-native-world') {
+          window.WORLD_ENGINE_UI?.showPanel?.();
+          window.WORLD_ENGINE_UI?.refresh?.(true);
         }
         else if (action === 'cancel') cancelCurrentTaskFromUi();
         else if (action === 'export') await safeExport();
@@ -4041,7 +4123,7 @@ ${settings().globalPrompt || '（未设置）'}`;
 
   async function init() {
     ensureUi();
-    enforceManagedScheduling();
+    enforceDoctorStoryScheduling();
     bindEvents();
     const startupChatId = chatId();
     const startupLoadSerial = ++chatLoadSerial;
@@ -4109,12 +4191,17 @@ ${settings().globalPrompt || '（未设置）'}`;
         : Promise.resolve({ ok: false, status: 'nothing-to-retry' }),
       runDiagnosis: () => runManualDiagnosisAndResume(latestAssistant()),
       runProfile: () => { const target = latestAssistant(); return runExclusiveStage('人物补档', target, (owner) => runTarget(target, 'manual-refill', owner)); },
-      runWorld: (redo = false) => { const target = ensureManualGenerationBinding(latestAssistant()); return runExclusiveStage('世界推进', target, (owner) => runWorldEvolution(target, Boolean(redo), owner)); },
+      openWorld: () => {
+        window.WORLD_ENGINE_UI?.showPanel?.();
+        window.WORLD_ENGINE_UI?.refresh?.(true);
+        return { ok: true, status: 'native-panel-opened' };
+      },
       cancel: () => cancelCurrentTaskFromUi(),
       getStore: () => readStore(),
       getRuntime: () => runtimeSnapshot(),
       parseJsonResponse,
-      installWorldContextBridge,
+      installWorldPublicProjection,
+      waitForWorldDiagnosis,
     };
   }
 

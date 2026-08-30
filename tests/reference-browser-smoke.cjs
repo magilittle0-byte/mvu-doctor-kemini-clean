@@ -107,7 +107,7 @@ async function installHarness(page, options = {}) {
     });
   });
   await page.addStyleTag({ content: styleSource });
-  await page.evaluate(({ profileReplies: replies, discoveryReplies: suppliedDiscoveryReplies, slowProfile, slowMetadata, diagnosisReply, diagnosisReplies, mvuPatchMode, worldFailOnce, saveChatFailOnce, saveMetadataFailOnce, initialMvuState }) => {
+  await page.evaluate(({ profileReplies: replies, discoveryReplies: suppliedDiscoveryReplies, slowProfile, slowDiagnosis, slowMetadata, diagnosisReply, diagnosisReplies, mvuPatchMode, saveChatFailOnce, saveMetadataFailOnce, initialMvuState }) => {
     const durableKv = new Map();
     let remainingSlowProfileWrites = 0;
     let remainingProfileWriteFailures = 0;
@@ -187,6 +187,7 @@ async function installHarness(page, options = {}) {
     let queuedDiagnosisReplies = Array.isArray(diagnosisReplies) ? diagnosisReplies.map(String) : [];
     let queuedDiscoveryReplies = Array.isArray(suppliedDiscoveryReplies) ? suppliedDiscoveryReplies.map(String) : [];
     let pendingProfile = null;
+    const pendingDiagnoses = [];
     let worldState = {
       round: 0,
       worldDigest: 'WORLD_BASE_SENTINEL',
@@ -194,14 +195,14 @@ async function installHarness(page, options = {}) {
       model: '剧情内部模型字段',
     };
     let worldCheckpoint = null;
-    let remainingWorldFailures = worldFailOnce ? 1 : 0;
     let remainingSlowMetadata = slowMetadata ? 1 : 0;
     let remainingSaveMetadataFailures = saveMetadataFailOnce ? 1 : 0;
     let remainingSaveChatFailures = saveChatFailOnce ? 1 : 0;
     let resolveMetadata = null;
     const worldSettings = {
       apiUrl: 'https://example.invalid/v1/chat/completions', model: 'stub-model',
-      apiKey: 'SUPER_SECRET_BROWSER_SMOKE_KEY', connectionMode: 'direct', evolveMode: 'manual',
+      apiKey: 'SUPER_SECRET_BROWSER_SMOKE_KEY', connectionMode: 'direct', tonePrompt: '原生语气设定',
+      engineEnabled: true, evolveMode: 'auto', syncToChat: true, injectionEnabled: true,
     };
     const context = {
       chatId: activeChat,
@@ -248,6 +249,10 @@ async function installHarness(page, options = {}) {
     };
     window.__stages = [];
     window.__worldCalls = [];
+    window.__worldAbortCalls = 0;
+    window.__worldStateWrites = [];
+    window.__worldPanelOpens = 0;
+    window.__worldPanelRefreshes = 0;
     window.__mvuReads = [];
     window.__saves = [];
     window.__downloads = [];
@@ -271,6 +276,13 @@ async function installHarness(page, options = {}) {
       pendingProfile = null;
       current?.resolve(value);
     };
+    window.__profilePending = () => Boolean(pendingProfile);
+    window.__resolveDiagnosis = (value) => {
+      const current = pendingDiagnoses.shift();
+      current?.resolve(value);
+    };
+    window.__diagnosisPending = () => pendingDiagnoses.length > 0;
+    window.__diagnosisPendingCount = () => pendingDiagnoses.length;
     window.__resolveMetadata = () => { const resolve = resolveMetadata; resolveMetadata = null; resolve?.(); };
     window.__slowNextMetadata = () => { remainingSlowMetadata += 1; };
     window.__failNextSaveMetadata = () => { remainingSaveMetadataFailures += 1; };
@@ -314,12 +326,16 @@ async function installHarness(page, options = {}) {
       dismissToast() {},
       callDirect: async () => {
         window.__stages.push('diagnosis');
-        return queuedDiagnosisReplies.length ? queuedDiagnosisReplies.shift() : activeDiagnosisReply;
+        const reply = queuedDiagnosisReplies.length ? queuedDiagnosisReplies.shift() : activeDiagnosisReply;
+        if (!slowDiagnosis) return reply;
+        return new Promise((resolve) => { pendingDiagnoses.push({ resolve }); });
       },
       resolveEndpointUrl: (settings) => settings.endpoint,
       callProfile: async () => {
         window.__stages.push('diagnosis');
-        return queuedDiagnosisReplies.length ? queuedDiagnosisReplies.shift() : activeDiagnosisReply;
+        const reply = queuedDiagnosisReplies.length ? queuedDiagnosisReplies.shift() : activeDiagnosisReply;
+        if (!slowDiagnosis) return reply;
+        return new Promise((resolve) => { pendingDiagnoses.push({ resolve }); });
       },
       writeUpdateBlockToMessage: async (index, block) => {
         const message = context.chat[index];
@@ -391,31 +407,35 @@ async function installHarness(page, options = {}) {
       getChatId: () => activeChat,
       loadState: () => structuredClone(worldState),
       restoreCheckpoint: () => worldCheckpoint ? structuredClone(worldCheckpoint) : null,
-      saveCheckpoint: (value) => { worldCheckpoint = structuredClone(value); },
-      saveState: (value) => { worldState = structuredClone(value); },
+      saveCheckpoint: (value) => {
+        worldCheckpoint = structuredClone(value);
+        window.__worldStateWrites.push({ kind: 'checkpoint', value: structuredClone(value) });
+      },
+      saveState: (value) => {
+        worldState = structuredClone(value);
+        window.__worldStateWrites.push({ kind: 'state', value: structuredClone(value) });
+      },
     };
     window.WORLD_ENGINE_WORLDBOOK = { buildPromptSection: async () => '原版世界后台提示' };
     window.WORLD_ENGINE_INJECT = { buildContext: (state) => JSON.stringify(state) };
     window.WORLD_ENGINE = {
       async manualEvolve(mode, reason) {
-        window.__stages.push('world');
         const promptSection = await window.WORLD_ENGINE_WORLDBOOK.buildPromptSection();
         const injection = window.WORLD_ENGINE_INJECT.buildContext(window.WORLD_ENGINE_CORE.loadState());
         const before = structuredClone(worldState);
         window.__worldCalls.push({ mode, reason, beforeRound: before.round, beforeDigest: before.worldDigest, promptSection, injection });
-        if (remainingWorldFailures > 0) {
-          remainingWorldFailures -= 1;
-          return false;
-        }
-        if (mode === 'forward') {
-          worldCheckpoint = structuredClone(before);
-          worldState.round += 1;
-        }
-        worldState.worldDigest = context.chat.at(-1)?.mes || worldState.worldDigest;
         return true;
       },
     };
-    window.WORLD_ENGINE_EVOLUTION = { abort() {}, getLastError: () => '' };
+    window.WORLD_ENGINE_EVOLUTION = {
+      abort() { window.__worldAbortCalls += 1; },
+      getLastError: () => '',
+      getLastDebug: () => ({ owner: 'native-world' }),
+    };
+    window.WORLD_ENGINE_UI = {
+      showPanel() { window.__worldPanelOpens += 1; },
+      refresh() { window.__worldPanelRefreshes += 1; },
+    };
     window.MEMORY_ENGINE_SETTINGS = { getSettings: () => ({ engineEnabled: false, evolveMode: 'manual' }), patchSettings() {} };
 
     const blobs = new Map();
@@ -431,10 +451,10 @@ async function installHarness(page, options = {}) {
     profileReplies,
     discoveryReplies,
     slowProfile: Boolean(options.slowProfile),
+    slowDiagnosis: Boolean(options.slowDiagnosis),
     diagnosisReply: options.diagnosisReply || '<JSONPatch>[]</JSONPatch>',
     diagnosisReplies: Array.isArray(options.diagnosisReplies) ? options.diagnosisReplies : [],
     mvuPatchMode: options.mvuPatchMode || 'noop',
-    worldFailOnce: Boolean(options.worldFailOnce),
     slowMetadata: Boolean(options.slowMetadata),
     saveChatFailOnce: Boolean(options.saveChatFailOnce),
     saveMetadataFailOnce: Boolean(options.saveMetadataFailOnce),
@@ -514,11 +534,22 @@ async function runNextAcceptedReply(page, assistantText = '白露：我把新发
   }, assistantText);
 }
 
+async function startReceivedTicketWithoutEnd(page, assistantText) {
+  return page.evaluate(async (text) => {
+    window.__setChat([{ is_user: true, mes: '请继续。' }]);
+    await window.__emit('message_sent');
+    await window.__emit('generation_started', 'normal', {}, false);
+    window.__append({ is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] });
+    await window.__emit('message_received', 1, 'normal');
+    return structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
+  }, assistantText);
+}
+
 async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.0 native World ownership browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -606,31 +637,129 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('public world injection removes blackbox secrets without mutating private state', async () => {
+    await t.test('public world injection exposes only observable consequences without mutating private state', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
         const evidence = await page.evaluate(() => {
           const privateState = {
             round: 3,
-            winds: [{ content: '公开风声' }],
+            worldDigest: '白露正在暗中收集所有同伴的弱点。',
+            winds: [
+              { level: 2, content: '二级公开风声' },
+              { level: 3, content: '三级公开风声' },
+            ],
+            events: [
+              { stage: '酝酿中', content: '尚未发生的秘密伏击' },
+              { name: '港口警报', stage: '已爆发', evolveResult: '港口已经响起警报' },
+              { name: '旧桥坍塌', stage: '已完成', evolveResult: '旧桥已经坍塌' },
+            ],
+            factions: [{
+              name: '公开可见的商会', currentGoal: '秘密垄断港口',
+              core_person: '幕后首领', powerPillars: ['暗中收买的卫队'],
+            }],
+            enemies: [{ name: '尚未公开的敌人' }],
+            influenceChain: [{ from: '幕后首领', to: '港口卫队' }],
             blackbox: {
               secretActions: [{ action: '秘密记录同伴资料' }],
               secretAssets: [{ name: '暗藏名册' }],
             },
           };
-          window.MVUDoctorProfileEngine.installWorldContextBridge();
+          const before = structuredClone(privateState);
+          const memoryPayloads = [];
+          window.MEMORY_ENGINE = {
+            ingestWorldEvolution(payload) {
+              memoryPayloads.push(structuredClone(payload));
+              return { accepted: true, replace: payload?.replace === true };
+            },
+          };
+          window.MVUDoctorProfileEngine.installWorldPublicProjection();
           const output = window.WORLD_ENGINE_INJECT.buildContext(privateState);
-          return { output, privateState };
+          const publicPayload = {
+            worldDigest: 'SECRET_DIGEST_MUST_NOT_ENTER_MEMORY',
+            worldUpdate: privateState,
+            replace: true,
+            source: 'reroll-replacement',
+          };
+          const publicPayloadBefore = structuredClone(publicPayload);
+          const currentWorldSettings = window.WORLD_ENGINE_API.getSettings(true);
+          window.WORLD_ENGINE_STORE.setItem('world_engine_settings', JSON.stringify({
+            ...currentWorldSettings, injectAllLevels: false,
+          }));
+          const memoryReceipt = window.MEMORY_ENGINE.ingestWorldEvolution(publicPayload);
+          const allLevelsPayload = {
+            ...structuredClone(publicPayload), replace: false, source: 'all-levels-enabled',
+          };
+          const allLevelsBefore = structuredClone(allLevelsPayload);
+          window.WORLD_ENGINE_STORE.setItem('world_engine_settings', JSON.stringify({
+            ...window.WORLD_ENGINE_API.getSettings(true), injectAllLevels: true,
+          }));
+          const allLevelsReceipt = window.MEMORY_ENGINE.ingestWorldEvolution(allLevelsPayload);
+          const hiddenOnlyPayload = {
+            worldDigest: 'HIDDEN_ONLY_SECRET_DIGEST',
+            worldUpdate: {
+              round: 4,
+              worldDigest: '幕后人物正在改变计划',
+              events: [{ stage: '酝酿中', content: '仍未公开的支线' }],
+              factions: [{ currentGoal: '秘密目标', core_person: '幕后人物' }],
+              blackbox: { secretActions: [{ action: '暗中行动' }], secretAssets: [{ name: '秘密资产' }] },
+            },
+            replace: true,
+            source: 'hidden-reroll-replacement',
+          };
+          const hiddenOnlyBefore = structuredClone(hiddenOnlyPayload);
+          const hiddenReceipt = window.MEMORY_ENGINE.ingestWorldEvolution(hiddenOnlyPayload);
+          return {
+            output, projection: JSON.parse(output), privateState, before,
+            publicPayload, publicPayloadBefore, hiddenOnlyPayload, hiddenOnlyBefore,
+            allLevelsPayload, allLevelsBefore,
+            memoryPayloads, memoryReceipt, allLevelsReceipt, hiddenReceipt,
+          };
         });
         assert.match(evidence.output, /公开风声/u);
-        assert.doesNotMatch(evidence.output, /秘密记录同伴资料|暗藏名册/u);
-        assert.equal(evidence.privateState.blackbox.secretActions.length, 1);
-        assert.equal(evidence.privateState.blackbox.secretAssets.length, 1);
+        assert.match(evidence.output, /后台摘要已隔离/u);
+        assert.match(evidence.output, /港口已经响起警报|旧桥已经坍塌/u);
+        assert.match(evidence.output, /公开可见的商会/u);
+        assert.doesNotMatch(evidence.output, /暗中收集|尚未发生的秘密伏击|秘密垄断港口|幕后首领|暗中收买|尚未公开的敌人|港口卫队|秘密记录同伴资料|暗藏名册/u);
+        assert.deepEqual(evidence.projection.events.map((event) => event.stage), ['已爆发', '已完成']);
+        assert.equal(Object.hasOwn(evidence.projection.factions[0], 'currentGoal'), false);
+        assert.equal(Object.hasOwn(evidence.projection.factions[0], 'core_person'), false);
+        assert.equal(Object.hasOwn(evidence.projection.factions[0], 'powerPillars'), false);
+        assert.deepEqual(evidence.projection.enemies, []);
+        assert.deepEqual(evidence.projection.influenceChain, []);
+        assert.deepEqual(evidence.projection.blackbox.secretActions, []);
+        assert.deepEqual(evidence.projection.blackbox.secretAssets, []);
+        assert.deepEqual(evidence.privateState, evidence.before, 'projection must never alter the persisted native object');
+        assert.deepEqual(evidence.publicPayload, evidence.publicPayloadBefore, 'Memory projection must not mutate the public-source payload');
+        assert.deepEqual(evidence.allLevelsPayload, evidence.allLevelsBefore, 'all-level Memory projection must not mutate its source payload');
+        assert.deepEqual(evidence.hiddenOnlyPayload, evidence.hiddenOnlyBefore, 'hidden-only Memory projection must not mutate its source payload');
+        assert.equal(evidence.memoryReceipt.replace, true);
+        assert.equal(evidence.allLevelsReceipt.replace, false);
+        assert.equal(evidence.hiddenReceipt.replace, true);
+        assert.equal(evidence.memoryPayloads.length, 3);
+        const [publicMemory, allLevelsMemory, hiddenMemory] = evidence.memoryPayloads;
+        assert.equal(publicMemory.replace, true, 'reroll replace semantics must reach mature Memory unchanged');
+        assert.equal(publicMemory.source, 'reroll-replacement');
+        assert.match(publicMemory.worldDigest, /公开世界变化/u);
+        assert.match(publicMemory.worldDigest, /三级公开风声|港口警报|旧桥坍塌/u);
+        assert.doesNotMatch(publicMemory.worldDigest, /二级公开风声/u);
+        assert.deepEqual(publicMemory.worldUpdate.events.map((event) => event.stage), ['已爆发', '已完成']);
+        assert.deepEqual(publicMemory.worldUpdate.winds.map((wind) => wind.content), ['三级公开风声']);
+        assert.doesNotMatch(JSON.stringify(publicMemory), /SECRET_DIGEST|暗中收集|秘密伏击|秘密目标|幕后人物|秘密资产/u);
+        assert.equal(allLevelsMemory.replace, false);
+        assert.equal(allLevelsMemory.source, 'all-levels-enabled');
+        assert.deepEqual(allLevelsMemory.worldUpdate.winds.map((wind) => wind.content), ['二级公开风声', '三级公开风声']);
+        assert.match(allLevelsMemory.worldDigest, /二级公开风声/u);
+        assert.equal(hiddenMemory.replace, true, 'hidden-only reroll must still let Memory perform its replace rollback');
+        assert.equal(hiddenMemory.source, 'hidden-reroll-replacement');
+        assert.equal(hiddenMemory.worldDigest, '', 'hidden-only evolution must not create a no-op public minute');
+        assert.deepEqual(hiddenMemory.worldUpdate.events, []);
+        assert.deepEqual(hiddenMemory.worldUpdate.blackbox, { secretActions: [], secretAssets: [] });
+        assert.doesNotMatch(JSON.stringify(hiddenMemory), /HIDDEN_ONLY_SECRET_DIGEST|幕后人物|仍未公开|暗中行动|秘密资产/u);
       } finally { await page.close(); }
     });
 
-    await t.test('accepted final runs diagnosis, discovery, profile fill and world in the real call order', async () => {
+    await t.test('accepted final runs diagnosis and profile while native World remains independent', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
@@ -642,15 +771,300 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
           profileWrites: window.__profileStoreWrites(),
           modelCalls: window.__modelCalls,
+          manualWorldCalls: window.__worldCalls,
+          worldAbortCalls: window.__worldAbortCalls,
+          worldStateWrites: window.__worldStateWrites,
+          worldSettings: window.WORLD_ENGINE_API.getSettings(true),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'profile']);
         assert.equal(evidence.runtime.lastResult.ok, true);
         assert.equal(evidence.runtime.lastResult.profile.count, 1);
         assert.equal(evidence.runtime.lastResult.profile.modelCalls, 2);
         assert.equal(Object.keys(evidence.profiles).length, 1);
         assert.equal(evidence.profileWrites.length, 1);
+        assert.deepEqual(evidence.manualWorldCalls, []);
+        assert.equal(evidence.worldAbortCalls, 0);
+        assert.deepEqual(evidence.worldStateWrites, []);
+        assert.equal(evidence.worldSettings.evolveMode, 'auto');
+        assert.equal(evidence.worldSettings.engineEnabled, true);
+        assert.equal(evidence.worldSettings.syncToChat, true);
+        assert.equal(evidence.worldSettings.injectionEnabled, true);
       } finally { await page.close(); }
+    });
+
+    await t.test('public diagnosis barrier releases at the profile checkpoint without waiting for profile fill', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowProfile: true });
+        await runAcceptedReply(page);
+        await page.evaluate(() => {
+          window.__diagnosisBarrierReceipt = null;
+          window.__diagnosisBarrierPromise = window.MVUDoctorProfileEngine.waitForWorldDiagnosis({
+            aiMsg: window.__context.chat.at(-1).mes,
+          }).then((receipt) => { window.__diagnosisBarrierReceipt = receipt; return receipt; });
+        });
+        await page.waitForFunction(() => window.__diagnosisBarrierReceipt
+          && window.__stages.includes('profile')
+          && window.MVUDoctorProfileEngine.getRuntime().pipelineBusy === true);
+        const evidence = await page.evaluate(() => ({
+          publicApi: typeof window.MVUDoctorProfileEngine.waitForWorldDiagnosis,
+          receipt: window.__diagnosisBarrierReceipt,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+          profilePending: window.__profilePending(),
+        }));
+        assert.equal(evidence.publicApi, 'function');
+        assert.deepEqual(evidence.receipt, { ok: true, status: 'diagnosis-complete' });
+        assert.equal(evidence.checkpoint.status, 'running');
+        assert.equal(evidence.checkpoint.nextStep, 'profile');
+        assert.equal(evidence.runtime.pipelineBusy, true, 'profile is still unresolved when the barrier releases');
+        assert.equal(evidence.profilePending, true, 'the profile model promise remains unresolved');
+        assert.notEqual(evidence.runtime.phase, 'done');
+        await page.evaluate((reply) => window.__resolveProfile(reply), profileEnvelope());
+        await waitForSettled(page, 'done');
+      } finally { await page.close(); }
+    });
+
+    await t.test('a concurrent manual MVU recheck owns the barrier until its current diagnosis finishes', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowDiagnosis: true });
+        const assistant = '白露：这一楼已有完整检查点，但当前手动复检还没有返回。';
+        await page.evaluate((text) => {
+          window.__setChat([
+            { is_user: true, mes: '请重新检查这一楼。' },
+            { is_user: false, is_system: false, mes: text, swipe_id: 0, swipes: [text] },
+          ]);
+          window.__manualDiagnosisFinished = false;
+          window.__manualDiagnosisValue = null;
+          window.__manualDiagnosisError = '';
+          window.MVUDoctorProfileEngine.runDiagnosis().then(
+            (value) => { window.__manualDiagnosisValue = value; window.__manualDiagnosisFinished = true; },
+            (error) => { window.__manualDiagnosisError = error?.message || String(error); window.__manualDiagnosisFinished = true; },
+          );
+        }, assistant);
+        await page.waitForFunction(() => window.__diagnosisPending()
+          && window.MVUDoctorProfileEngine.getRuntime().pipelineBusy
+          && window.MVUDoctorProfileEngine.getRuntime().manualDiagnosisBinding?.token > 0);
+        await page.evaluate(() => {
+          window.__manualBarrierReceipt = null;
+          window.MVUDoctorProfileEngine.waitForWorldDiagnosis({
+            aiMsg: window.__context.chat.at(-1).mes,
+          }).then((receipt) => { window.__manualBarrierReceipt = receipt; });
+        });
+        await page.waitForTimeout(250);
+        const pending = await page.evaluate(() => ({
+          receipt: window.__manualBarrierReceipt,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+        }));
+        assert.equal(pending.receipt, null, 'an older complete checkpoint must not satisfy a live manual diagnosis');
+        assert.equal(pending.checkpoint.status, 'complete');
+        assert.equal(pending.checkpoint.nextStep, '');
+        assert.equal(pending.checkpoint.target.generationKey, pending.runtime.manualDiagnosisBinding.generationKey);
+        assert.equal(pending.runtime.pipelineBusy, true);
+
+        await page.evaluate(() => window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>'));
+        await page.waitForFunction(() => window.__manualDiagnosisFinished && window.__manualBarrierReceipt);
+        const settled = await page.evaluate(() => ({
+          receipt: window.__manualBarrierReceipt,
+          value: window.__manualDiagnosisValue,
+          error: window.__manualDiagnosisError,
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+        }));
+        assert.equal(settled.error, '');
+        assert.equal(settled.value.status, 'nochange');
+        assert.deepEqual(settled.receipt, { ok: true, status: 'diagnosis-complete' });
+        assert.equal(settled.runtime.manualDiagnosisBinding, null);
+        assert.equal(settled.runtime.pipelineBusy, false);
+      } finally { await page.close(); }
+    });
+
+    await t.test('an older overlapping manual recheck cannot clear the newer recheck binding', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowDiagnosis: true });
+        await page.evaluate(() => {
+          const assistant = '白露：两次手动复检并发时，后一次事务必须保持所有权。';
+          window.__setChat([
+            { is_user: true, mes: '连续复检。' },
+            { is_user: false, is_system: false, mes: assistant, swipe_id: 0, swipes: [assistant] },
+          ]);
+          window.__firstManualFinished = false;
+          window.__firstManualError = '';
+          window.MVUDoctorProfileEngine.runDiagnosis().then(
+            () => { window.__firstManualFinished = true; },
+            (error) => { window.__firstManualError = error?.message || String(error); window.__firstManualFinished = true; },
+          );
+        });
+        await page.waitForFunction(() => window.__diagnosisPendingCount() === 1
+          && window.MVUDoctorProfileEngine.getRuntime().manualDiagnosisBinding?.token > 0);
+        const firstToken = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime().manualDiagnosisBinding.token);
+
+        await page.evaluate(() => {
+          window.__secondManualFinished = false;
+          window.__secondManualError = '';
+          window.MVUDoctorProfileEngine.runDiagnosis().then(
+            () => { window.__secondManualFinished = true; },
+            (error) => { window.__secondManualError = error?.message || String(error); window.__secondManualFinished = true; },
+          );
+        });
+        await page.waitForFunction((oldToken) => window.__diagnosisPendingCount() === 2
+          && window.MVUDoctorProfileEngine.getRuntime().manualDiagnosisBinding?.token > oldToken, firstToken);
+        const secondToken = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime().manualDiagnosisBinding.token);
+
+        await page.evaluate(() => window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>'));
+        await page.waitForFunction(() => window.__firstManualFinished);
+        const afterOldFinally = await page.evaluate(() => ({
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          pending: window.__diagnosisPendingCount(),
+          firstError: window.__firstManualError,
+        }));
+        assert.ok(afterOldFinally.firstError, 'the superseded manual run should finish as a stale task');
+        assert.equal(afterOldFinally.runtime.manualDiagnosisBinding.token, secondToken);
+        assert.equal(afterOldFinally.runtime.pipelineBusy, true);
+        assert.equal(afterOldFinally.pending, 1);
+
+        await page.evaluate(() => window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>'));
+        await page.waitForFunction(() => window.__secondManualFinished);
+        const final = await page.evaluate(() => ({
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          pending: window.__diagnosisPendingCount(),
+          secondError: window.__secondManualError,
+        }));
+        assert.equal(final.secondError, '');
+        assert.equal(final.runtime.manualDiagnosisBinding, null);
+        assert.equal(final.runtime.pipelineBusy, false);
+        assert.equal(final.pending, 0);
+      } finally { await page.close(); }
+    });
+
+    await t.test('diagnosis barrier releases on failed and cancelled checkpoints without hanging', async () => {
+      const failedPage = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      const cancelledPage = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(failedPage, { diagnosisReply: '无法识别的诊断文本' });
+        await runAcceptedReply(failedPage);
+        await failedPage.evaluate(() => {
+          window.__diagnosisBarrierReceipt = null;
+          window.MVUDoctorProfileEngine.waitForWorldDiagnosis({
+            aiMsg: window.__context.chat.at(-1).mes,
+          }).then((receipt) => { window.__diagnosisBarrierReceipt = receipt; });
+        });
+        await failedPage.waitForFunction(() => window.__diagnosisBarrierReceipt
+          && window.MVUDoctorProfileEngine.getRuntime().phase === 'failed');
+        const failed = await failedPage.evaluate(() => ({
+          receipt: window.__diagnosisBarrierReceipt,
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+        }));
+        assert.deepEqual(failed.receipt, { ok: false, status: 'diagnosis-failed' });
+        assert.equal(failed.checkpoint.status, 'failed');
+        assert.equal(failed.checkpoint.nextStep, 'diagnosis');
+
+        await installHarness(cancelledPage, { slowDiagnosis: true });
+        await runAcceptedReply(cancelledPage);
+        await cancelledPage.evaluate(() => {
+          window.__diagnosisBarrierReceipt = null;
+          window.MVUDoctorProfileEngine.waitForWorldDiagnosis({
+            aiMsg: window.__context.chat.at(-1).mes,
+          }).then((receipt) => { window.__diagnosisBarrierReceipt = receipt; });
+        });
+        await cancelledPage.waitForFunction(() => window.__diagnosisPending()
+          && window.MVUDoctorProfileEngine.getRuntime().phase === 'diagnosing');
+        await cancelledPage.evaluate(() => window.MVUDoctorProfileEngine.cancel());
+        await cancelledPage.waitForFunction(() => window.__diagnosisBarrierReceipt);
+        const cancelled = await cancelledPage.evaluate(() => ({
+          receipt: window.__diagnosisBarrierReceipt,
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+        }));
+        assert.equal(cancelled.checkpoint.status, 'cancelled');
+        assert.notEqual(cancelled.receipt.status, 'stale');
+        assert.notEqual(cancelled.receipt.status, 'timeout');
+        await cancelledPage.evaluate(() => window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>'));
+      } finally {
+        await failedPage.close();
+        await cancelledPage.close();
+      }
+    });
+
+    await t.test('same-floor old generation keys never satisfy the barrier and missing handoffs are bounded', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const assistant = '白露：相同可见正文仍必须由本次generationKey拥有。';
+        const active = await startReceivedTicketWithoutEnd(page, assistant);
+        const evidence = await page.evaluate(async () => {
+          const key = 'mvuDoctorReferencePipeline:chat-a';
+          const assistantText = window.__context.chat[1].mes;
+          const target = {
+            chatId: 'chat-a', index: 1, swipeId: 0, content: assistantText,
+            generationKey: 'chat-a:old-generation-key',
+          };
+          const run = async (withOldCheckpoint) => {
+            if (withOldCheckpoint) localStorage.setItem(key, JSON.stringify({
+              status: 'complete', nextStep: '', target,
+            }));
+            else localStorage.removeItem(key);
+            const started = performance.now();
+            const receipt = await Promise.race([
+              window.MVUDoctorProfileEngine.waitForWorldDiagnosis({ aiMsg: assistantText }),
+              new Promise((resolve) => setTimeout(() => resolve({ status: 'timeout' }), 2800)),
+            ]);
+            return { receipt, elapsed: performance.now() - started };
+          };
+          return { oldKey: await run(true), missing: await run(false) };
+        }, active);
+        assert.equal(active.receivedMessageId, 1);
+        assert.ok(active.generationKey);
+        assert.equal(evidence.oldKey.receipt.status, 'diagnosis-handoff-missing');
+        assert.equal(evidence.missing.receipt.status, 'diagnosis-handoff-missing');
+        assert.notEqual(evidence.oldKey.receipt.status, 'diagnosis-complete');
+        assert.ok(evidence.oldKey.elapsed < 2800, JSON.stringify(evidence.oldKey));
+        assert.ok(evidence.missing.elapsed < 2800, JSON.stringify(evidence.missing));
+      } finally { await page.close(); }
+    });
+
+    await t.test('diagnosis barrier returns stale when its chat or swipe binding changes', async () => {
+      const swipePage = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      const chatPage = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        const original = '白露：这是屏障绑定的原回复。';
+        const replacement = '白露：这是另一个swipe。';
+        await installHarness(swipePage);
+        const swipeTicket = await startReceivedTicketWithoutEnd(swipePage, original);
+        const swipe = await swipePage.evaluate(async ({ ticket, oldText, newText }) => {
+          localStorage.setItem('mvuDoctorReferencePipeline:chat-a', JSON.stringify({
+            status: 'running', nextStep: 'diagnosis',
+            target: { chatId: 'chat-a', index: 1, swipeId: 0, content: oldText, generationKey: ticket.generationKey },
+          }));
+          const gate = window.MVUDoctorProfileEngine.waitForWorldDiagnosis({ aiMsg: oldText });
+          setTimeout(() => {
+            const message = window.__context.chat[1];
+            message.swipe_id = 1;
+            message.swipes = [oldText, newText];
+            message.mes = newText;
+          }, 30);
+          return Promise.race([gate, new Promise((resolve) => setTimeout(() => resolve({ status: 'timeout' }), 1200))]);
+        }, { ticket: swipeTicket, oldText: original, newText: replacement });
+
+        await installHarness(chatPage);
+        const chatTicket = await startReceivedTicketWithoutEnd(chatPage, original);
+        const chat = await chatPage.evaluate(async ({ ticket, text }) => {
+          localStorage.setItem('mvuDoctorReferencePipeline:chat-a', JSON.stringify({
+            status: 'running', nextStep: 'diagnosis',
+            target: { chatId: 'chat-a', index: 1, swipeId: 0, content: text, generationKey: ticket.generationKey },
+          }));
+          const gate = window.MVUDoctorProfileEngine.waitForWorldDiagnosis({ aiMsg: text });
+          setTimeout(() => { void window.__switchChat('chat-b'); }, 30);
+          return Promise.race([gate, new Promise((resolve) => setTimeout(() => resolve({ status: 'timeout' }), 1200))]);
+        }, { ticket: chatTicket, text: original });
+        assert.equal(swipe.status, 'stale');
+        assert.equal(chat.status, 'stale');
+      } finally {
+        await swipePage.close();
+        await chatPage.close();
+      }
     });
 
     await t.test('wrapped and sentence-final placeholders trigger the existing one-shot profile repair before commit', async () => {
@@ -674,7 +1088,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           modelCalls: window.__modelCalls,
         }));
         const serialized = JSON.stringify(evidence.profiles);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile']);
         assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'profile', 'profile-repair']);
         assert.equal(evidence.result.profile.modelCalls, 3);
         assert.equal(evidence.result.profile.repaired, true);
@@ -730,7 +1144,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
         }));
         assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'discovery-repair', 'profile']);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.profile.modelCalls, 3);
         assert.equal(evidence.result.profile.repaired, true);
         assert.match(evidence.result.profile.initialErrors.join('；'), /人物发现/u);
@@ -754,7 +1168,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
         }));
         assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'discovery-repair', 'profile']);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.profile.modelCalls, 3);
         assert.equal(evidence.result.profile.repaired, true);
         assert.match(evidence.result.profile.initialErrors.join('；'), /没有使用最终正文逐字出现/u);
@@ -821,7 +1235,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('an unrecoverable name discovery fails closed before profile fill and world', async () => {
+    await t.test('an unrecoverable profile discovery fails without touching independent native World', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -835,12 +1249,26 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
           modelCalls: window.__modelCalls,
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          manualWorldCalls: window.__worldCalls,
+          worldAbortCalls: window.__worldAbortCalls,
+          worldStateWrites: window.__worldStateWrites,
+          worldContract: {
+            manualEvolve: typeof window.WORLD_ENGINE?.manualEvolve,
+            loadState: typeof window.WORLD_ENGINE_CORE?.loadState,
+            showPanel: typeof window.WORLD_ENGINE_UI?.showPanel,
+          },
         }));
         assert.deepEqual(evidence.modelCalls.map((call) => call.kind), ['discovery', 'discovery-repair']);
         assert.deepEqual(evidence.stages, ['diagnosis']);
         assert.equal(evidence.result.failedStep, 'profile');
         assert.match(evidence.result.error, /人物发现单次修复后仍不可用/u);
         assert.equal(Object.keys(evidence.profiles).length, 0);
+        assert.deepEqual(evidence.manualWorldCalls, []);
+        assert.equal(evidence.worldAbortCalls, 0);
+        assert.deepEqual(evidence.worldStateWrites, []);
+        assert.deepEqual(evidence.worldContract, {
+          manualEvolve: 'function', loadState: 'function', showPanel: 'function',
+        });
       } finally { await page.close(); }
     });
 
@@ -854,7 +1282,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.ok, true);
       } finally { await page.close(); }
     });
@@ -870,9 +1298,9 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           worldCalls: window.__worldCalls,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.runtime.lastResult.ok, true);
-        assert.equal(evidence.worldCalls.length, 1);
+        assert.equal(evidence.worldCalls.length, 0);
       } finally { await page.close(); }
     });
 
@@ -887,9 +1315,9 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           worldCalls: window.__worldCalls,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.runtime.lastResult.ok, true);
-        assert.equal(evidence.worldCalls.length, 1);
+        assert.equal(evidence.worldCalls.length, 0);
       } finally { await page.close(); }
     });
 
@@ -914,7 +1342,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           stages: window.__stages,
           ticket: window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.ticket, null);
       } finally { await page.close(); }
     });
@@ -959,8 +1387,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           accepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
           ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
-        assert.equal(evidence.calls, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
+        assert.equal(evidence.calls, 0);
         assert.equal(evidence.accepted.index, 2);
         assert.equal(evidence.ticket, null);
       } finally { await page.close(); }
@@ -1013,8 +1441,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
             acceptedIndex: runtime.lastAccepted.index,
           };
         });
-        assert.deepEqual(beforeLateEnd.stages, ['diagnosis', 'profile', 'world']);
-        assert.equal(beforeLateEnd.worldCalls, 1);
+        assert.deepEqual(beforeLateEnd.stages, ['diagnosis', 'profile']);
+        assert.equal(beforeLateEnd.worldCalls, 0);
         assert.equal(beforeLateEnd.acceptedGeneration, null);
         assert.equal(beforeLateEnd.acceptedIndex, latch.messageId);
         await page.evaluate(async () => {
@@ -1174,7 +1602,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.ticket, null);
         assert.equal(evidence.checkpoint.status, 'complete');
       } finally { await page.close(); }
@@ -1204,8 +1632,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           accepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
           ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
-        assert.equal(evidence.calls, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
+        assert.equal(evidence.calls, 0);
         assert.equal(evidence.accepted.index, 1);
         assert.equal(evidence.accepted.swipeId, 0);
         assert.equal(evidence.ticket, null);
@@ -1236,8 +1664,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           accepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
           ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
-        assert.equal(evidence.calls, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
+        assert.equal(evidence.calls, 0);
         assert.equal(evidence.accepted.index, 1);
         assert.equal(evidence.accepted.swipeId, 0);
         assert.equal(evidence.ticket, null);
@@ -1307,14 +1735,6 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
             { is_user: true, mes: '请回答。' },
             { is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] },
           ]);
-          window.WORLD_ENGINE_CORE.saveCheckpoint({
-            round: 5, worldDigest: 'WORLD_BASE_SENTINEL',
-            blackbox: { secretAssets: ['基底暗线'] },
-          });
-          window.WORLD_ENGINE_CORE.saveState({
-            round: 6, worldDigest: 'OLD_SWIPE_WORLD_SENTINEL',
-            blackbox: { secretAssets: ['旧分支暗线'] },
-          });
           await window.__emit('generation_started', 'regenerate', {}, false);
           const nextText = '白露：这是重写后的答复。';
           const message = window.__context.chat[1];
@@ -1345,10 +1765,12 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('a newer ended ticket supersedes an older failed checkpoint after reload', async () => {
+    await t.test('a newer ended ticket supersedes an older failed Doctor checkpoint after reload', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
-        await installHarness(page, { worldFailOnce: true });
+        await installHarness(page, {
+          discoveryReplies: ['旧任务无法解析', '旧任务修复后仍无法解析', discoveryEnvelope()],
+        });
         await runAcceptedReply(page);
         await waitForSettled(page, 'failed');
         const ticket = await page.evaluate(async () => {
@@ -1370,8 +1792,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           calls: window.__worldCalls.length,
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world', 'diagnosis', 'world']);
-        assert.equal(evidence.calls, 2);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis', 'profile']);
+        assert.equal(evidence.calls, 0);
         assert.equal(evidence.checkpoint.status, 'complete');
         assert.equal(evidence.checkpoint.target.generationKey, ticket.generationKey);
       } finally { await page.close(); }
@@ -1410,7 +1832,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           stages: window.__stages,
           ticket: localStorage.getItem('mvuDoctorReferenceGeneration:chat-a'),
         }));
-        assert.deepEqual(after.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(after.stages, ['diagnosis', 'profile']);
         assert.equal(after.ticket, null);
       } finally { await page.close(); }
     });
@@ -1485,7 +1907,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.diagnosis.status, 'nochange');
       } finally { await page.close(); }
     });
@@ -1500,7 +1922,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.diagnosis.status, 'nochange');
       } finally { await page.close(); }
     });
@@ -1517,7 +1939,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis', 'profile']);
         assert.equal(evidence.result.diagnosis.status, 'nochange');
         assert.equal(evidence.result.diagnosis.diagnosisAttempts.length, 2);
         assert.equal(evidence.result.diagnosis.diagnosisAttempts[0].kind, 'transport-error-content');
@@ -1525,7 +1947,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('two Story Oracle backend error envelopes fail with the transport code and never reach profile or world', async () => {
+    await t.test('two Story Oracle backend error envelopes fail before profile and leave native World untouched', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -1536,11 +1958,15 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          manualWorldCalls: window.__worldCalls,
+          worldAbortCalls: window.__worldAbortCalls,
         }));
         assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis']);
         assert.equal(evidence.result.failedStep, 'diagnosis');
         assert.equal(evidence.result.errorCode, 'story_oracle_transport_error_response');
         assert.equal(evidence.result.diagnosisAttempts.length, 2);
+        assert.deepEqual(evidence.manualWorldCalls, []);
+        assert.equal(evidence.worldAbortCalls, 0);
       } finally { await page.close(); }
     });
 
@@ -1640,57 +2066,6 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('chat reroll restores the frozen World Engine checkpoint and forwards from that base', async () => {
-      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
-      try {
-        await installHarness(page);
-        await page.evaluate(async () => {
-          const oldText = '白露：旧的答复。';
-          window.__setChat([
-            { is_user: true, mes: '请回答。' },
-            { is_user: false, is_system: false, mes: oldText, swipe_id: 0, swipes: [oldText] },
-          ]);
-          // A real rejected swipe follows an earlier forward commit, which is
-          // where frozen World Engine 3.0.2 saves the a-side checkpoint.
-          window.WORLD_ENGINE_CORE.saveCheckpoint(window.WORLD_ENGINE_CORE.loadState());
-          await window.__emit('generation_started', 'regenerate', {}, false);
-          const nextText = '白露：这是重写后的答复。';
-          const message = window.__context.chat[1];
-          message.mes = nextText;
-          message.swipe_id = 1;
-          message.swipes = [oldText];
-          message.swipes.length = 2;
-          await window.__emit('message_received', 1, 'normal');
-          window.__rerollReceipt = structuredClone(window.MVUDoctorProfileEngine.getRuntime().acceptedGeneration);
-          message.swipes[1] = nextText;
-          await window.__emit('generation_ended');
-        });
-        await waitForSettled(page, 'done');
-        const evidence = await page.evaluate(() => ({
-          call: window.__worldCalls[0],
-          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
-          accepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
-          stages: window.__stages,
-          receipt: window.__rerollReceipt,
-        }));
-        assert.equal(evidence.receipt.type, 'regenerate');
-        assert.equal(evidence.receipt.receivedMessageType, 'normal');
-        assert.equal(evidence.receipt.receivedMessageId, 1);
-        assert.equal(evidence.receipt.receivedSwipeId, 1);
-        assert.equal(evidence.receipt.endObserved, false);
-        assert.equal(evidence.receipt.completionScheduled, false);
-        assert.equal(evidence.call.mode, 'forward');
-        assert.equal(evidence.call.reason, 'reroll');
-        assert.equal(evidence.call.beforeDigest, 'WORLD_BASE_SENTINEL');
-        assert.equal(evidence.result.world.mode, 'checkpoint-forward');
-        assert.equal(evidence.result.world.afterRound, evidence.result.world.beforeRound + 1);
-        assert.equal(evidence.result.generationType, 'regenerate');
-        assert.equal(evidence.accepted.index, 1);
-        assert.equal(evidence.accepted.swipeId, 1);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
-      } finally { await page.close(); }
-    });
-
     await t.test('reroll removes old swipe profile content before new prompts and restores each branch independently', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
@@ -1727,20 +2102,18 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           await window.__emit('message_received', 1, 'normal');
           await window.__emit('generation_ended');
         }, { oldReply: oldText, newReply: newText });
-        await page.waitForFunction(() => window.__worldCalls.length === 2
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done'
+          && window.__modelCalls.filter((call) => call.kind === 'profile').length === 2);
         const rerolled = await page.evaluate((promptStart) => ({
           prompts: window.__profilePrompts.slice(promptStart),
           store: window.MVUDoctorProfileEngine.getStore(),
           modelCalls: window.__modelCalls.slice(promptStart),
-          worldCall: window.__worldCalls[1],
+          manualWorldCalls: window.__worldCalls,
         }), first.promptCount);
         assert.doesNotMatch(JSON.stringify(rerolled.prompts), /OLD_SWIPE_PROFILE_SENTINEL/u);
         assert.doesNotMatch(JSON.stringify(rerolled.store.profiles), /OLD_SWIPE_PROFILE_SENTINEL/u);
         assert.match(JSON.stringify(rerolled.store.profiles), /NEW_SWIPE_PROFILE_SENTINEL/u);
-        assert.doesNotMatch(JSON.stringify(rerolled.worldCall), /OLD_SWIPE_PROFILE_SENTINEL/u);
-        assert.match(rerolled.worldCall.promptSection, /NEW_SWIPE_PROFILE_SENTINEL/u);
-        assert.doesNotMatch(rerolled.worldCall.injection, /OLD_SWIPE_PROFILE_SENTINEL/u);
+        assert.deepEqual(rerolled.manualWorldCalls, []);
 
         await page.evaluate(async (oldReply) => {
           const message = window.__context.chat[1];
@@ -1815,8 +2188,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           await window.__emit('message_received', 1, 'normal');
           await window.__emit('generation_ended');
         }, { oldReply: oldText, newReply: newText });
-        await page.waitForFunction(() => window.__worldCalls.length === 2
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done'
+          && window.__modelCalls.filter((call) => call.kind === 'profile').length === 2);
 
         const promptStart = await page.evaluate(() => window.__profilePrompts.length);
         await page.evaluate(async (oldReply) => {
@@ -1839,28 +2212,24 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         }, { oldReply: oldText, newReply: newText, finalReply: finalText });
         await new Promise((resolve) => setTimeout(resolve, 120));
         let blocked = await page.evaluate(() => ({
-          worldCalls: window.__worldCalls.length,
           prompts: window.__profilePrompts.length,
         }));
-        assert.equal(blocked.worldCalls, 2);
         assert.equal(blocked.prompts, promptStart);
 
         await page.evaluate(() => window.__resolveDurableWrite());
-        await page.waitForFunction(() => window.__worldCalls.length === 3
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done', null, { timeout: 8000 });
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done'
+          && window.__modelCalls.filter((call) => call.kind === 'profile').length === 3, null, { timeout: 8000 });
         const evidence = await page.evaluate((fromPrompt) => ({
           prompts: window.__profilePrompts.slice(fromPrompt),
           store: window.MVUDoctorProfileEngine.getStore(),
-          worldCall: window.__worldCalls[2],
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          manualWorldCalls: window.__worldCalls,
         }), promptStart);
         const finalJson = JSON.stringify(evidence);
         assert.doesNotMatch(JSON.stringify(evidence.prompts), /DELAYED_OLD_BRANCH_SENTINEL|CURRENT_NEW_BRANCH_SENTINEL/u);
         assert.doesNotMatch(JSON.stringify(evidence.store.profiles), /DELAYED_OLD_BRANCH_SENTINEL|CURRENT_NEW_BRANCH_SENTINEL/u);
         assert.match(JSON.stringify(evidence.store.profiles), /FINAL_REROLL_BRANCH_SENTINEL/u);
-        assert.doesNotMatch(JSON.stringify(evidence.worldCall), /DELAYED_OLD_BRANCH_SENTINEL|CURRENT_NEW_BRANCH_SENTINEL/u);
-        assert.match(evidence.worldCall.promptSection, /FINAL_REROLL_BRANCH_SENTINEL/u);
-        assert.doesNotMatch(evidence.worldCall.injection, /DELAYED_OLD_BRANCH_SENTINEL|CURRENT_NEW_BRANCH_SENTINEL/u);
+        assert.deepEqual(evidence.manualWorldCalls, []);
         assert.equal(evidence.runtime.phase, 'done');
         assert.doesNotMatch(finalJson, /人物档案分支恢复失败/u);
       } finally { await page.close(); }
@@ -1896,8 +2265,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           await window.__emit('message_received', 1, 'normal');
           await window.__emit('generation_ended');
         }, { oldReply: oldText, newReply: newText });
-        await page.waitForFunction(() => window.__worldCalls.length === 2
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done'
+          && window.__modelCalls.filter((call) => call.kind === 'profile').length === 2);
 
         await page.evaluate(async (oldReply) => {
           window.__slowNextDurableWrite();
@@ -1977,8 +2346,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           await window.__emit('message_received', 1, 'normal');
           await window.__emit('generation_ended');
         }, { oldReply: oldText, newReply: newText });
-        await page.waitForFunction(() => window.__worldCalls.length === 2
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done'
+          && window.__modelCalls.filter((call) => call.kind === 'profile').length === 2);
         const promptStart = await page.evaluate(() => window.__profilePrompts.length);
 
         await page.evaluate(async (oldReply) => {
@@ -2005,9 +2374,9 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           prompts: window.__profilePrompts.slice(fromPrompt),
           store: window.MVUDoctorProfileEngine.getStore(),
-          worldCalls: window.__worldCalls.length,
+          manualWorldCalls: window.__worldCalls,
         }), promptStart);
-        assert.equal(evidence.worldCalls, 2);
+        assert.deepEqual(evidence.manualWorldCalls, []);
         assert.equal(evidence.prompts.length, 0);
         assert.match(`${evidence.runtime.detail}\n${JSON.stringify(evidence.runtime.lastResult)}`, /回滚.*持久化|rollback/iu);
         assert.match(JSON.stringify(evidence.store.profiles), /ROLLBACK_FAIL_NEW_SENTINEL/u);
@@ -2015,7 +2384,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('automatic continue merges into the same normal ticket and advances world once', async () => {
+    await t.test('automatic continue merges into the same normal Doctor ticket without driving World', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
@@ -2045,9 +2414,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           lastAccepted: window.MVUDoctorProfileEngine.getRuntime().lastAccepted,
           finalText: window.__context.chat.at(-1).mes,
         }));
-        assert.equal(evidence.calls.length, 1);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
-        assert.equal(evidence.calls[0].mode, 'forward');
+        assert.equal(evidence.calls.length, 0);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.generationType, 'normal');
         assert.equal(evidence.result.identity, evidence.lastAccepted.identity);
         assert.match(evidence.finalText, /现在补完/u);
@@ -2086,9 +2454,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
           finalText: window.__context.chat.at(-1).mes,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'diagnosis', 'profile', 'world']);
-        assert.equal(evidence.worldCalls.length, 1);
-        assert.equal(evidence.worldCalls[0].mode, 'forward');
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'diagnosis', 'profile']);
+        assert.equal(evidence.worldCalls.length, 0);
         assert.equal(evidence.runtime.lastResult.identity, evidence.runtime.lastAccepted.identity);
         assert.match(evidence.finalText, /现在补完/u);
         assert.equal(Object.keys(evidence.profiles).length, 1);
@@ -2114,39 +2481,12 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           await window.__emit('message_received', 1, 'swipe');
           await window.__emit('generation_ended');
         }, accepted);
-        await page.waitForFunction(() => window.__worldCalls.length === 2
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done'
+          && window.MVUDoctorProfileEngine.getRuntime().lastResult?.generationType === 'swipe');
         const evidence = await page.evaluate(() => ({ calls: window.__worldCalls, result: window.MVUDoctorProfileEngine.getRuntime().lastResult }));
-        assert.equal(evidence.calls.length, 2);
-        assert.equal(evidence.calls[1].mode, 'forward');
-        assert.equal(evidence.result.world.mode, 'checkpoint-forward');
-        assert.equal(evidence.result.world.afterRound, evidence.result.world.beforeRound + 1);
+        assert.equal(evidence.calls.length, 0);
+        assert.equal(evidence.result.world.status, 'native-independent');
         assert.equal(evidence.result.generationType, 'swipe');
-      } finally { await page.close(); }
-    });
-
-    await t.test('a persisted failed world checkpoint resumes only its exact target', async () => {
-      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
-      try {
-        await installHarness(page, { worldFailOnce: true });
-        await runAcceptedReply(page);
-        await waitForSettled(page, 'failed');
-        const before = await page.evaluate(() => ({
-          calls: window.__worldCalls.length,
-          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
-        }));
-        assert.equal(before.calls, 1);
-        assert.equal(before.checkpoint.status, 'failed');
-        assert.equal(before.checkpoint.nextStep, 'world');
-
-        await page.evaluate(async () => { await window.__emit('chat_loaded'); });
-        await page.evaluate(() => window.MVUDoctorProfileEngine.runCurrent());
-        await page.waitForFunction(() => window.__worldCalls.length === 2
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
-        const after = await page.evaluate(() => ({ stages: window.__stages, calls: window.__worldCalls.length }));
-        assert.equal(after.calls, 2);
-        assert.equal(after.stages.filter((stage) => stage === 'diagnosis').length, 1);
-        assert.equal(after.stages.filter((stage) => stage === 'profile').length, 1);
       } finally { await page.close(); }
     });
 
@@ -2192,7 +2532,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           profile: window.MVUDoctorProfileEngine.getRuntime().lastResult.profile,
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.deepEqual(evidence.profile.completionCandidates, ['白露']);
         assert.ok(evidence.profile.discoveredCandidates.includes('白露'));
         assert.ok(!evidence.profile.discoveredCandidates.includes('名称'));
@@ -2215,7 +2555,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis']);
         assert.deepEqual(evidence.result.profile.currentReplyCandidates, []);
         assert.deepEqual(evidence.result.profile.mvuInventoryCandidates, ['白露']);
         assert.deepEqual(evidence.result.profile.discoveredCandidates, []);
@@ -2224,7 +2564,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.match(evidence.result.profile.requestPrompt, /姓名消歧提示[^]*不能据此认定人物在本楼出现/u);
         assert.match(evidence.result.profile.requestPrompt, /姓名消歧提示[^]*白露/u);
         assert.equal(Object.keys(evidence.profiles).length, 0);
-        assert.equal(evidence.result.world.afterRound, 1);
+        assert.equal(evidence.result.world.status, 'native-independent');
+        assert.equal(evidence.result.world.round, 0);
       } finally { await page.close(); }
     });
 
@@ -2255,7 +2596,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.equal(evidence.profiles[0].name, '引导者');
         assert.ok(evidence.profiles[0].aliases.includes('苏砚'));
         assert.equal(Object.hasOwn(evidence.profiles[0], 'rowId'), false);
-        assert.equal(evidence.worldCalls.length, 1);
+        assert.equal(evidence.worldCalls.length, 0);
       } finally { await page.close(); }
     });
 
@@ -2292,7 +2633,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.ok(guide.aliases.includes('苏砚'));
         assert.ok(guard.aliases.includes('周衡'));
         assert.equal(evidence.profileWrites.length, 1);
-        assert.equal(evidence.worldCalls.length, 1);
+        assert.equal(evidence.worldCalls.length, 0);
       } finally { await page.close(); }
     });
 
@@ -2412,7 +2753,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.equal(evidence.profile.count, 9);
         assert.equal(Object.keys(evidence.profiles).length, 9);
         assert.equal(evidence.profileWrites.length, 1, 'all batches must share one atomic IndexedDB commit');
-        assert.deepEqual(evidence.stages, ['diagnosis', ...Array(9).fill('profile'), 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', ...Array(9).fill('profile')]);
       } finally { await page.close(); }
     });
 
@@ -2498,7 +2839,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis']);
         assert.equal(evidence.result.profile.status, 'no-profile');
         assert.equal(evidence.result.profile.modelCalls, 1);
         assert.equal(evidence.result.profile.count, 0);
@@ -2521,14 +2862,14 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         await runAcceptedReply(page);
         await waitForSettled(page, 'done');
         await runNextAcceptedReply(page);
-        await page.waitForFunction(() => window.__worldCalls.length === 2
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done'
+          && window.MVUDoctorProfileEngine.getStore().history.length === 2);
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
           store: window.MVUDoctorProfileEngine.getStore(),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world', 'diagnosis', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'diagnosis']);
         assert.equal(evidence.result.profile.status, 'no-profile');
         assert.equal(evidence.result.profile.modelCalls, 1);
         assert.equal(evidence.result.profile.noProfileReason, '本轮实际出现的人物均已有完整档案，无需新增或修复');
@@ -2549,7 +2890,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           profile: window.MVUDoctorProfileEngine.getRuntime().lastResult.profile,
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.deepEqual(evidence.profile.completionCandidates, ['白露']);
         assert.equal(evidence.profile.modelCalls, 2);
         assert.equal(Object.values(evidence.profiles)[0].name, '白露');
@@ -2595,7 +2936,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.equal(Object.keys(evidence.profiles).length, 2);
         assert.equal(evidence.profileWrites.length, 1);
         assert.equal(evidence.discoveryCalls, 1);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile']);
         assert.match(evidence.prompts[1], /权威目标行[^]*林澄[^]*延后批次人物[^]*陆遥/u);
         assert.match(evidence.prompts[2], /权威目标行[^]*陆遥/u);
       } finally { await page.close(); }
@@ -2647,7 +2988,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.ok(!storedA.aliases.includes(names[1]));
         assert.equal(storedB.currentState.goal, 'LEGITIMATE_SECOND_BATCH_GOAL');
         assert.equal(evidence.profileWrites.length, 1);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'profile', 'profile']);
         assert.match(evidence.prompts[2], /延后批次人物[^]*绝不能返回[^]*乔霁/u);
       } finally { await page.close(); }
     });
@@ -2688,24 +3029,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('world receipt makes a manual retry of the same accepted text idempotent', async () => {
-      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
-      try {
-        await installHarness(page);
-        await runAcceptedReply(page);
-        await waitForSettled(page, 'done');
-        const retry = await page.evaluate(() => window.MVUDoctorProfileEngine.runWorld(false));
-        const evidence = await page.evaluate(() => ({
-          worldCalls: window.__worldCalls,
-          persistence: window.MVUDoctorProfileEngine.getRuntime().reportPersistence,
-        }));
-        assert.equal(retry.status, 'already-committed');
-        assert.equal(evidence.worldCalls.length, 1);
-        assert.equal(evidence.persistence.ok, true, JSON.stringify(evidence.persistence));
-      } finally { await page.close(); }
-    });
-
-    await t.test('manual Story repair migrates the accepted identity without opening a second world receipt', async () => {
+    await t.test('manual Story repair migrates the accepted identity without invoking native World', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, { mvuPatchMode: 'apply' });
@@ -2717,22 +3041,21 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         }));
         const evidence = await page.evaluate(async () => {
           window.__setDiagnosisReply('<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":11}]</JSONPatch></UpdateVariable>');
-          await window.MVUDoctorProfileEngine.runDiagnosis();
-          const retry = await window.MVUDoctorProfileEngine.runWorld(false);
+          const repair = await window.MVUDoctorProfileEngine.runDiagnosis();
           return {
-            retry,
+            repair,
             runtime: window.MVUDoctorProfileEngine.getRuntime(),
             worldCalls: window.__worldCalls,
           };
         });
         assert.notEqual(evidence.runtime.lastAccepted.identity, before.identity);
         assert.equal(evidence.runtime.lastAccepted.generationKey, before.generationKey);
-        assert.equal(evidence.retry.status, 'already-committed');
-        assert.equal(evidence.worldCalls.length, 1);
+        assert.ok(evidence.repair.diagnosis || evidence.repair.profile || evidence.repair.status);
+        assert.equal(evidence.worldCalls.length, 0);
       } finally { await page.close(); }
     });
 
-    await t.test('manual diagnosis recovery resumes profile and world from a failed diagnosis checkpoint', async () => {
+    await t.test('manual diagnosis recovery resumes profile from a failed Doctor checkpoint', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, { diagnosisReply: '无法识别的诊断文本', mvuPatchMode: 'apply' });
@@ -2750,13 +3073,13 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           calls: window.__worldCalls.length,
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
         }));
-        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis', 'profile', 'world']);
-        assert.equal(evidence.calls, 1);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis', 'profile']);
+        assert.equal(evidence.calls, 0);
         assert.equal(evidence.checkpoint.status, 'complete');
       } finally { await page.close(); }
     });
 
-    await t.test('a committed profile receipt skips a duplicate model call when reload lands before the world checkpoint', async () => {
+    await t.test('a committed profile receipt skips a duplicate model call when reload resumes profile', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
@@ -2795,10 +3118,10 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
         }));
         assert.equal(evidence.runtime.phase, 'done', JSON.stringify({ runtime: evidence.runtime, checkpoint: evidence.checkpoint }));
-        assert.deepEqual(evidence.stages, ['profile', 'world']);
+        assert.deepEqual(evidence.stages, ['profile']);
         assert.equal(evidence.result.profile.status, 'already-committed');
         assert.equal(evidence.result.profile.modelCalls, 0);
-        assert.equal(evidence.calls, 1);
+        assert.equal(evidence.calls, 0);
       } finally { await page.close(); }
     });
 
@@ -2827,8 +3150,8 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         });
         await waitForSettled(page, 'done');
         const after = await page.evaluate(() => ({ stages: window.__stages, calls: window.__worldCalls.length }));
-        assert.deepEqual(after.stages, ['diagnosis', 'diagnosis', 'profile', 'world']);
-        assert.equal(after.calls, 1);
+        assert.deepEqual(after.stages, ['diagnosis', 'diagnosis', 'profile']);
+        assert.equal(after.calls, 0);
       } finally { await page.close(); }
     });
 
@@ -2848,23 +3171,22 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           const afterFailure = window.MVUDoctorProfileEngine.getRuntime().lastAccepted;
           const checkpoint = JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null');
           window.__setDiagnosisReply('<JSONPatch>[]</JSONPatch>');
-          await window.MVUDoctorProfileEngine.runDiagnosis();
-          const retry = await window.MVUDoctorProfileEngine.runWorld(false);
+          const retry = await window.MVUDoctorProfileEngine.runDiagnosis();
           return { before, afterFailure, checkpoint, retry, error, calls: window.__worldCalls };
         });
         assert.match(evidence.error, /synthetic saveChat failure/u);
         assert.notEqual(evidence.afterFailure.identity, evidence.before.identity);
         assert.equal(evidence.afterFailure.generationKey, evidence.before.generationKey);
         assert.equal(evidence.checkpoint.target.identity, evidence.afterFailure.identity);
-        assert.equal(evidence.retry.status, 'already-committed');
-        assert.equal(evidence.calls.length, 1);
+        assert.ok(evidence.retry.diagnosis || evidence.retry.profile || evidence.retry.status);
+        assert.equal(evidence.calls.length, 0);
       } finally { await page.close(); }
     });
 
-    await t.test('successful manual diagnosis supersedes an unreachable old checkpoint and unlocks world', async () => {
+    await t.test('successful manual diagnosis supersedes an unreachable old Doctor checkpoint without driving World', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
-        await installHarness(page, { worldFailOnce: true });
+        await installHarness(page, { diagnosisReply: '无法识别的诊断文本' });
         await runAcceptedReply(page);
         await waitForSettled(page, 'failed');
         const evidence = await page.evaluate(async () => {
@@ -2876,39 +3198,13 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           await window.MVUDoctorProfileEngine.runDiagnosis();
           const anchor = window.MVUDoctorProfileEngine.getRuntime().lastAccepted;
           const checkpoint = JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null');
-          const world = await window.MVUDoctorProfileEngine.runWorld(false);
-          return { anchor, checkpoint, world, calls: window.__worldCalls, stages: window.__stages };
+          return { anchor, checkpoint, calls: window.__worldCalls, stages: window.__stages };
         });
         assert.match(evidence.anchor.generationKey, /:manual:/u);
-        assert.equal(evidence.checkpoint.reason, 'manual-diagnosis-anchor');
+        assert.equal(evidence.checkpoint.status, 'complete');
         assert.ok(evidence.checkpoint.supersededGenerationKey);
-        assert.equal(evidence.world.status, 'advanced');
-        assert.equal(evidence.calls.length, 2);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world', 'diagnosis', 'world']);
-      } finally { await page.close(); }
-    });
-
-    await t.test('manual world on an old unbound chat creates one durable key and remains idempotent after Story writes', async () => {
-      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
-      try {
-        await installHarness(page, { mvuPatchMode: 'apply' });
-        const evidence = await page.evaluate(async () => {
-          const reply = '白露：这是安装医生以前就存在的旧回复。';
-          window.__setChat([
-            { is_user: true, mes: '检查这条旧回复。' },
-            { is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] },
-          ]);
-          const first = await window.MVUDoctorProfileEngine.runWorld(false);
-          const key = window.MVUDoctorProfileEngine.getRuntime().lastAccepted.generationKey;
-          window.__setDiagnosisReply('<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":11}]</JSONPatch></UpdateVariable>');
-          await window.MVUDoctorProfileEngine.runDiagnosis();
-          const second = await window.MVUDoctorProfileEngine.runWorld(false);
-          return { first, second, key, runtime: window.MVUDoctorProfileEngine.getRuntime(), calls: window.__worldCalls };
-        });
-        assert.equal(evidence.first.status, 'advanced');
-        assert.equal(evidence.second.status, 'already-committed');
-        assert.equal(evidence.runtime.lastAccepted.generationKey, evidence.key);
-        assert.equal(evidence.calls.length, 1);
+        assert.equal(evidence.calls.length, 0);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis']);
       } finally { await page.close(); }
     });
 
@@ -2951,7 +3247,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
             sessionDiagnostics: sessionStorage.getItem('mvuDoctorReferenceDiagnostics:chat-a'),
           };
         });
-        assert.ok(beforeReload.ids.length >= 4);
+        assert.ok(beforeReload.ids.length >= 3);
         assert.deepEqual(beforeReload.storedReports, beforeReload.runtimeReports);
         assert.deepEqual(beforeReload.storedDiagnostics, beforeReload.runtimeDiagnostics);
         assert.equal(beforeReload.sessionIndex, null);
@@ -3150,7 +3446,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
       } finally { await page.close(); }
     });
 
-    await t.test('open profile and world pages refresh after background commits without another tab click', async () => {
+    await t.test('open profile page refreshes after Doctor commit and World page delegates to native UI', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
@@ -3161,12 +3457,60 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         await waitForSettled(page, 'done');
         assert.match(await page.locator('[data-page="profiles"]').innerText(), /白露/u);
 
+        await page.evaluate(() => {
+          window.MVUDoctorWorldbookBridgeStatus = {
+            status: 'missing', ready: false, chatId: 'chat-a',
+            detail: 'WORLD_BOOK_BRIDGE_MISSING_SENTINEL', at: new Date().toISOString(),
+          };
+        });
         await page.locator('[data-tab="world"]').click();
-        assert.match(await page.locator('[data-page="world"]').innerText(), /"round": 1/u);
-        await runNextAcceptedReply(page);
-        await page.waitForFunction(() => window.__worldCalls.length === 2
-          && window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
-        assert.match(await page.locator('[data-page="world"]').innerText(), /"round": 2/u);
+        const worldPageText = await page.locator('[data-page="world"]').innerText();
+        assert.match(worldPageText, /"round": 0/u);
+        assert.match(worldPageText, /世界书：未就绪/u);
+        assert.match(worldPageText, /WORLD_BOOK_BRIDGE_MISSING_SENTINEL/u);
+        await page.locator('[data-page="world"] [data-action="open-native-world"]').click();
+        const nativeUi = await page.evaluate(() => ({
+          opens: window.__worldPanelOpens,
+          refreshes: window.__worldPanelRefreshes,
+          manualWorldCalls: window.__worldCalls.length,
+        }));
+        assert.equal(nativeUi.opens, 1);
+        assert.equal(nativeUi.refreshes, 1);
+        assert.equal(nativeUi.manualWorldCalls, 0);
+      } finally { await page.close(); }
+    });
+
+    await t.test('saving the shared connection preserves native World scheduling and persistence controls', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        const before = await page.evaluate(() => window.WORLD_ENGINE_API.getSettings(true));
+        await page.locator('#mvu-ref-launcher').click();
+        await page.locator('[data-tab="settings"]').click();
+        await page.locator('[name="api-endpoint"]').fill('https://new-host.invalid/v1');
+        await page.locator('[name="api-model"]').fill('new-model');
+        await page.locator('[name="api-key"]').fill('NEW_SECRET_BROWSER_KEY');
+        await page.locator('[name="api-proxy"]').check();
+        await page.locator('[name="global-prompt"]').fill('新的原生语气附加提示');
+        await page.locator('[data-action="save-api"]').click();
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().detail.includes('World原生连接已保存'));
+        const evidence = await page.evaluate(() => ({
+          settings: window.WORLD_ENGINE_API.getSettings(true),
+          manualWorldCalls: window.__worldCalls,
+          worldAbortCalls: window.__worldAbortCalls,
+          worldStateWrites: window.__worldStateWrites,
+        }));
+        assert.equal(evidence.settings.apiUrl, 'https://new-host.invalid/v1/chat/completions');
+        assert.equal(evidence.settings.model, 'new-model');
+        assert.equal(evidence.settings.apiKey, 'NEW_SECRET_BROWSER_KEY');
+        assert.equal(evidence.settings.connectionMode, 'proxy');
+        assert.equal(evidence.settings.tonePrompt, '新的原生语气附加提示');
+        for (const key of ['evolveMode', 'engineEnabled', 'syncToChat', 'injectionEnabled']) {
+          assert.equal(evidence.settings[key], before[key], key);
+        }
+        assert.deepEqual(evidence.manualWorldCalls, []);
+        assert.equal(evidence.worldAbortCalls, 0);
+        assert.deepEqual(evidence.worldStateWrites, []);
       } finally { await page.close(); }
     });
 
@@ -3177,6 +3521,12 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         await runAcceptedReply(page);
         await waitForSettled(page, 'done');
         await page.evaluate(async () => { await window.__emit('chat_loaded'); });
+        await page.evaluate(() => {
+          window.MVUDoctorWorldbookBridgeStatus = {
+            status: 'missing', ready: false, chatId: 'chat-a',
+            detail: 'WORLD_BOOK_REPORT_SENTINEL', at: '2026-08-30T00:00:00.000Z',
+          };
+        });
         await page.locator('#mvu-ref-launcher').click();
         await page.locator('[data-action="export"]').click();
         await page.waitForFunction(() => window.__downloads.length === 1);
@@ -3191,6 +3541,10 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
         assert.deepEqual(report.api, { configured: true, excluded: true });
         assert.equal(report.doctorSettings.maxTokens, 12000);
         assert.equal(report.runtime.diagnosticPersistence.ok, true);
+        assert.deepEqual(report.worldbookBridge, {
+          status: 'missing', ready: false, chatId: 'chat-a',
+          detail: 'WORLD_BOOK_REPORT_SENTINEL', at: '2026-08-30T00:00:00.000Z',
+        });
         assert.ok(report.runtime.runs.some((run) => run.result?.profile?.initialRaw));
         assert.equal(report.world.blackbox.secretAssets[0], '暗线账本');
         assert.equal(report.world.model, '剧情内部模型字段');
@@ -3331,11 +3685,13 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           stages: window.__stages,
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+          worldAbortCalls: window.__worldAbortCalls,
         }));
         assert.equal(evidence.checkpoint.status, 'cancelled');
         assert.equal(evidence.runtime.phase, 'cancelled');
         assert.equal(evidence.stages.filter((stage) => stage === 'profile').length, 1);
         assert.equal(evidence.stages.filter((stage) => stage === 'world').length, 0);
+        assert.equal(evidence.worldAbortCalls, 0);
       } finally { await page.close(); }
     });
 
@@ -3383,7 +3739,7 @@ test('0.8.9 reference runtime browser smoke', { timeout: 180000 }, async (t) => 
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
         }));
         assert.equal(Object.keys(evidence.profiles).length, 1);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile', 'world']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.runtime.lastResult.ok, true);
       } finally { await page.close(); }
     });

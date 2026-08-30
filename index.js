@@ -2,10 +2,53 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const VERSION = '0.8.9-reference-baseline';
+  const VERSION = '0.9.0';
   const WORLD_VERSION = '3.0.2';
   const WORLD_GLOBALS = ['WORLD_ENGINE_STORE', 'WORLD_ENGINE_CORE', 'WORLD_ENGINE_API'];
   const WORLD_SETTINGS_KEY = 'world_engine_settings';
+  const WORLD_BOOK_INITIALIZER = Symbol.for('mvu-doctor.native-worldbook-initializer');
+  const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
+  const WORLD_DIALOGUE_FILTER_BRIDGE = Symbol.for('mvu-doctor.native-world-dialogue-filter');
+  const MVU_DIALOGUE_FILTERS = [
+    '/<UpdateVariable>[\\s\\S]*?<\\/UpdateVariable>/gi',
+    '/<UpdateVariable>[\\s\\S]*$/i',
+  ];
+  let worldbookInitialization = { chatId: '', promise: null, attempt: 0 };
+  let worldbookAttemptSerial = 0;
+
+  function filterMvuMechanismBlocks(value) {
+    return String(value ?? '')
+      .replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/gi, '')
+      .replace(/<UpdateVariable>[\s\S]*$/i, '');
+  }
+
+  function installWorldDialogueFilterBridge() {
+    const core = window.WORLD_ENGINE_CORE;
+    if (!core?.filterDialogue) return false;
+    if (core[WORLD_DIALOGUE_FILTER_BRIDGE]) return true;
+    const original = core.filterDialogue.bind(core);
+    core.filterDialogue = function(value, settings, onError) {
+      const withoutMechanismBlocks = filterMvuMechanismBlocks(value);
+      return filterMvuMechanismBlocks(original(withoutMechanismBlocks, settings, onError));
+    };
+    Object.defineProperty(core, WORLD_DIALOGUE_FILTER_BRIDGE, {
+      value: { original }, configurable: false,
+    });
+    return true;
+  }
+
+  function publishWorldbookBridgeStatus(status, detail = '', expectedChatId = '') {
+    const currentChatId = String(window.WORLD_ENGINE_WORLDBOOK?.getChatId?.() || '');
+    if (expectedChatId && currentChatId !== expectedChatId) return false;
+    window.MVUDoctorWorldbookBridgeStatus = {
+      status,
+      ready: status === 'ready',
+      chatId: currentChatId,
+      detail: String(detail || ''),
+      at: new Date().toISOString(),
+    };
+    return true;
+  }
 
   function context() {
     try { return window.SillyTavern?.getContext?.() || null; }
@@ -99,7 +142,7 @@
     }
   }
 
-  function configureWorldSettings(ctx) {
+  function migrateWorldSettings(ctx) {
     const store = window.WORLD_ENGINE_STORE;
     const api = window.WORLD_ENGINE_API;
     if (!store?.getItem || !store?.setItem || !api?.getSettings) return;
@@ -107,26 +150,253 @@
     const legacyApi = old.api && typeof old.api === 'object' ? old.api : {};
     let current = {};
     try { current = JSON.parse(store.getItem(WORLD_SETTINGS_KEY) || '{}'); } catch { current = {}; }
+    const migrationKey = 'mvu_doctor_native_world_owner_v1';
+    const migrated = store.getItem(migrationKey) === 'done';
+    const memoryMigrationKey = 'mvu_doctor_native_memory_owner_v1';
+    const memoryMigrationState = store.getItem(memoryMigrationKey);
+    const memoryMigrated = memoryMigrationState === 'done';
+    const forced08Signature = current.evolveMode === 'manual'
+      && current.engineEnabled === true
+      && current.injectIntoPrompt === true
+      && current.syncToChat === true
+      && current.autoBackup === true;
+    const legacyMemoryProvenance = memoryMigrationState === 'pending'
+      || (!migrated && forced08Signature);
+    if (!memoryMigrated && !migrated && forced08Signature) {
+      // Keep independent proof before changing the World signature.  If the
+      // Memory API is temporarily unavailable, a later boot can still finish
+      // this migration instead of silently stranding disabled/manual state.
+      store.setItem(memoryMigrationKey, 'pending');
+    }
+    let evolveFilterRegex = String(current.evolveFilterRegex || '');
+    const worldCore = window.WORLD_ENGINE_CORE;
+    const filterDialogue = worldCore?.[WORLD_DIALOGUE_FILTER_BRIDGE]?.original || worldCore?.filterDialogue;
+    if (typeof filterDialogue === 'function') {
+      const nonMandatoryLines = evolveFilterRegex.split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter((line) => line && !MVU_DIALOGUE_FILTERS.includes(line));
+      const customFilterRegex = nonMandatoryLines.join('\n');
+      const probes = [
+        {
+          expected: '前文后文',
+          sample: '前文<UpdateVariable>MVU_DOCTOR_CLOSED_OUTER_090<JSONPatch>MVU_DOCTOR_CLOSED_INNER_090</JSONPatch></UpdateVariable>后文',
+        },
+        {
+          expected: '前文',
+          sample: '前文<UpdateVariable>MVU_DOCTOR_OPEN_OUTER_090<JSONPatch>MVU_DOCTOR_OPEN_INNER_090',
+        },
+      ];
+      const requiresMandatoryPrefix = probes.some((probe) => {
+        const filtered = filterDialogue(probe.sample, { ...current, evolveFilterRegex: customFilterRegex });
+        // Removing only the tag spelling or the nested JSONPatch is
+        // insufficient: Analysis/other payloads would still contaminate
+        // World.  The complete outer block must disappear exactly.
+        return filtered !== probe.expected;
+      });
+      // Mandatory closed-before-open order must precede user filters.  An open
+      // rule placed first would consume the rest of a valid closed block.  The
+      // exact lines are de-duplicated on every migration pass, so settings do
+      // not grow when a broad user rule strips only tags.
+      evolveFilterRegex = [
+        ...(requiresMandatoryPrefix ? MVU_DIALOGUE_FILTERS : []),
+        ...nonMandatoryLines,
+      ].join('\n');
+    }
     const next = {
       ...current,
-      ...(current.apiUrl || !legacyApi.endpoint ? {} : {
+      ...(!current.apiUrl && legacyApi.endpoint ? {
         apiUrl: normalizeSharedEndpoint(legacyApi.endpoint),
         apiKey: String(legacyApi.apiKey || ''),
         model: String(legacyApi.model || 'gpt-3.5-turbo'),
         connectionMode: 'proxy',
-      }),
-      engineEnabled: true,
-      injectIntoPrompt: true,
-      syncToChat: true,
-      autoBackup: true,
-      // The original auto listener remains installed but becomes a no-op.  The
-      // accepted-final orchestrator calls WORLD_ENGINE.manualEvolve itself after
-      // MVU and profile completion.
-      evolveMode: 'manual',
+      } : {}),
+      // 0.8.x wrote this exact five-field signature on every boot.  Only that
+      // signature is migrated; any deviation is treated as a user-owned World
+      // setting and remains untouched.
+      ...(!migrated && forced08Signature
+        ? { evolveMode: 'auto', syncToChat: false, autoBackup: false } : {}),
+      evolveFilterRegex,
     };
-    store.setItem(WORLD_SETTINGS_KEY, JSON.stringify(next));
-    api.getSettings(true);
-    try { window.MEMORY_ENGINE_SETTINGS?.patchSettings?.({ engineEnabled: false, evolveMode: 'manual' }); } catch { /* optional original subsystem */ }
+    if (JSON.stringify(next) !== JSON.stringify(current)) {
+      store.setItem(WORLD_SETTINGS_KEY, JSON.stringify(next));
+      api.getSettings(true);
+    }
+    if (!memoryMigrated && legacyMemoryProvenance) {
+      // 0.8.x also disabled the bundled Memory Engine on every boot.  Restore
+      // only that exact forced pair, and only while the World signature above
+      // proves this is our legacy write rather than a user-owned preference.
+      try {
+        const memory = window.MEMORY_ENGINE_SETTINGS;
+        if (!memory?.getSettings || !memory?.patchSettings) throw new Error('原版Memory设置接口尚未就绪');
+        let memorySettings = memory.getSettings(true);
+        if (memorySettings?.engineEnabled === false && memorySettings?.evolveMode === 'manual') {
+          memory.patchSettings({ engineEnabled: true, evolveMode: 'auto' });
+          memorySettings = memory.getSettings(true);
+          if (memorySettings?.engineEnabled !== true || memorySettings?.evolveMode !== 'auto') {
+            throw new Error('原版Memory设置写入后未能读回');
+          }
+        }
+        store.setItem(memoryMigrationKey, 'done');
+      } catch (error) {
+        console.warn('[MVU Doctor] 旧版Memory强制设置迁移尚未完成；下次启动将重试', error);
+      }
+    }
+    if (!migrated) store.setItem(migrationKey, 'done');
+  }
+
+  async function initializeWorldbookSelectionOnce() {
+    const worldbook = window.WORLD_ENGINE_WORLDBOOK;
+    if (!worldbook?.getChatId || !worldbook?.hasSelection
+      || !worldbook?.loadCurrentEntries || !worldbook?.saveSelectedIds) return false;
+    const currentChatId = String(worldbook.getChatId() || '');
+    if (!currentChatId || currentChatId === 'default' || worldbook.hasSelection('world')) return false;
+    const entries = await worldbook.loadCurrentEntries();
+    if (String(worldbook.getChatId() || '') !== currentChatId || worldbook.hasSelection('world')) return false;
+    if (!Array.isArray(entries) || entries.length === 0) return false;
+    worldbook.saveSelectedIds(entries.filter((entry) => !entry.disabled).map((entry) => entry.id), 'world');
+    return true;
+  }
+
+  function ensureWorldbookSelectionForCurrentChat(retries = 0) {
+    const worldbook = window.WORLD_ENGINE_WORLDBOOK;
+    const currentChatId = String(worldbook?.getChatId?.() || '');
+    if (!currentChatId || currentChatId === 'default') return Promise.resolve(false);
+    if (worldbookInitialization.chatId !== currentChatId) {
+      worldbookInitialization = { chatId: currentChatId, promise: null, attempt: 0 };
+    }
+    if (worldbookInitialization.chatId === currentChatId && worldbookInitialization.promise) {
+      return worldbookInitialization.promise;
+    }
+    const promise = (async () => {
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, attempt * 200));
+        if (String(worldbook?.getChatId?.() || '') !== currentChatId) return false;
+        try {
+          if (await initializeWorldbookSelectionOnce()) return true;
+          if (worldbook?.hasSelection?.('world')) return true;
+        } catch (error) {
+          if (attempt >= retries) throw error;
+        }
+      }
+      return false;
+    })();
+    const attempt = ++worldbookAttemptSerial;
+    worldbookInitialization = { chatId: currentChatId, promise, attempt };
+    void promise.then((ready) => {
+      if (!ready && worldbookInitialization.chatId === currentChatId
+        && worldbookInitialization.attempt === attempt
+        && worldbookInitialization.promise === promise) worldbookInitialization.promise = null;
+    }, () => {
+      if (worldbookInitialization.chatId === currentChatId
+        && worldbookInitialization.attempt === attempt
+        && worldbookInitialization.promise === promise) worldbookInitialization.promise = null;
+    });
+    return promise;
+  }
+
+  function installWorldbookSelectionInitializer(ctx) {
+    if (window[WORLD_BOOK_INITIALIZER]) return;
+    const eventSource = ctx?.eventSource;
+    if (!eventSource?.on) return;
+    const run = () => setTimeout(() => {
+      const nextChatId = String(window.WORLD_ENGINE_WORLDBOOK?.getChatId?.() || '');
+      if (worldbookInitialization.chatId !== nextChatId) {
+        worldbookInitialization = { chatId: nextChatId, promise: null, attempt: 0 };
+      }
+      publishWorldbookBridgeStatus('pending', '正在读取当前聊天的内嵌世界书选择', nextChatId);
+      const selectionPromise = ensureWorldbookSelectionForCurrentChat(2);
+      const scheduledAttempt = worldbookInitialization.attempt;
+      const ownsCurrentAttempt = () => String(window.WORLD_ENGINE_WORLDBOOK?.getChatId?.() || '') === nextChatId
+        && worldbookInitialization.chatId === nextChatId
+        && worldbookInitialization.attempt === scheduledAttempt
+        && (worldbookInitialization.promise === selectionPromise || worldbookInitialization.promise === null);
+      void selectionPromise.then((ready) => {
+        if (!ownsCurrentAttempt()) return;
+        publishWorldbookBridgeStatus(
+          ready ? 'ready' : 'pending',
+          ready ? '本聊天的原版World世界书选择已就绪' : '尚未读取到可选择的内嵌世界书；首次推演前会再次尝试',
+          nextChatId,
+        );
+      }).catch((error) => {
+        if (!ownsCurrentAttempt()) return;
+        publishWorldbookBridgeStatus('pending', `原版世界书预热失败：${error?.message || error}`, nextChatId);
+        console.warn('[MVU Doctor] 原版世界书首次选择初始化失败，将在本聊天首次推演前重试', error);
+      });
+    }, 0);
+    const eventName = ctx?.event_types?.CHAT_LOADED || ctx?.eventTypes?.CHAT_LOADED || 'chat_loaded';
+    eventSource.on(eventName, run);
+    Object.defineProperty(window, WORLD_BOOK_INITIALIZER, { value: { eventName }, configurable: false });
+    run();
+  }
+
+  function installWorldEvolutionDiagnosisBarrier() {
+    const evolution = window.WORLD_ENGINE_EVOLUTION;
+    if (!evolution?.evolve) return false;
+    if (evolution[WORLD_EVOLUTION_BARRIER]) return true;
+    const original = evolution.evolve.bind(evolution);
+    evolution.evolve = async function(state, userMsg, aiMsg, opts) {
+      const evolutionChatId = String(window.WORLD_ENGINE_WORLDBOOK?.getChatId?.() || '');
+      const stillEvolutionChat = () => String(window.WORLD_ENGINE_WORLDBOOK?.getChatId?.() || '') === evolutionChatId;
+      // The native settings UI remains user-owned and may be edited after
+      // boot.  Keep the same mature Story block filter at this single runtime
+      // boundary so a deleted setting cannot reintroduce raw MVU mechanism
+      // text into World; persisted World settings and scheduling stay intact.
+      const safeAiMsg = filterMvuMechanismBlocks(aiMsg);
+      const hasDialogueText = Boolean(opts && Object.prototype.hasOwnProperty.call(opts, 'dialogueText'));
+      const safeOpts = hasDialogueText
+        ? { ...opts, dialogueText: filterMvuMechanismBlocks(opts.dialogueText) }
+        : opts;
+      try {
+        let ready = await ensureWorldbookSelectionForCurrentChat(2);
+        const worldbook = window.WORLD_ENGINE_WORLDBOOK;
+        const currentChatId = String(worldbook?.getChatId?.() || '');
+        if (currentChatId !== evolutionChatId) return false;
+        if (!ready && currentChatId && currentChatId !== 'default'
+          && !worldbook?.hasSelection?.('world')) {
+          // A CHAT_LOADED prewarm may have completed before the embedded book
+          // became readable.  Its resolved false Promise must not make the
+          // first actual World turn skip initialization.
+          if (worldbookInitialization.chatId === currentChatId) {
+            worldbookInitialization.promise = null;
+          }
+          ready = await ensureWorldbookSelectionForCurrentChat(3);
+          if (!stillEvolutionChat()) return false;
+        }
+        publishWorldbookBridgeStatus(
+          ready ? 'ready' : 'missing',
+          ready
+            ? '本聊天的原版World世界书选择已就绪'
+            : '首次推演仍未读取到内嵌世界书选择；World将按原生空选择语义继续，本轮需在诊断页核查',
+          evolutionChatId,
+        );
+        if (!ready) console.warn('[MVU Doctor] 首次推演未能取得内嵌世界书选择；已记录到Doctor诊断状态');
+      } catch (error) {
+        if (!stillEvolutionChat()) return false;
+        publishWorldbookBridgeStatus('error', `首次推演世界书初始化失败：${error?.message || error}`, evolutionChatId);
+        console.warn('[MVU Doctor] 本轮世界书首次选择初始化失败；原版World将按自己的空选择语义继续', error);
+      }
+      if (!stillEvolutionChat()) return false;
+      try {
+        const receipt = await window.MVUDoctorProfileEngine?.waitForWorldDiagnosis?.({
+          aiMsg: safeAiMsg,
+          dialogueText: safeOpts?.dialogueText,
+        });
+        if (!stillEvolutionChat()) return false;
+        if (receipt?.status === 'stale') return false;
+      } catch (error) {
+        if (!stillEvolutionChat()) return false;
+        // A bridge fault must not permanently kill the mature World lifecycle.
+        // The native dialogue filter still prevents MVU mechanism blocks from
+        // entering the evolution prompt, so continuing is the recoverable path.
+        console.warn('[MVU Doctor] 变量确认屏障异常；World按已过滤正文继续', error);
+      }
+      if (!stillEvolutionChat()) return false;
+      return original(state, userMsg, safeAiMsg, safeOpts);
+    };
+    Object.defineProperty(evolution, WORLD_EVOLUTION_BARRIER, {
+      value: { original }, configurable: false,
+    });
+    return true;
   }
 
   function assertWorldContract() {
@@ -160,41 +430,6 @@
       ].every((kind) => kind === 'function')`);
     } catch { compatible = false; }
     if (!compatible) throw new Error('已安装的故事神谕缺少1.35.4桥接所需函数；拒绝用未知实现冒充冻结原件');
-  }
-
-  function synchronizeSharedApiSettings(ctx) {
-    const store = window.WORLD_ENGINE_STORE;
-    const api = window.WORLD_ENGINE_API;
-    if (!ctx?.extensionSettings || !store?.getItem || !store?.setItem || !api?.getSettings) return;
-    const world = api.getSettings(true) || {};
-    const story = ctx.extensionSettings.storyOracle ||= {};
-    const legacy = oldDoctorSettings(ctx)?.api || {};
-    const worldReady = Boolean(world.apiUrl && world.model);
-    const storyReady = Boolean(story.endpoint && story.model);
-    const endpoint = normalizeSharedEndpoint(worldReady ? world.apiUrl : (storyReady ? story.endpoint : legacy.endpoint));
-    const model = String(worldReady ? world.model : (storyReady ? story.model : legacy.model || '')).trim();
-    const apiKey = String(worldReady ? world.apiKey || '' : (storyReady ? story.apiKey || '' : legacy.apiKey || ''));
-    const connectionMode = worldReady ? world.connectionMode : (story.directViaBackend === false ? 'direct' : 'proxy');
-    if (!endpoint || !model) return;
-    let current = {};
-    try { current = JSON.parse(store.getItem(WORLD_SETTINGS_KEY) || '{}'); } catch { current = {}; }
-    store.setItem(WORLD_SETTINGS_KEY, JSON.stringify({
-      ...current, apiUrl: endpoint, model, apiKey, connectionMode,
-      engineEnabled: true, injectIntoPrompt: true, syncToChat: true, evolveMode: 'manual',
-    }));
-    api.getSettings(true);
-    Object.assign(story, {
-      mode: 'direct', endpoint, model, apiKey,
-      directViaBackend: connectionMode === 'proxy', directRawUrl: true, autoDiagnoseEnabled: false,
-    });
-    ctx.saveSettingsDebounced?.();
-    const worldReadback = api.getSettings(true) || {};
-    if (normalizeSharedEndpoint(worldReadback.apiUrl) !== endpoint || String(worldReadback.model || '') !== model
-      || String(worldReadback.apiKey || '') !== apiKey || worldReadback.connectionMode !== connectionMode
-      || normalizeSharedEndpoint(story.endpoint) !== endpoint || String(story.model || '') !== model
-      || String(story.apiKey || '') !== apiKey || story.directRawUrl !== true) {
-      throw new Error('Story Oracle与World Engine的共用API同步后读回不一致');
-    }
   }
 
   function exposeBootStatus(status, detail = '') {
@@ -232,7 +467,9 @@
     // IndexedDB mirror, loaded every world module and bound the host lifecycle.
     await waitFor(() => Boolean(window.WORLD_ENGINE?.manualEvolve), '独立世界引擎完整运行层', 60000);
     assertWorldContract();
-    configureWorldSettings(ctx || context());
+    migrateWorldSettings(ctx || context());
+    installWorldDialogueFilterBridge();
+    installWorldbookSelectionInitializer(ctx || context());
 
     const storyAlreadyLoaded = Boolean(window.StoryOracleAPI);
     if (!storyAlreadyLoaded) {
@@ -243,11 +480,10 @@
     await waitFor(() => Boolean(window.StoryOracleAPI?.unsafe?.eval), '故事神谕完整运行层', 60000);
     assertStoryContract();
     seedStoryOracleSettings(ctx || context());
-    synchronizeSharedApiSettings(ctx || context());
-
     await loadScript(`${root}/profile-engine.js`, 'mvu-ref-profile-entry');
     await waitFor(() => Boolean(window.MVUDoctorProfileEngine?.ready), '人物档案填表引擎');
-    window.MVUDoctorProfileEngine.installWorldContextBridge?.();
+    window.MVUDoctorProfileEngine.installWorldPublicProjection?.();
+    installWorldEvolutionDiagnosisBarrier();
 
     exposeBootStatus('ready');
     console.info(`[MVU Doctor] ${VERSION} 成熟组件适配链已就绪`);

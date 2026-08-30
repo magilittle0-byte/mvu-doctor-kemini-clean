@@ -12,15 +12,377 @@ test('runtime loads only pinned reference engines and the new profile adapter', 
   assert.match(source, /vendor\/story-oracle-v1\.35\.4\/index\.js/);
   assert.match(source, /vendor\/world-engine-v3\.0\.2\/world-engine\.js/);
   assert.match(source, /profile-engine\.js/);
-  assert.match(source, /window\.WORLD_ENGINE\?\.manualEvolve/);
+  assert.match(source, /initializeWorldbookSelectionOnce/);
+  assert.match(source, /installWorldbookSelectionInitializer/);
+  assert.doesNotMatch(source, /synchronizeSharedApiSettings|evolveMode:\s*'manual'|engineEnabled:\s*true,\s*injectIntoPrompt/);
   assert.match(source, /autoDiagnoseEnabled !== false/);
   assert.doesNotMatch(source, /legacy\/0\.7\.5|embeddedCore|advanceWorld|applyWorldProposal|auditVariables/);
+});
+
+test('native World bridge installs only the MVU filter, diagnosis barrier, and single-flight worldbook initializer', () => {
+  const index = read('index.js');
+  assert.match(index, /function filterMvuMechanismBlocks\(value\)/);
+  assert.match(index, /function installWorldDialogueFilterBridge\(\)/);
+  assert.match(index, /function publishWorldbookBridgeStatus\(status, detail = '', expectedChatId = ''\)/);
+  assert.match(index, /window\.MVUDoctorWorldbookBridgeStatus = \{/);
+  const boot = index.slice(index.indexOf('async function boot'), index.lastIndexOf('boot().catch'));
+  assert.ok(boot.indexOf('migrateWorldSettings(') < boot.indexOf('installWorldDialogueFilterBridge()'));
+  const migration = index.slice(index.indexOf('function migrateWorldSettings'), index.indexOf('async function initializeWorldbookSelectionOnce'));
+  assert.match(migration, /forced08Signature/);
+  assert.match(migration, /worldCore\?\.\[WORLD_DIALOGUE_FILTER_BRIDGE\]\?\.original \|\| worldCore\?\.filterDialogue/);
+  assert.match(migration, /filterDialogue\(probe\.sample, \{ \.\.\.current, evolveFilterRegex: customFilterRegex \}\)/);
+  assert.match(migration, /filtered !== probe\.expected/);
+  assert.match(migration, /MVU_DOCTOR_CLOSED_OUTER_090/);
+  assert.match(migration, /MVU_DOCTOR_CLOSED_INNER_090/);
+  assert.match(migration, /MVU_DOCTOR_OPEN_OUTER_090/);
+  assert.match(migration, /MVU_DOCTOR_OPEN_INNER_090/);
+  assert.match(migration, /\.\.\.\(requiresMandatoryPrefix \? MVU_DIALOGUE_FILTERS : \[\]\)/);
+  assert.match(migration, /\.\.\.nonMandatoryLines/);
+  assert.ok(index.includes("'/<UpdateVariable>[\\\\s\\\\S]*?<\\\\/UpdateVariable>/gi'"));
+  assert.ok(index.includes("'/<UpdateVariable>[\\\\s\\\\S]*$/i'"));
+
+  const worldbook = index.slice(index.indexOf('function ensureWorldbookSelectionForCurrentChat'), index.indexOf('function installWorldbookSelectionInitializer'));
+  assert.match(worldbook, /worldbookInitialization\.chatId === currentChatId && worldbookInitialization\.promise/);
+  assert.match(worldbook, /return worldbookInitialization\.promise/);
+  assert.match(worldbook, /worldbookInitialization = \{ chatId: currentChatId, promise, attempt \}/);
+  assert.match(worldbook, /worldbookInitialization\.attempt === attempt/);
+  assert.match(worldbook, /if \(!ready && worldbookInitialization\.chatId === currentChatId/);
+  assert.match(worldbook, /worldbookInitialization\.promise = null/);
+
+  const barrier = index.slice(index.indexOf('function installWorldEvolutionDiagnosisBarrier'), index.indexOf('function assertWorldContract'));
+  assert.match(barrier, /const original = evolution\.evolve\.bind\(evolution\)/);
+  assert.match(barrier, /let ready = await ensureWorldbookSelectionForCurrentChat\(2\)/);
+  assert.match(barrier, /worldbookInitialization\.promise = null/);
+  assert.match(barrier, /ready = await ensureWorldbookSelectionForCurrentChat\(3\)/);
+  assert.match(barrier, /const stillEvolutionChat = \(\) =>/);
+  assert.match(barrier, /if \(!stillEvolutionChat\(\)\) return false/);
+  assert.match(barrier, /publishWorldbookBridgeStatus\(/);
+  assert.match(barrier, /const safeAiMsg = filterMvuMechanismBlocks\(aiMsg\)/);
+  assert.match(barrier, /dialogueText: filterMvuMechanismBlocks\(opts\.dialogueText\)/);
+  assert.match(barrier, /await window\.MVUDoctorProfileEngine\?\.waitForWorldDiagnosis\?\./);
+  assert.match(barrier, /if \(receipt\?\.status === 'stale'\) return false/);
+  assert.match(barrier, /return original\(state, userMsg, safeAiMsg, safeOpts\)/);
+
+  const profile = read('profile-engine.js');
+  const gate = profile.slice(profile.indexOf('function diagnosisCheckpointSettled'), profile.indexOf('const runtime ='));
+  const fixedFilter = profile.slice(profile.indexOf('function worldFilteredDialogue'), profile.indexOf('function worldGateTargetMatches'));
+  assert.match(fixedFilter, /replace\(\/<UpdateVariable>/);
+  assert.match(fixedFilter, /<\\\/UpdateVariable>\/gi, ''\)/);
+  assert.match(fixedFilter, /<UpdateVariable>\[\\s\\S\]\*\$\/i, ''\)/);
+  assert.match(gate, /\['failed', 'stale', 'cancelled', 'complete'\]/);
+  assert.match(gate, /text\(checkpoint\.nextStep\) !== 'diagnosis'/);
+  assert.match(gate, /if \(!worldGateTargetMatches\(live, expected\)\) return \{ ok: false, status: 'stale' \}/);
+  assert.match(gate, /status: checkpoint\.status === 'failed' \? 'diagnosis-failed' : 'diagnosis-complete'/);
+  assert.match(gate, /let bindingGenerationKey = ''/);
+  assert.match(gate, /checkpointGenerationKey === bindingGenerationKey/);
+  assert.match(gate, /activeGenerationKey !== bindingGenerationKey/);
+  assert.match(gate, /active\?\.status === 'processing'/);
+  assert.match(gate, /missingHandoffPolls >= 20/);
+  assert.match(gate, /status: 'diagnosis-handoff-missing'/);
+  assert.match(gate, /setTimeout\(resolve, 100\)/);
+  assert.match(gate, /worldGateScopeMatches\(runtime\.manualDiagnosisBinding, expected\)/);
+  assert.match(gate, /manualDiagnosisOwns/);
+  const manual = profile.slice(profile.indexOf('async function runManualDiagnosisAndResume'), profile.indexOf('function cancelCurrentTaskFromUi'));
+  assert.match(manual, /token: \+\+runtime\.manualDiagnosisSerial/);
+  assert.match(manual, /runtime\.manualDiagnosisBinding = deepClone\(manualBinding\)/);
+  assert.match(manual, /runtime\.manualDiagnosisBinding\?\.token === manualBinding\.token/);
+  assert.match(profile, /waitForWorldDiagnosis,\s*\n/);
+});
+
+test('native core filtering keeps user filters while stripping MVU blocks before and after backfill filtering', () => {
+  const index = read('index.js');
+  const filter = index.slice(index.indexOf('function filterMvuMechanismBlocks'), index.indexOf('function installWorldDialogueFilterBridge'));
+  const bridge = index.slice(index.indexOf('function installWorldDialogueFilterBridge'), index.indexOf('function publishWorldbookBridgeStatus'));
+  const calls = [];
+  const sandbox = {
+    window: {
+      WORLD_ENGINE_CORE: {
+        filterDialogue(value, settings) {
+          calls.push({ value: String(value), settings: structuredClone(settings) });
+          const userFiltered = String(value).replace(/USER_FILTER_SENTINEL/gu, '');
+          // The post-filter strip also protects against a native/custom filter
+          // accidentally reintroducing a mechanism block in its return value.
+          return `${userFiltered}<UpdateVariable><JSONPatch>REINTRODUCED</JSONPatch></UpdateVariable>`;
+        },
+      },
+    },
+  };
+  vm.runInNewContext(`
+    const WORLD_DIALOGUE_FILTER_BRIDGE = Symbol.for('mvu-doctor.native-world-dialogue-filter');
+    ${filter}
+    ${bridge}
+    this.installWorldDialogueFilterBridge = installWorldDialogueFilterBridge;
+  `, sandbox);
+  assert.equal(sandbox.installWorldDialogueFilterBridge(), true);
+  assert.equal(sandbox.installWorldDialogueFilterBridge(), true, 'bridge installation is idempotent');
+  const settings = { evolveFilterRegex: '/USER_FILTER_SENTINEL/gu' };
+  const output = sandbox.window.WORLD_ENGINE_CORE.filterDialogue(
+    '公开A<UpdateVariable><JSONPatch>PRIVATE</JSONPatch></UpdateVariable>USER_FILTER_SENTINEL公开B',
+    settings,
+  );
+  assert.equal(output, '公开A公开B');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].value, '公开AUSER_FILTER_SENTINEL公开B');
+  assert.deepEqual(calls[0].settings, settings);
+});
+
+test('native World retries a false prewarm once per chat and filters MVU mechanism blocks in memory', async () => {
+  const index = read('index.js');
+  const filter = index.slice(index.indexOf('function filterMvuMechanismBlocks'), index.indexOf('function publishWorldbookBridgeStatus'));
+  const status = index.slice(index.indexOf('function publishWorldbookBridgeStatus'), index.indexOf('function context'));
+  const worldbook = index.slice(index.indexOf('async function initializeWorldbookSelectionOnce'), index.indexOf('function installWorldbookSelectionInitializer'));
+  const barrier = index.slice(index.indexOf('function installWorldEvolutionDiagnosisBarrier'), index.indexOf('function assertWorldContract'));
+
+  const makeHarness = (availableAt, options = {}) => {
+    const calls = { loads: 0, saves: 0, waits: [], originals: [] };
+    let selected = false;
+    let activeChat = 'chat-a';
+    const sandbox = {
+      console,
+      setTimeout: (resolve) => { resolve(); return 0; },
+      window: {
+        WORLD_ENGINE_WORLDBOOK: {
+          getChatId: () => activeChat,
+          hasSelection: () => selected,
+          loadCurrentEntries: async () => {
+            calls.loads += 1;
+            if (typeof options.loadCurrentEntries === 'function') {
+              return options.loadCurrentEntries(calls.loads);
+            }
+            return calls.loads >= availableAt ? [{ id: 'embedded-1', disabled: false }] : [];
+          },
+          saveSelectedIds: (ids, scope) => {
+            calls.saves += 1;
+            calls.selected = { ids: [...ids], scope };
+            selected = true;
+          },
+        },
+        WORLD_ENGINE_API: {
+          // Simulate the user deleting the persistent filter in the same session.
+          getSettings: () => ({ evolveFilterRegex: '' }),
+        },
+        MVUDoctorProfileEngine: {
+          waitForWorldDiagnosis: async (input) => {
+            calls.waits.push(structuredClone(input));
+            if (typeof options.waitForWorldDiagnosis === 'function') {
+              return options.waitForWorldDiagnosis(input);
+            }
+            return { ok: true, status: 'diagnosis-complete' };
+          },
+        },
+        WORLD_ENGINE_EVOLUTION: {
+          async evolve(...args) {
+            calls.originals.push(structuredClone(args));
+            return 'native-evolved';
+          },
+        },
+      },
+    };
+    vm.runInNewContext(`
+      const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
+      let worldbookInitialization = { chatId: '', promise: null, attempt: 0 };
+      let worldbookAttemptSerial = 0;
+      ${filter}
+      ${status}
+      ${worldbook}
+      ${barrier}
+      this.ensureWorldbookSelectionForCurrentChat = ensureWorldbookSelectionForCurrentChat;
+      this.installWorldEvolutionDiagnosisBarrier = installWorldEvolutionDiagnosisBarrier;
+    `, sandbox);
+    return {
+      sandbox,
+      calls,
+      setChat(nextChat) { activeChat = String(nextChat); },
+    };
+  };
+
+  const ready = makeHarness(7);
+  const prewarmA = ready.sandbox.ensureWorldbookSelectionForCurrentChat(2);
+  const prewarmB = ready.sandbox.ensureWorldbookSelectionForCurrentChat(2);
+  assert.equal(prewarmA, prewarmB, 'same-chat prewarm must share one Promise');
+  assert.equal(await prewarmA, false);
+  assert.equal(ready.calls.loads, 3);
+  assert.equal(ready.sandbox.installWorldEvolutionDiagnosisBarrier(), true);
+  const result = await ready.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve(
+    { round: 1 },
+    '用户行动保持原样',
+    '前文<UpdateVariable><JSONPatch>SECRET_AI_PATCH</JSONPatch></UpdateVariable>后文',
+    { dialogueText: '上下文<UpdateVariable><JSONPatch>SECRET_DIALOGUE_PATCH</JSONPatch>', keep: 'native-option' },
+  );
+  assert.equal(result, 'native-evolved');
+  assert.equal(ready.calls.loads, 7, 'a resolved false prewarm must be retried by the first evolve gate');
+  assert.deepEqual(ready.calls.selected, { ids: ['embedded-1'], scope: 'world' });
+  assert.equal(ready.sandbox.window.MVUDoctorWorldbookBridgeStatus.status, 'ready');
+  assert.equal(ready.calls.waits[0].aiMsg, '前文后文');
+  assert.equal(ready.calls.waits[0].dialogueText, '上下文');
+  assert.equal(ready.calls.originals[0][1], '用户行动保持原样');
+  assert.equal(ready.calls.originals[0][2], '前文后文');
+  assert.equal(ready.calls.originals[0][3].dialogueText, '上下文');
+  assert.equal(ready.calls.originals[0][3].keep, 'native-option');
+
+  const missing = makeHarness(Number.POSITIVE_INFINITY);
+  assert.equal(await missing.sandbox.ensureWorldbookSelectionForCurrentChat(2), false);
+  missing.sandbox.installWorldEvolutionDiagnosisBarrier();
+  await missing.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve({}, '', '可见正文', {});
+  assert.equal(missing.sandbox.window.MVUDoctorWorldbookBridgeStatus.status, 'missing');
+  assert.equal(missing.sandbox.window.MVUDoctorWorldbookBridgeStatus.ready, false);
+  assert.match(missing.sandbox.window.MVUDoctorWorldbookBridgeStatus.detail, /未读取到内嵌世界书/u);
+
+  let releaseSecondEnsure;
+  let markSecondEnsureStarted;
+  const secondEnsureStarted = new Promise((resolve) => { markSecondEnsureStarted = resolve; });
+  const switchedDuringRetry = makeHarness(Number.POSITIVE_INFINITY, {
+    loadCurrentEntries: async (loadNumber) => {
+      if (loadNumber !== 4) return [];
+      markSecondEnsureStarted();
+      return new Promise((resolve) => { releaseSecondEnsure = resolve; });
+    },
+  });
+  switchedDuringRetry.sandbox.installWorldEvolutionDiagnosisBarrier();
+  const retryEvolution = switchedDuringRetry.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve({}, '', '旧聊天正文', {});
+  await secondEnsureStarted;
+  switchedDuringRetry.setChat('chat-b');
+  releaseSecondEnsure([]);
+  assert.equal(await retryEvolution, false);
+  assert.equal(switchedDuringRetry.calls.waits.length, 0);
+  assert.equal(switchedDuringRetry.calls.originals.length, 0, 'a chat switch during the second worldbook ensure must discard the old evolve');
+
+  let releaseDiagnosis;
+  let markDiagnosisStarted;
+  const diagnosisStarted = new Promise((resolve) => { markDiagnosisStarted = resolve; });
+  const switchedDuringDiagnosis = makeHarness(1, {
+    waitForWorldDiagnosis: async () => {
+      markDiagnosisStarted();
+      return new Promise((resolve) => { releaseDiagnosis = resolve; });
+    },
+  });
+  switchedDuringDiagnosis.sandbox.installWorldEvolutionDiagnosisBarrier();
+  const diagnosisEvolution = switchedDuringDiagnosis.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve({}, '', '旧聊天正文', {});
+  await diagnosisStarted;
+  switchedDuringDiagnosis.setChat('chat-b');
+  releaseDiagnosis({ ok: true, status: 'diagnosis-complete' });
+  assert.equal(await diagnosisEvolution, false);
+  assert.equal(switchedDuringDiagnosis.calls.originals.length, 0, 'a chat switch during diagnosis wait must discard the old evolve');
+});
+
+test('legacy settings migration repairs only the exact old Doctor signature and rejects tag-only filters', () => {
+  const index = read('index.js');
+  const functions = index.slice(index.indexOf('function oldDoctorSettings'), index.indexOf('async function initializeWorldbookSelectionOnce'));
+  const script = `
+    const PLUGIN_ID = 'mvu-doctor-kemini-clean';
+    const WORLD_SETTINGS_KEY = 'world_engine_settings';
+    const WORLD_DIALOGUE_FILTER_BRIDGE = Symbol.for('mvu-doctor.native-world-dialogue-filter');
+    const MVU_DIALOGUE_FILTERS = [
+      '/<UpdateVariable>[\\\\s\\\\S]*?<\\\\/UpdateVariable>/gi',
+      '/<UpdateVariable>[\\\\s\\\\S]*$/i',
+    ];
+    ${functions}
+    this.migrateWorldSettings = migrateWorldSettings;
+  `;
+  const makeHarness = ({ world = {}, marker = '', memory = { engineEnabled: false, evolveMode: 'manual' }, bridged = false } = {}) => {
+    const exactWorld = {
+      evolveMode: 'manual', engineEnabled: true, injectIntoPrompt: true,
+      syncToChat: true, autoBackup: true,
+      evolveFilterRegex: '/<\\/?UpdateVariable>/gi',
+      ...world,
+    };
+    const values = new Map([['world_engine_settings', JSON.stringify(exactWorld)]]);
+    if (marker) values.set('mvu_doctor_native_world_owner_v1', marker);
+    const memoryPatches = [];
+    let memoryState = { ...memory };
+    const applyFilters = (value, settings) => String(settings.evolveFilterRegex || '').split(/\r?\n/u).filter(Boolean)
+      .reduce((output, line) => {
+        const match = line.match(/^\/(.*)\/([a-z]*)$/u);
+        if (!match) return output;
+        try { return output.replace(new RegExp(match[1], match[2]), ''); }
+        catch { return output; }
+      }, String(value));
+    const worldCore = { filterDialogue: applyFilters };
+    if (bridged) {
+      const original = worldCore.filterDialogue.bind(worldCore);
+      const stripMvu = (value) => String(value)
+        .replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/gi, '')
+        .replace(/<UpdateVariable>[\s\S]*$/i, '');
+      worldCore.filterDialogue = (value, settings) => stripMvu(original(stripMvu(value), settings));
+      Object.defineProperty(worldCore, Symbol.for('mvu-doctor.native-world-dialogue-filter'), {
+        value: { original }, configurable: false,
+      });
+    }
+    const sandbox = {
+      console,
+      window: {
+        WORLD_ENGINE_STORE: {
+          getItem: (key) => values.has(key) ? values.get(key) : null,
+          setItem: (key, value) => values.set(key, String(value)),
+        },
+        WORLD_ENGINE_API: { getSettings: () => JSON.parse(values.get('world_engine_settings') || '{}') },
+        WORLD_ENGINE_CORE: worldCore,
+        MEMORY_ENGINE_SETTINGS: {
+          getSettings: () => ({ ...memoryState }),
+          patchSettings: (patch) => {
+            memoryPatches.push({ ...patch });
+            memoryState = { ...memoryState, ...patch };
+          },
+        },
+      },
+    };
+    vm.runInNewContext(script, sandbox);
+    return { sandbox, values, memoryPatches };
+  };
+
+  const legacy = makeHarness();
+  legacy.sandbox.migrateWorldSettings({ extensionSettings: {} });
+  const migrated = JSON.parse(legacy.values.get('world_engine_settings'));
+  assert.equal(migrated.evolveMode, 'auto');
+  assert.equal(migrated.syncToChat, false);
+  assert.equal(migrated.autoBackup, false);
+  assert.ok(migrated.evolveFilterRegex.includes('[\\s\\S]*?<\\/UpdateVariable>'));
+  assert.ok(migrated.evolveFilterRegex.includes('[\\s\\S]*$'));
+  assert.deepEqual(legacy.memoryPatches, [{ engineEnabled: true, evolveMode: 'auto' }]);
+  assert.equal(legacy.values.get('mvu_doctor_native_world_owner_v1'), 'done');
+  assert.equal(legacy.values.get('mvu_doctor_native_memory_owner_v1'), 'done');
+
+  const matureFilters = [
+    '/<UpdateVariable>[\\s\\S]*?<\\/UpdateVariable>/gi',
+    '/<UpdateVariable>[\\s\\S]*$/i',
+  ].join('\n');
+  const alreadyFiltered = makeHarness({ world: { evolveFilterRegex: matureFilters } });
+  alreadyFiltered.sandbox.migrateWorldSettings({ extensionSettings: {} });
+  const retainedFilters = JSON.parse(alreadyFiltered.values.get('world_engine_settings')).evolveFilterRegex.split('\n');
+  assert.equal(retainedFilters.filter((line) => line === matureFilters.split('\n')[0]).length, 1);
+  assert.equal(retainedFilters.filter((line) => line === matureFilters.split('\n')[1]).length, 1);
+
+  const hotReload = makeHarness({ world: { evolveFilterRegex: matureFilters }, marker: 'done', bridged: true });
+  hotReload.sandbox.migrateWorldSettings({ extensionSettings: {} });
+  const hotReloadFilters = JSON.parse(hotReload.values.get('world_engine_settings')).evolveFilterRegex.split('\n');
+  assert.equal(hotReloadFilters.filter((line) => line === matureFilters.split('\n')[0]).length, 1);
+  assert.equal(hotReloadFilters.filter((line) => line === matureFilters.split('\n')[1]).length, 1);
+
+  const worldDeviation = makeHarness({ world: { syncToChat: false } });
+  worldDeviation.sandbox.migrateWorldSettings({ extensionSettings: {} });
+  assert.equal(JSON.parse(worldDeviation.values.get('world_engine_settings')).evolveMode, 'manual');
+  assert.deepEqual(worldDeviation.memoryPatches, []);
+
+  const memoryDeviation = makeHarness({ memory: { engineEnabled: false, evolveMode: 'auto' } });
+  memoryDeviation.sandbox.migrateWorldSettings({ extensionSettings: {} });
+  assert.deepEqual(memoryDeviation.memoryPatches, []);
+
+  const alreadyMigrated = makeHarness({ marker: 'done' });
+  alreadyMigrated.sandbox.migrateWorldSettings({ extensionSettings: {} });
+  assert.equal(JSON.parse(alreadyMigrated.values.get('world_engine_settings')).evolveMode, 'manual');
+  assert.deepEqual(alreadyMigrated.memoryPatches, []);
+
+  const pendingMemory = makeHarness({ marker: 'done' });
+  pendingMemory.values.set('mvu_doctor_native_memory_owner_v1', 'pending');
+  pendingMemory.sandbox.migrateWorldSettings({ extensionSettings: {} });
+  assert.deepEqual(pendingMemory.memoryPatches, [{ engineEnabled: true, evolveMode: 'auto' }]);
+  assert.equal(pendingMemory.values.get('mvu_doctor_native_memory_owner_v1'), 'done');
 });
 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.8.9');
+  assert.equal(manifest.version, '0.9.0');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -49,19 +411,20 @@ test('profile engine retains ver5.35 tolerant parser and exactly one repair bran
   assert.doesNotMatch(source, /beforeProfiles:\s*before\.profiles/);
 });
 
-test('accepted-final orchestrator runs diagnosis then profile then world', () => {
+test('accepted-final orchestrator runs diagnosis then profile while native World remains independent', () => {
   const source = read('profile-engine.js');
   const block = source.slice(source.indexOf('async function runAcceptedPipeline'), source.indexOf('async function waitForAcceptedFinal'));
   const diagnosis = block.indexOf('await runStoryDiagnosis(target, owner)');
   const profile = block.indexOf('await runTarget(target, reason, owner)');
-  const world = block.indexOf('await runWorldEvolution(target');
-  assert.ok(diagnosis >= 0 && profile > diagnosis && world > profile);
+  assert.ok(diagnosis >= 0 && profile > diagnosis);
+  assert.doesNotMatch(block, /runWorldEvolution|manualEvolve|restoreCheckpoint|saveState/);
   assert.match(source, /message_id: target\.index/);
   assert.match(source, /requireTaskOwner\(owner, target, '变量补丁写入完成'\)/);
-  assert.match(source, /installWorldContextBridge/);
+  assert.match(source, /installWorldPublicProjection/);
+  assert.doesNotMatch(source, /WORLD_ENGINE_WORLDBOOK\.buildPromptSection\s*=/);
 });
 
-test('host glue pins MVU reads, owns the pipeline and preserves original reroll semantics', () => {
+test('host glue pins MVU reads while World keeps original scheduling and reroll ownership', () => {
   const source = read('profile-engine.js');
   assert.match(source, /Mvu\.getMvuData\(\{ type: 'message', message_id: numericId \}\)/);
   assert.match(source, /host_mvu_readback_mismatch/);
@@ -84,9 +447,9 @@ test('host glue pins MVU reads, owns the pipeline and preserves original reroll 
   assert.match(source, /const restoreSerial = \+\+runtime\.branchRestoreSerial/);
   assert.match(source, /restoreSerial !== runtime\.branchRestoreSerial \|\| chatId\(\) !== restoreChatId/);
   assert.match(source, /restoreProfileBranch\(baseline, true, assertRestoreCurrent\)/);
-  assert.match(source, /const checkpoint = worldCore\?\.restoreCheckpoint\?\.\(\)/);
-  assert.match(source, /worldCore\.saveState\(checkpoint\)/);
-  assert.match(source, /const mode = restoredCheckpoint \|\| !isReroll \? 'forward' : undefined/);
+  assert.doesNotMatch(source, /runWorldEvolution|WORLD_RECEIPT_STORAGE_PREFIX|worldReceiptStorageKey/);
+  assert.doesNotMatch(source, /WORLD_ENGINE_EVOLUTION\?\.abort|WORLD_ENGINE_CORE\?\.restoreCheckpoint|\.saveState\(checkpoint\)/);
+  assert.doesNotMatch(source, /runWorld:\s*/);
   assert.doesNotMatch(source, /Date\.now\(\) - runtime\.lastUserMessageAt/);
   assert.match(source, /\['quiet', 'raw', 'silent', 'impersonate'\]/);
   assert.match(source, /GENERATION_TICKET_PREFIX/);
