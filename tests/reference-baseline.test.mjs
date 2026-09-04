@@ -19,14 +19,16 @@ test('runtime loads only pinned reference engines and the new profile adapter', 
   assert.doesNotMatch(source, /legacy\/0\.7\.5|embeddedCore|advanceWorld|applyWorldProposal|auditVariables/);
 });
 
-test('native World bridge installs only the MVU filter, diagnosis barrier, and single-flight worldbook initializer', () => {
+test('native World bridge installs only the MVU filter, shared API lane, diagnosis barrier, and worldbook initializer', () => {
   const index = read('index.js');
   assert.match(index, /function filterMvuMechanismBlocks\(value\)/);
   assert.match(index, /function installWorldDialogueFilterBridge\(\)/);
+  assert.match(index, /function installWorldApiSerialLane\(\)/);
   assert.match(index, /function publishWorldbookBridgeStatus\(status, detail = '', expectedChatId = ''\)/);
   assert.match(index, /window\.MVUDoctorWorldbookBridgeStatus = \{/);
   const boot = index.slice(index.indexOf('async function boot'), index.lastIndexOf('boot().catch'));
   assert.ok(boot.indexOf('migrateWorldSettings(') < boot.indexOf('installWorldDialogueFilterBridge()'));
+  assert.ok(boot.indexOf('installWorldApiSerialLane()') < boot.indexOf('profile-engine.js'));
   const migration = index.slice(index.indexOf('function migrateWorldSettings'), index.indexOf('async function initializeWorldbookSelectionOnce'));
   assert.match(migration, /forced08Signature/);
   assert.match(migration, /worldCore\?\.\[WORLD_DIALOGUE_FILTER_BRIDGE\]\?\.original \|\| worldCore\?\.filterDialogue/);
@@ -59,6 +61,8 @@ test('native World bridge installs only the MVU filter, diagnosis barrier, and s
   assert.match(barrier, /publishWorldbookBridgeStatus\(/);
   assert.match(barrier, /const safeAiMsg = filterMvuMechanismBlocks\(aiMsg\)/);
   assert.match(barrier, /dialogueText: filterMvuMechanismBlocks\(opts\.dialogueText\)/);
+  assert.match(barrier, /const hasAssistantInput = Boolean\(String\(aiMsg \|\| ''\)\.trim\(\)\)/);
+  assert.match(barrier, /if \(hasAssistantInput\) \{/);
   assert.match(barrier, /await window\.MVUDoctorProfileEngine\?\.waitForWorldDiagnosis\?\./);
   assert.match(barrier, /if \(receipt\?\.status === 'stale'\) return false/);
   assert.match(barrier, /return original\(state, userMsg, safeAiMsg, safeOpts\)/);
@@ -124,6 +128,70 @@ test('native core filtering keeps user filters while stripping MVU blocks before
   assert.equal(calls.length, 1);
   assert.equal(calls[0].value, '公开AUSER_FILTER_SENTINEL公开B');
   assert.deepEqual(calls[0].settings, settings);
+});
+
+test('shared World API lane is FIFO, preserves arguments, releases after failure, and is idempotent', async () => {
+  const index = read('index.js');
+  const serialLane = index.slice(index.indexOf('function installWorldApiSerialLane'), index.indexOf('function publishWorldbookBridgeStatus'));
+  let active = 0;
+  let maxActive = 0;
+  let releaseFirst;
+  const calls = [];
+  const sandbox = {
+    console,
+    window: {
+      WORLD_ENGINE_API: {
+        async callApi(...args) {
+          calls.push(structuredClone(args));
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          try {
+            if (args[0] === 'first') await new Promise((resolve) => { releaseFirst = resolve; });
+            if (args[0] === 'fail') throw new Error('synthetic failure');
+            return `done:${args[0]}`;
+          } finally {
+            active -= 1;
+          }
+        },
+      },
+    },
+  };
+  vm.runInNewContext(`
+    const WORLD_API_SERIAL_LANE = Symbol.for('mvu-doctor.shared-world-api-serial-lane');
+    ${serialLane}
+    this.installWorldApiSerialLane = installWorldApiSerialLane;
+  `, sandbox);
+  assert.equal(sandbox.installWorldApiSerialLane(), true);
+  const installed = sandbox.window.WORLD_ENGINE_API.callApi;
+  assert.equal(sandbox.installWorldApiSerialLane(), true);
+  assert.equal(sandbox.window.WORLD_ENGINE_API.callApi, installed, 'hot reload must not wrap the lane twice');
+
+  const controller = new AbortController();
+  const override = { apiUrl: 'https://example.invalid', model: 'same-object' };
+  const first = sandbox.window.WORLD_ENGINE_API.callApi('first', 11, 0.1, controller.signal, override);
+  const second = sandbox.window.WORLD_ENGINE_API.callApi('second', 22, 0.2, null, override);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((args) => args[0]), ['first']);
+  releaseFirst();
+  assert.equal(await first, 'done:first');
+  assert.equal(await second, 'done:second');
+  assert.equal(maxActive, 1);
+  assert.deepEqual(calls[1].slice(0, 3), ['second', 22, 0.2]);
+  assert.equal(calls[1][3], null);
+  assert.deepEqual(calls[1][4], override);
+
+  await assert.rejects(sandbox.window.WORLD_ENGINE_API.callApi('fail'), /synthetic failure/u);
+  assert.equal(await sandbox.window.WORLD_ENGINE_API.callApi('after-failure'), 'done:after-failure');
+
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(
+    sandbox.window.WORLD_ENGINE_API.callApi('cancelled-before-start', 33, 0.3, aborted.signal, override),
+    (error) => error?.name === 'AbortError',
+  );
+  assert.equal(calls.some((args) => args[0] === 'cancelled-before-start'), false, 'cancelled queued work must not reach the native API');
+  assert.equal(await sandbox.window.WORLD_ENGINE_API.callApi('after-abort'), 'done:after-abort');
+  assert.equal(maxActive, 1);
 });
 
 test('native World retries a false prewarm once per chat and filters MVU mechanism blocks in memory', async () => {
@@ -219,6 +287,82 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
   assert.equal(ready.calls.originals[0][2], '前文后文');
   assert.equal(ready.calls.originals[0][3].dialogueText, '上下文');
   assert.equal(ready.calls.originals[0][3].keep, 'native-option');
+
+  for (const mode of ['forward', 'redo']) {
+    const manual = makeHarness(1);
+    manual.sandbox.installWorldEvolutionDiagnosisBarrier();
+    const manualResult = await manual.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve(
+      { round: 2 },
+      '用户尾楼原文',
+      '',
+      {
+        mode,
+        dialogueText: '用户尾楼<UpdateVariable><JSONPatch>PRIVATE_MANUAL_PATCH</JSONPatch></UpdateVariable>',
+        keep: 'native-manual-option',
+      },
+    );
+    assert.equal(manualResult, 'native-evolved');
+    assert.equal(manual.calls.waits.length, 0, `${mode} user-tail has no assistant row to diagnose`);
+    assert.equal(manual.calls.originals.length, 1);
+    assert.equal(manual.calls.originals[0][1], '用户尾楼原文');
+    assert.equal(manual.calls.originals[0][2], '');
+    assert.equal(manual.calls.originals[0][3].mode, mode);
+    assert.equal(manual.calls.originals[0][3].dialogueText, '用户尾楼');
+    assert.equal(manual.calls.originals[0][3].keep, 'native-manual-option');
+  }
+
+  const manualTime = makeHarness(1);
+  manualTime.sandbox.installWorldEvolutionDiagnosisBarrier();
+  assert.equal(
+    await manualTime.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve(
+      { round: 2 }, '', '', { dialogueText: '时间模式近期对话' },
+    ),
+    'native-evolved',
+  );
+  assert.equal(manualTime.calls.waits.length, 0, 'manual time evolution with a user tail has no assistant diagnosis target');
+  assert.equal(manualTime.calls.originals.length, 1);
+
+  const mechanismOnlyAssistant = makeHarness(1);
+  mechanismOnlyAssistant.sandbox.installWorldEvolutionDiagnosisBarrier();
+  await mechanismOnlyAssistant.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve(
+    { round: 3 },
+    '用户原文',
+    '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>',
+    { mode: 'forward' },
+  );
+  assert.equal(mechanismOnlyAssistant.calls.waits.length, 1, 'a non-empty assistant row must still pass the diagnosis identity gate');
+  assert.equal(mechanismOnlyAssistant.calls.originals.length, 1);
+  assert.equal(mechanismOnlyAssistant.calls.originals[0][2], '');
+
+  let releaseExactDiagnosis;
+  let markExactDiagnosisStarted;
+  const exactDiagnosisStarted = new Promise((resolve) => { markExactDiagnosisStarted = resolve; });
+  const exactDiagnosis = makeHarness(1, {
+    waitForWorldDiagnosis: async () => {
+      markExactDiagnosisStarted();
+      return new Promise((resolve) => { releaseExactDiagnosis = resolve; });
+    },
+  });
+  exactDiagnosis.sandbox.installWorldEvolutionDiagnosisBarrier();
+  const exactEvolution = exactDiagnosis.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve({}, '', '待诊断正文', {});
+  await exactDiagnosisStarted;
+  assert.equal(exactDiagnosis.calls.originals.length, 0, 'assistant-tail World must wait for the exact diagnosis receipt');
+  releaseExactDiagnosis({ ok: true, status: 'diagnosis-complete' });
+  assert.equal(await exactEvolution, 'native-evolved');
+  assert.equal(exactDiagnosis.calls.originals.length, 1);
+
+  let staleAttempt = true;
+  const staleThenCurrent = makeHarness(1, {
+    waitForWorldDiagnosis: async () => (staleAttempt
+      ? { ok: false, status: 'stale' }
+      : { ok: true, status: 'unbound' }),
+  });
+  staleThenCurrent.sandbox.installWorldEvolutionDiagnosisBarrier();
+  assert.equal(await staleThenCurrent.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve({}, '', '旧swipe正文', {}), false);
+  assert.equal(staleThenCurrent.calls.originals.length, 0);
+  staleAttempt = false;
+  assert.equal(await staleThenCurrent.sandbox.window.WORLD_ENGINE_EVOLUTION.evolve({}, '', '当前正文', {}), 'native-evolved');
+  assert.equal(staleThenCurrent.calls.originals.length, 1, 'stale must reject only its old invocation, not leave a sticky lock');
 
   const missing = makeHarness(Number.POSITIVE_INFINITY);
   assert.equal(await missing.sandbox.ensureWorldbookSelectionForCurrentChat(2), false);
@@ -382,7 +526,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.2');
+  assert.equal(manifest.version, '0.9.3');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');

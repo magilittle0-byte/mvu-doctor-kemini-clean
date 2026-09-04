@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.2';
+  const ENGINE_VERSION = '0.9.3';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -1420,7 +1420,7 @@ ${auditInstruction}`;
   function projectObservableWorld(worldState) {
     const source = deepClone(worldState || {});
     const events = Array.isArray(source.events)
-      ? source.events.filter((event) => ['已爆发', '已完成'].includes(text(event?.stage))).map((event) => ({
+      ? source.events.map((event) => ({
         id: event?.id,
         name: text(event?.name),
         type: text(event?.type),
@@ -1442,10 +1442,12 @@ ${auditInstruction}`;
     const winds = Array.isArray(source.winds)
       ? source.winds.map((wind) => ({
         id: wind?.id,
+        topic: text(wind?.topic),
         type: text(wind?.type),
         level: Number(wind?.level || 0),
         scope: text(wind?.scope),
         content: text(wind?.content),
+        source: text(wind?.source),
       }))
       : [];
     const worldTrends = Array.isArray(source.worldTrends)
@@ -1530,14 +1532,20 @@ ${auditInstruction}`;
     if (memory[WORLD_MEMORY_PUBLIC_PROJECTION_BRIDGE]) return true;
     const originalIngest = memory.ingestWorldEvolution.bind(memory);
     memory.ingestWorldEvolution = function(payload) {
-      const publicUpdate = projectObservableWorld(payload?.worldUpdate || {});
       const worldSettings = (() => {
         try { return window.WORLD_ENGINE_API?.getSettings?.() || {}; }
         catch { return {}; }
       })();
+      const publicUpdate = projectObservableWorld(payload?.worldUpdate || {});
       if (worldSettings.injectAllLevels !== true) {
-        // Match the mature injector's public wind threshold so low-level
-        // background signals cannot bypass it through Memory linkage.
+        // Reuse World 3.0.2's own public thresholds for its Memory linkage:
+        // Lv3/4 ongoing events are visible, Lv1/2 only at a public terminal,
+        // and winds become public at Lv3/4.  The narrative injector receives
+        // the complete redacted arrays and applies these same native rules.
+        publicUpdate.events = (publicUpdate.events || []).filter((event) => (
+          Number(event.level || 0) >= 3
+          || ['已爆发', '已完成'].includes(text(event.stage))
+        ));
         publicUpdate.winds = (publicUpdate.winds || []).filter((wind) => Number(wind.level || 0) >= 3);
       }
       return originalIngest({

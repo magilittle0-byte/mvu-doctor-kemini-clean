@@ -1,4 +1,6 @@
-# MVU 人物与世界医生（Kemini Clean 0.9.2）
+# MVU 人物与世界医生（Kemini Clean 0.9.3）
+
+0.9.3 针对真实试跑中“原版 World 单独稳定、接入 Doctor 后却少展示或互相超时”的根因做减法：冻结的 World Engine 3.0.2 仍保持逐字节不变；没有助手尾楼的原生 forward、redo 与手动时间推进不再被不存在的变量诊断拦住；事件和风声重新交给原版等级规则筛选，高等级进行中事件不再被 Doctor 错删，风声的主题与传播来源也会保留；人物填表与 World/Memory 共用的 API 只增加一个 FIFO 请求通道，避免两个引擎同时抢同一连接，但不接管任一引擎的调度、失败或存档。
 
 0.9.2 修复真实 390×844 酒馆视口暴露的控制台裁切：五个标签在手机上改为 3+2 响应式网格，保留不小于 44px 的触控目标并消除标签栏横向滚动；验收脚本也只检查 Doctor 自己的面板，并实际滚动到总览末端确认操作可达，不再把宿主页面宽度或隐藏页按钮误判成 Doctor 失败。变量、人物和原生 World 运行逻辑均未改动。
 
@@ -13,7 +15,7 @@
 1. 复用 Story Oracle v1.35.4 诊断组件的固定楼层适配链复检并按需修复本楼 MVU；
 2. 采用 ver5.35 宽容解析与单次定向修复模式的人物填表生成或更新完整档案。
 
-Disnight World Engine v3.0.2 仍由自己的宿主事件、scheduler 和原生 `evolve` 推进。适配层只让这次原生 `evolve` 等到同楼变量诊断成功或失败的终态，随后立即交回原件；不等待人物补档，也不根据诊断结果接管或否决世界推进。World 失败不会被 Doctor 伪装成变量或档案失败。刷新会恢复 Doctor 已完成的人物票据或未完成检查点；用户取消只取消 Doctor 自己的任务，不误杀原版 World。
+Disnight World Engine v3.0.2 仍由自己的宿主事件、scheduler 和原生 `evolve` 推进。有真实助手正文时，适配层只让这次原生 `evolve` 等到同楼变量诊断成功或失败的终态，随后立即交回原件；用户尾楼或手动时间推进没有助手诊断对象时则直接沿用原生行为。人物补档不是 World 的前置条件，二者只在共享的 API 网络边界按请求 FIFO 串行，任何一方失败都不成为另一方的结果。World 失败不会被 Doctor 伪装成变量或档案失败。刷新会恢复 Doctor 已完成的人物票据或未完成检查点；用户取消只取消 Doctor 自己的任务，不误杀原版 World。
 
 ## 成熟原件与适配边界
 
@@ -22,7 +24,7 @@ Disnight World Engine v3.0.2 仍由自己的宿主事件、scheduler 和原生 `
 - `vendor/life-state-v5.35/`：保留用户提供的两份原始 JSON 与逐字提取脚本。人物档案复用其宽容 JSON 提取和“原结果一次、定向修复最多一次”方式。
 - `profile-engine.js`：只实现 Story 变量复检与人物档案之间确实不存在的宿主胶水，包括最终回复身份、人物档案 Schema/原子提交、恢复收据、完整报告与响应式控制台；World 页只读显示原件状态并可打开原版完整面板。
 
-逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。0.9.0 恢复原生 World 所有权的逐项删除与最小适配见 [`docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md`](docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md)；0.9.1 变量闭环取证见 [`docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md`](docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md)；0.9.2 移动端布局与验收边界见 [`docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md`](docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md)。冻结原件可分别运行：
+逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。0.9.0 恢复原生 World 所有权的逐项删除与最小适配见 [`docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md`](docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md)；0.9.1 变量闭环取证见 [`docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md`](docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md)；0.9.2 移动端布局与验收边界见 [`docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md`](docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md)；0.9.3 的原生手动路径、公开等级筛选和共享 API 顺序点见 [`docs/0.9.3-MATURE-WORLD-ADAPTER-SOURCE-MAP.md`](docs/0.9.3-MATURE-WORLD-ADAPTER-SOURCE-MAP.md)。冻结原件可分别运行：
 
 0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)；0.8.7 的数据库来源行绑定与失败证据修复见 [`docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md`](docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md)；0.8.8 的占位词边界根修见 [`docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md`](docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md)；0.8.9 的人物发现称谓绑定修复见 [`docs/0.8.9-PROFILE-DISCOVERY-BINDING-SOURCE-MAP.md`](docs/0.8.9-PROFILE-DISCOVERY-BINDING-SOURCE-MAP.md)。
 
@@ -44,15 +46,17 @@ World Engine 的持久状态和原生推演始终保留完整数据，并继续�
 
 迁移完成后，适配层在快照之外包装原生 `WORLD_ENGINE_CORE.filterDialogue`：进入原函数前先用同两条成熟规则清理一次，原函数继续按原顺序执行用户其余过滤规则，返回后再无条件清理一次。因而原生普通自动推进、手动推进与批量回填只要经过 `filterDialogue` 都受同一完整块合同保护；即使用户在同一次会话里通过原版 UI 删除持久 `evolveFilterRegex`，当前运行期也不会重新把 MVU 机制块送进 World。这个包装不改持久设置、vendor 字节、原生 scheduler、模式或时序。
 
-`WORLD_ENGINE_EVOLUTION.evolve` 入口另保留直接 API 防线：在等待诊断和调用原函数前，只清理本次 `aiMsg` 与 `opts.dialogueText` 的内存副本，覆盖绕开 Core 对话过滤器的直接调用；它不是第二个调度器。原生 `evolve` 只等待变量诊断终态，不等待人物阶段；并发手动复检会建立同 generationKey 的 `manualDiagnosisBinding` 与单调 token，只有仍持有当前 token 的复检才能在 `finally` 清理绑定，旧复检结束不能误删后来开始的新绑定。
+`WORLD_ENGINE_EVOLUTION.evolve` 入口另保留直接 API 防线：在等待诊断和调用原函数前，只清理本次 `aiMsg` 与 `opts.dialogueText` 的内存副本，覆盖绕开 Core 对话过滤器的直接调用；它不是第二个调度器。只有原始 `aiMsg` 确有助手正文时才等待变量诊断；原始 `aiMsg` 为空说明原生手动路径没有可诊断助手楼，直接交还原件。判断使用过滤前的原文，因此“只有 MVU 机制块的助手回复”仍会进入身份门。原生 `evolve` 不等待人物阶段；并发手动复检会建立同 generationKey 的 `manualDiagnosisBinding` 与单调 token，只有仍持有当前 token 的复检才能在 `finally` 清理绑定，旧复检结束不能误删后来开始的新绑定。
+
+World、Memory 与人物档案都会调用同一个 `WORLD_ENGINE_API.callApi`，但原版 World 的内部互斥并不知道外部人物任务。0.9.3 只在这个共享网络函数上包一条 FIFO 请求通道：参数和返回值原样透传、开始前尊重 AbortSignal、失败或取消后继续下一项。它不决定 World 与人物谁先入队，不复制 World 的 1500ms、auto/time/manual 判定，也不串联整个档案事务，因此没有第二套世界调度器。
 
 旧设置迁移只处理 Doctor 0.8.x 的精确签名。World 使用 `mvu_doctor_native_world_owner_v1`：尚未完成且同时命中 `manual/engineEnabled=true/injectIntoPrompt=true/syncToChat=true/autoBackup=true` 五字段时，才恢复为 `auto/syncToChat=false/autoBackup=false`。Memory 使用独立的 `mvu_doctor_native_memory_owner_v1`：在改变 World 签名前先写入 `pending` 保存旧 Doctor 来源证明；即使当时 Memory 接口未就绪，后续启动仍会重试。只有精确 `engineEnabled=false/evolveMode=manual` 成功恢复并读回上游 `true/auto`，或确认当前 Memory 已经不是这对旧强制值时，Memory 标记才写成 `done`。用户偏差不会被覆盖。
 
 内嵌世界书也有可见的首次运行状态：聊天加载先以每 chat 单 Promise 预热；如果它在世界书可读取前以未就绪结束，首次原生 `evolve` 会清掉该已完成 Promise，再执行第二次 single-flight 重试。预热期间显示等待，首次推演后明确为已就绪、缺失或错误；当前状态显示在 Doctor 世界页并写入完整报告。缺失/错误时 World 按原生空选择语义继续，但不会把它伪装成已经加载成功。
 
-发送给下一轮正文模型的原生 `buildContext` 使用深拷贝的可观察投影：隐藏 `worldDigest` 后台摘要、尚未爆发或完成的事件、势力的 `currentGoal`/`core_person`/`powerPillars`、整个 `enemies`、`influenceChain` 与完整 `blackbox`；保留原生已公开风声、已经爆发或完成的事件，以及趋势、经济、声誉、区域事件等可观察层。秘密或后台传导只有先在原生 World 中形成合法公开风声、终局事件或其他可观察后果，才能进入正文；仅存在于黑盒、敌人状态或影响链中不能被正文模型提前知道。
+发送给下一轮正文模型的原生 `buildContext` 使用深拷贝的可观察投影：隐藏 `worldDigest` 后台摘要、势力的 `currentGoal`/`core_person`/`powerPillars`、整个 `enemies`、`influenceChain` 与完整 `blackbox`；事件和风声则不再由 Doctor 自创门槛，而由 World 3.0.2 的原生规则筛选——默认保留 Lv3/4 进行中事件及所有已爆发/已完成事件，风声默认保留 Lv3/4，并尊重用户的“全部等级”设置。公开风声保留 `topic/source`，便于维持真实传播链。趋势、经济、声誉和区域事件继续使用可观察字段。仅存在于黑盒、敌人状态、势力秘密目标或影响链中的内容仍不能被正文模型提前知道。
 
-同一防全知边界也覆盖原生 World→Memory 联动。适配层包装 `MEMORY_ENGINE.ingestWorldEvolution`，只把上述公开白名单的 `worldUpdate` 副本和由公开字段按固定顺序生成的确定性 `worldDigest` 交给原函数；`layer`、`worldRound`、`replace`、`force` 等原生参数保持原样。若本轮只有后台秘密而没有公开变化，摘要保持为空：原生 Memory 在 `replace: true` 时仍先回滚同楼旧联动，再按 `empty_digest` 跳过，不会新增一条伪造的“无变化”纪要。完整 World、checkpoint 和下一轮推演输入均不被删改。
+同一防全知边界也覆盖原生 World→Memory 联动。适配层包装 `MEMORY_ENGINE.ingestWorldEvolution`，只把上述公开字段副本和由这些字段按固定顺序生成的确定性 `worldDigest` 交给原函数；事件与风声逐字复用原版同一等级判断，`layer`、`worldRound`、`replace`、`force` 等原生参数保持原样。若本轮只有后台秘密而没有公开变化，摘要保持为空：原生 Memory 在 `replace: true` 时仍先回滚同楼旧联动，再按 `empty_digest` 跳过，不会新增一条伪造的“无变化”纪要。完整 World、checkpoint 和下一轮推演输入均不被删改。
 
 世界状态仍只属于 World Engine。数据库继续由数据库本体独立填表，MVU 继续拥有实时变量，预设继续负责正文生成；Doctor 人物档案使用 World Engine 3.0.2 已有的 IndexedDB 存储层，但按 chatId 独立键保存，不写入世界状态，也不与数据库表格竞争。旧聊天 metadata 只作一次迁移来源；四者没有合并或互相冒充成功。
 

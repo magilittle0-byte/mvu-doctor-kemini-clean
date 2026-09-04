@@ -559,7 +559,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.2 native World ownership, variable evidence, and mobile layout browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.3 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -719,13 +719,14 @@ test('0.9.2 native World ownership, variable evidence, and mobile layout browser
             round: 3,
             worldDigest: '白露正在暗中收集所有同伴的弱点。',
             winds: [
-              { level: 2, content: '二级公开风声' },
-              { level: 3, content: '三级公开风声' },
+              { id: 'wind-low', topic: '低级风声主题', level: 2, content: '二级公开风声', source: '地方转述' },
+              { id: 'wind-high', topic: '高级风声主题', level: 3, content: '三级公开风声', source: '大区公告' },
             ],
             events: [
-              { stage: '酝酿中', content: '尚未发生的秘密伏击' },
-              { name: '港口警报', stage: '已爆发', evolveResult: '港口已经响起警报' },
-              { name: '旧桥坍塌', stage: '已完成', evolveResult: '旧桥已经坍塌' },
+              { name: '低阶筹备', level: 2, stage: '筹备', evolveResult: '尚未公开的低阶变化' },
+              { name: '高阶进行中', level: 3, stage: '执行', evolveResult: '大区运输已经出现公开延误' },
+              { name: '港口警报', level: 1, stage: '已爆发', evolveResult: '港口已经响起警报' },
+              { name: '旧桥坍塌', level: 2, stage: '已完成', evolveResult: '旧桥已经坍塌' },
             ],
             factions: [{
               name: '公开可见的商会', currentGoal: '秘密垄断港口',
@@ -745,6 +746,23 @@ test('0.9.2 native World ownership, variable evidence, and mobile layout browser
               memoryPayloads.push(structuredClone(payload));
               return { accepted: true, replace: payload?.replace === true };
             },
+          };
+          // Mirror the frozen World 3.0.2 injector's own visibility policy so
+          // this test exercises the Doctor redaction wrapper around the real
+          // native contract rather than around a JSON echo stub.
+          window.WORLD_ENGINE_INJECT.buildContext = (state) => {
+            const injectAllLevels = window.WORLD_ENGINE_API.getSettings().injectAllLevels === true;
+            const visible = structuredClone(state);
+            visible.events = (visible.events || []).filter((event) => (
+              injectAllLevels
+              || Number(event.level || 0) >= 3
+              || event.stage === '已爆发'
+              || event.stage === '已完成'
+            ));
+            visible.winds = (visible.winds || []).filter((wind) => (
+              injectAllLevels || Number(wind.level || 0) >= 3
+            ));
+            return JSON.stringify(visible);
           };
           window.MVUDoctorProfileEngine.installWorldPublicProjection();
           const output = window.WORLD_ENGINE_INJECT.buildContext(privateState);
@@ -768,6 +786,9 @@ test('0.9.2 native World ownership, variable evidence, and mobile layout browser
             ...window.WORLD_ENGINE_API.getSettings(true), injectAllLevels: true,
           }));
           const allLevelsReceipt = window.MEMORY_ENGINE.ingestWorldEvolution(allLevelsPayload);
+          window.WORLD_ENGINE_STORE.setItem('world_engine_settings', JSON.stringify({
+            ...window.WORLD_ENGINE_API.getSettings(true), injectAllLevels: false,
+          }));
           const hiddenOnlyPayload = {
             worldDigest: 'HIDDEN_ONLY_SECRET_DIGEST',
             worldUpdate: {
@@ -791,10 +812,12 @@ test('0.9.2 native World ownership, variable evidence, and mobile layout browser
         });
         assert.match(evidence.output, /公开风声/u);
         assert.match(evidence.output, /后台摘要已隔离/u);
+        assert.match(evidence.output, /高阶进行中|大区运输已经出现公开延误/u);
         assert.match(evidence.output, /港口已经响起警报|旧桥已经坍塌/u);
         assert.match(evidence.output, /公开可见的商会/u);
-        assert.doesNotMatch(evidence.output, /暗中收集|尚未发生的秘密伏击|秘密垄断港口|幕后首领|暗中收买|尚未公开的敌人|港口卫队|秘密记录同伴资料|暗藏名册/u);
-        assert.deepEqual(evidence.projection.events.map((event) => event.stage), ['已爆发', '已完成']);
+        assert.doesNotMatch(evidence.output, /暗中收集|尚未公开的低阶变化|秘密垄断港口|幕后首领|暗中收买|尚未公开的敌人|港口卫队|秘密记录同伴资料|暗藏名册/u);
+        assert.deepEqual(evidence.projection.events.map((event) => event.stage), ['执行', '已爆发', '已完成']);
+        assert.deepEqual(evidence.projection.winds.map((wind) => [wind.topic, wind.source]), [['高级风声主题', '大区公告']]);
         assert.equal(Object.hasOwn(evidence.projection.factions[0], 'currentGoal'), false);
         assert.equal(Object.hasOwn(evidence.projection.factions[0], 'core_person'), false);
         assert.equal(Object.hasOwn(evidence.projection.factions[0], 'powerPillars'), false);
@@ -814,14 +837,16 @@ test('0.9.2 native World ownership, variable evidence, and mobile layout browser
         assert.equal(publicMemory.replace, true, 'reroll replace semantics must reach mature Memory unchanged');
         assert.equal(publicMemory.source, 'reroll-replacement');
         assert.match(publicMemory.worldDigest, /公开世界变化/u);
-        assert.match(publicMemory.worldDigest, /三级公开风声|港口警报|旧桥坍塌/u);
+        assert.match(publicMemory.worldDigest, /三级公开风声|高阶进行中|港口警报|旧桥坍塌/u);
         assert.doesNotMatch(publicMemory.worldDigest, /二级公开风声/u);
-        assert.deepEqual(publicMemory.worldUpdate.events.map((event) => event.stage), ['已爆发', '已完成']);
+        assert.deepEqual(publicMemory.worldUpdate.events.map((event) => event.stage), ['执行', '已爆发', '已完成']);
         assert.deepEqual(publicMemory.worldUpdate.winds.map((wind) => wind.content), ['三级公开风声']);
+        assert.deepEqual(publicMemory.worldUpdate.winds.map((wind) => [wind.topic, wind.source]), [['高级风声主题', '大区公告']]);
         assert.doesNotMatch(JSON.stringify(publicMemory), /SECRET_DIGEST|暗中收集|秘密伏击|秘密目标|幕后人物|秘密资产/u);
         assert.equal(allLevelsMemory.replace, false);
         assert.equal(allLevelsMemory.source, 'all-levels-enabled');
         assert.deepEqual(allLevelsMemory.worldUpdate.winds.map((wind) => wind.content), ['二级公开风声', '三级公开风声']);
+        assert.deepEqual(allLevelsMemory.worldUpdate.events.map((event) => event.stage), ['筹备', '执行', '已爆发', '已完成']);
         assert.match(allLevelsMemory.worldDigest, /二级公开风声/u);
         assert.equal(hiddenMemory.replace, true, 'hidden-only reroll must still let Memory perform its replace rollback');
         assert.equal(hiddenMemory.source, 'hidden-reroll-replacement');

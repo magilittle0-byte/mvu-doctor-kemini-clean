@@ -2,13 +2,14 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const VERSION = '0.9.2';
+  const VERSION = '0.9.3';
   const WORLD_VERSION = '3.0.2';
   const WORLD_GLOBALS = ['WORLD_ENGINE_STORE', 'WORLD_ENGINE_CORE', 'WORLD_ENGINE_API'];
   const WORLD_SETTINGS_KEY = 'world_engine_settings';
   const WORLD_BOOK_INITIALIZER = Symbol.for('mvu-doctor.native-worldbook-initializer');
   const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
   const WORLD_DIALOGUE_FILTER_BRIDGE = Symbol.for('mvu-doctor.native-world-dialogue-filter');
+  const WORLD_API_SERIAL_LANE = Symbol.for('mvu-doctor.shared-world-api-serial-lane');
   const MVU_DIALOGUE_FILTERS = [
     '/<UpdateVariable>[\\s\\S]*?<\\/UpdateVariable>/gi',
     '/<UpdateVariable>[\\s\\S]*$/i',
@@ -33,6 +34,37 @@
     };
     Object.defineProperty(core, WORLD_DIALOGUE_FILTER_BRIDGE, {
       value: { original }, configurable: false,
+    });
+    return true;
+  }
+
+  function installWorldApiSerialLane() {
+    const api = window.WORLD_ENGINE_API;
+    if (!api?.callApi) return false;
+    if (api[WORLD_API_SERIAL_LANE]) return true;
+    const original = api.callApi.bind(api);
+    let tail = Promise.resolve();
+    let sequence = 0;
+    api.callApi = function(...args) {
+      sequence += 1;
+      const signal = args[3];
+      const run = async () => {
+        if (signal?.aborted) {
+          const error = new Error('请求已取消');
+          error.name = 'AbortError';
+          throw error;
+        }
+        return original(...args);
+      };
+      // Doctor profiles, native World and native Memory deliberately share
+      // this one transport.  Serialize only their individual network calls;
+      // each engine keeps its own scheduler, retry, rollback and task state.
+      const request = tail.then(run, run);
+      tail = request.then(() => undefined, () => undefined);
+      return request;
+    };
+    Object.defineProperty(api, WORLD_API_SERIAL_LANE, {
+      value: { original, sequence: () => sequence }, configurable: false,
     });
     return true;
   }
@@ -346,6 +378,12 @@
       const safeOpts = hasDialogueText
         ? { ...opts, dialogueText: filterMvuMechanismBlocks(opts.dialogueText) }
         : opts;
+      // All native manual paths, including manual time evolution, may run when
+      // the chat ends on a user row and therefore have no assistant row to
+      // diagnose. Inspect the original aiMsg rather than safeAiMsg: a real
+      // assistant row made solely of an MVU block must still pass the identity
+      // gate instead of masquerading as the no-assistant path.
+      const hasAssistantInput = Boolean(String(aiMsg || '').trim());
       try {
         let ready = await ensureWorldbookSelectionForCurrentChat(2);
         const worldbook = window.WORLD_ENGINE_WORLDBOOK;
@@ -376,19 +414,21 @@
         console.warn('[MVU Doctor] 本轮世界书首次选择初始化失败；原版World将按自己的空选择语义继续', error);
       }
       if (!stillEvolutionChat()) return false;
-      try {
-        const receipt = await window.MVUDoctorProfileEngine?.waitForWorldDiagnosis?.({
-          aiMsg: safeAiMsg,
-          dialogueText: safeOpts?.dialogueText,
-        });
-        if (!stillEvolutionChat()) return false;
-        if (receipt?.status === 'stale') return false;
-      } catch (error) {
-        if (!stillEvolutionChat()) return false;
-        // A bridge fault must not permanently kill the mature World lifecycle.
-        // The native dialogue filter still prevents MVU mechanism blocks from
-        // entering the evolution prompt, so continuing is the recoverable path.
-        console.warn('[MVU Doctor] 变量确认屏障异常；World按已过滤正文继续', error);
+      if (hasAssistantInput) {
+        try {
+          const receipt = await window.MVUDoctorProfileEngine?.waitForWorldDiagnosis?.({
+            aiMsg: safeAiMsg,
+            dialogueText: safeOpts?.dialogueText,
+          });
+          if (!stillEvolutionChat()) return false;
+          if (receipt?.status === 'stale') return false;
+        } catch (error) {
+          if (!stillEvolutionChat()) return false;
+          // A bridge fault must not permanently kill the mature World lifecycle.
+          // The native dialogue filter still prevents MVU mechanism blocks from
+          // entering the evolution prompt, so continuing is the recoverable path.
+          console.warn('[MVU Doctor] 变量确认屏障异常；World按已过滤正文继续', error);
+        }
       }
       if (!stillEvolutionChat()) return false;
       return original(state, userMsg, safeAiMsg, safeOpts);
@@ -468,6 +508,7 @@
     await waitFor(() => Boolean(window.WORLD_ENGINE?.manualEvolve), '独立世界引擎完整运行层', 60000);
     assertWorldContract();
     migrateWorldSettings(ctx || context());
+    installWorldApiSerialLane();
     installWorldDialogueFilterBridge();
     installWorldbookSelectionInitializer(ctx || context());
 
