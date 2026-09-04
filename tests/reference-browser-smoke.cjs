@@ -559,7 +559,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.1 native World ownership and variable evidence browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.2 native World ownership, variable evidence, and mobile layout browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -585,6 +585,69 @@ test('0.9.1 native World ownership and variable evidence browser smoke', { timeo
           assert.ok(geometry.bodyWidth <= geometry.viewportWidth + 1, JSON.stringify(geometry));
           assert.ok(geometry.width >= Math.min(360, viewport.width - 2), JSON.stringify(geometry));
         }
+      } finally { await page.close(); }
+    });
+
+    await t.test('390x844 shows all five tabs without horizontal scrolling and reaches the final overview action', async () => {
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      try {
+        await installHarness(page);
+        await page.locator('#mvu-ref-launcher').click();
+        const geometry = await page.evaluate(() => {
+          document.querySelector('#mvu-ref-panel nav [data-tab="overview"]')?.click();
+          const panel = document.getElementById('mvu-ref-panel');
+          const nav = panel.querySelector('nav');
+          const section = panel.querySelector('[data-page="overview"]');
+          const tabs = [...nav.querySelectorAll('[data-tab]')];
+          const actions = [...section.querySelectorAll('[data-action]')];
+          const panelRect = panel.getBoundingClientRect();
+          const navRect = nav.getBoundingClientRect();
+          const sectionRect = section.getBoundingClientRect();
+          const rect = (element) => {
+            const value = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return {
+              left: value.left, top: value.top, right: value.right, bottom: value.bottom,
+              width: value.width, height: value.height,
+              visible: value.width > 0 && value.height > 0 && style.display !== 'none' && style.visibility !== 'hidden',
+              labelFits: element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1,
+            };
+          };
+          const maxScrollTop = Math.max(0, section.scrollHeight - section.clientHeight);
+          section.scrollTop = section.scrollHeight;
+          const lastAction = actions.at(-1);
+          const lastRect = lastAction.getBoundingClientRect();
+          return {
+            panel: {
+              ...rect(panel), clientWidth: panel.clientWidth, scrollWidth: panel.scrollWidth,
+            },
+            nav: {
+              ...rect(nav), clientWidth: nav.clientWidth, scrollWidth: nav.scrollWidth,
+            },
+            section: {
+              ...rect(section), clientWidth: section.clientWidth, scrollWidth: section.scrollWidth,
+              clientHeight: section.clientHeight, scrollHeight: section.scrollHeight,
+              scrollTop: section.scrollTop, maxScrollTop, overflowY: getComputedStyle(section).overflowY,
+            },
+            tabs: tabs.map((element) => ({ ...rect(element), insidePanel: element.getBoundingClientRect().left >= panelRect.left - 1
+              && element.getBoundingClientRect().right <= panelRect.right + 1,
+              insideNav: element.getBoundingClientRect().left >= navRect.left - 1
+              && element.getBoundingClientRect().right <= navRect.right + 1 })),
+            actions: actions.map((element) => ({ ...rect(element), horizontallyInside: element.getBoundingClientRect().left >= sectionRect.left - 1
+              && element.getBoundingClientRect().right <= sectionRect.right + 1 })),
+            lastActionAtEnd: !!lastAction && lastRect.top >= sectionRect.top - 1 && lastRect.bottom <= sectionRect.bottom + 1,
+          };
+        });
+        assert.equal(geometry.tabs.length, 5, JSON.stringify(geometry));
+        assert.ok(geometry.tabs.every((tab) => tab.visible && tab.insidePanel && tab.insideNav && tab.labelFits), JSON.stringify(geometry));
+        assert.ok(geometry.nav.scrollWidth <= geometry.nav.clientWidth + 1, JSON.stringify(geometry));
+        assert.ok(geometry.panel.scrollWidth <= geometry.panel.clientWidth + 1, JSON.stringify(geometry));
+        assert.ok(geometry.section.scrollWidth <= geometry.section.clientWidth + 1, JSON.stringify(geometry));
+        assert.ok(['auto', 'scroll'].includes(geometry.section.overflowY), JSON.stringify(geometry));
+        assert.ok(geometry.section.scrollHeight > geometry.section.clientHeight, JSON.stringify(geometry));
+        assert.ok(Math.abs(geometry.section.scrollTop - geometry.section.maxScrollTop) <= 1, JSON.stringify(geometry));
+        assert.ok(geometry.actions.length >= 5 && geometry.actions.every((action) => action.visible && action.horizontallyInside), JSON.stringify(geometry));
+        assert.equal(geometry.lastActionAtEnd, true, JSON.stringify(geometry));
       } finally { await page.close(); }
     });
 

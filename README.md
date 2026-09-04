@@ -1,4 +1,6 @@
-# MVU 人物与世界医生（Kemini Clean 0.9.1）
+# MVU 人物与世界医生（Kemini Clean 0.9.2）
+
+0.9.2 修复真实 390×844 酒馆视口暴露的控制台裁切：五个标签在手机上改为 3+2 响应式网格，保留不小于 44px 的触控目标并消除标签栏横向滚动；验收脚本也只检查 Doctor 自己的面板，并实际滚动到总览末端确认操作可达，不再把宿主页面宽度或隐藏页按钮误判成 Doctor 失败。变量、人物和原生 World 运行逻辑均未改动。
 
 0.9.1 修复真实首回合暴露的变量漏判：Story Oracle 原件的 post-state 诊断只看“当前结果是否已出现”，无法稳定识别“正确增量应用在错误旧默认值上”。Doctor 现在最小移植旧 Clean 0.7.5 与正式医生的成熟取证顺序，把上一有效 MVU、当前 post-state、原更新块、触发用户输入和最终接受正文作为紧邻任务的闭环材料；仍由 Story Oracle 原件负责规则、模型调用与区块提取，由官方 MVU 负责解析、写入和同楼读回。空补丁只显示为“模型未提出有效修复”，不再冒充脚本已经证明变量绝对正确。
 
@@ -20,7 +22,7 @@ Disnight World Engine v3.0.2 仍由自己的宿主事件、scheduler 和原生 `
 - `vendor/life-state-v5.35/`：保留用户提供的两份原始 JSON 与逐字提取脚本。人物档案复用其宽容 JSON 提取和“原结果一次、定向修复最多一次”方式。
 - `profile-engine.js`：只实现 Story 变量复检与人物档案之间确实不存在的宿主胶水，包括最终回复身份、人物档案 Schema/原子提交、恢复收据、完整报告与响应式控制台；World 页只读显示原件状态并可打开原版完整面板。
 
-逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。0.9.0 恢复原生 World 所有权的逐项删除与最小适配见 [`docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md`](docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md)；0.9.1 变量闭环取证见 [`docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md`](docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md)。冻结原件可分别运行：
+逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。0.9.0 恢复原生 World 所有权的逐项删除与最小适配见 [`docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md`](docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md)；0.9.1 变量闭环取证见 [`docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md`](docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md)；0.9.2 移动端布局与验收边界见 [`docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md`](docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md)。冻结原件可分别运行：
 
 0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)；0.8.7 的数据库来源行绑定与失败证据修复见 [`docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md`](docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md)；0.8.8 的占位词边界根修见 [`docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md`](docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md)；0.8.9 的人物发现称谓绑定修复见 [`docs/0.8.9-PROFILE-DISCOVERY-BINDING-SOURCE-MAP.md`](docs/0.8.9-PROFILE-DISCOVERY-BINDING-SOURCE-MAP.md)。
 
@@ -67,7 +69,7 @@ World Engine 的持久状态和原生推演始终保留完整数据，并继续�
 
 人物档案、完整报告和诊断统一复用 World Engine 3.0.2 的大容量存储层，并等待 IndexedDB 写事务完成及只读事务读回后才显示完整；酒馆自身 `saveMetadata` 会吞掉保存错误且只能操作当前全局聊天，因此不再作为人物档案成功依据。旧版人物 metadata 与当前聊天的 `sessionStorage` 报告会完整复制迁移，原副本暂留作兼容回退，不裁剪字段或历史。完整报告同时记录导出时的 `worldbookBridge` 状态，便于区分“仍在等待”“World 使用空世界书选择”和真正已加载。医生仍在运行时会拒绝本次导出并明确要求任务结束后再次点击，不会下载半份“完整报告”；缺页时总览、按钮和导出文件都会明确显示“不完整”，不会用内存镜像冒充落盘成功。
 
-桌面面板限制在视口内；手机直接使用 `visualViewport` 的真实动态高度与顶部偏移（包括键盘后不足 240px 的狭小可视区）、四边安全区、横向标签和不小于 44px 的触控目标。设置草稿在标签切换、关闭重开和聊天切换时保留；人物完整 JSON 仅在展开时生成，诊断页只重绘摘要。
+桌面面板限制在视口内；手机直接使用 `visualViewport` 的真实动态高度与顶部偏移（包括键盘后不足 240px 的狭小可视区）、四边安全区、3+2 标签网格和不小于 44px 的触控目标。设置草稿在标签切换、关闭重开和聊天切换时保留；人物完整 JSON 仅在展开时生成，诊断页只重绘摘要。
 
 ## 安装与更新
 

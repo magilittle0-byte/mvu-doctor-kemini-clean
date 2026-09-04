@@ -192,8 +192,18 @@
     border-radius: 16px;
   }
   #mvu-ref-panel > header { padding: 14px; }
-  #mvu-ref-panel nav { display: flex; overflow-x: auto; scrollbar-width: thin; }
-  #mvu-ref-panel nav button { flex: 0 0 auto; min-width: 80px; }
+  #mvu-ref-panel nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow-x: hidden;
+  }
+  #mvu-ref-panel nav button {
+    width: 100%;
+    min-width: 0;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
   #mvu-ref-panel button { min-height: 44px; }
   #mvu-ref-panel input,
   #mvu-ref-panel textarea,

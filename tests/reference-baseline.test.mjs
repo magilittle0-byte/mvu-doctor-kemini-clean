@@ -382,7 +382,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.1');
+  assert.equal(manifest.version, '0.9.2');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -555,11 +555,15 @@ test('profile runtime accepts recoverable fenced JSON without executing browser 
 
 test('UI has bounded desktop and full mobile viewport layouts', () => {
   const css = read('style.css');
+  const mobileCss = css.slice(css.indexOf('@media (max-width: 680px)'), css.indexOf('@media (prefers-reduced-motion'));
   assert.match(css, /width:\s*min\(780px,\s*calc\(100vw - 32px\)\)/);
   assert.match(css, /max-height:\s*calc\(var\(--mvu-ref-visual-height, 100dvh\) - 96px\)/);
   assert.match(css, /@media \(max-width: 680px\)/);
   assert.match(css, /env\(safe-area-inset-top\)/);
   assert.match(css, /overflow:\s*auto/);
+  assert.match(mobileCss, /#mvu-ref-panel nav\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);[\s\S]*?overflow-x:\s*hidden;/u);
+  assert.match(mobileCss, /#mvu-ref-panel nav button\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?text-overflow:\s*clip;[\s\S]*?white-space:\s*normal;/u);
+  assert.doesNotMatch(mobileCss, /#mvu-ref-panel nav\s*\{[^}]*display:\s*flex/u);
   assert.match(read('profile-engine.js'), /window\.visualViewport\?\.addEventListener/);
   assert.match(read('profile-engine.js'), /addEventListener\?\.\('resize', syncVisualViewportHeight\)/);
   assert.match(read('profile-engine.js'), /visualViewport\?\.addEventListener\?\.\('scroll', syncVisualViewportHeight\)/);
