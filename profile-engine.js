@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.0';
+  const ENGINE_VERSION = '0.9.1';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -1097,6 +1097,7 @@ ${bindingObligation}
       getCtx, getSettings, getMvu, diagPickerActive, buildDiagSelectedWi,
       buildWorldInfo, wiContextMode, collectMvuUpdateRules, getMvuStatData,
       resolveAutoTargetMessage, extractUpdateBlock, buildDiagnosePromptFrom,
+      stripMechanismBlocks,
       beginPostReplyCall, showAutoDiagGenerating, dismissToast,
       callDirect, resolveEndpointUrl, callProfile, writeUpdateBlockToMessage,
       refreshMessageBar, notifyAutoDiagnose, cancelPostReply, getFixCfg, setFixCfg,
@@ -1110,6 +1111,19 @@ ${bindingObligation}
     return value && typeof value === 'object' && value.stat_data !== undefined ? value.stat_data : value;
   }
 
+  // Direct copy of the mature formal Doctor predicate.  A display-only host
+  // payload is not a variable baseline, while legacy bare stat objects remain
+  // supported for cards that do not wrap them in stat_data.
+  function hasUsableStatData(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    if (Object.prototype.hasOwnProperty.call(value, 'stat_data')) {
+      return Boolean(value.stat_data && typeof value.stat_data === 'object'
+        && !Array.isArray(value.stat_data) && Object.keys(value.stat_data).length > 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'display_data')) return false;
+    return Object.keys(value).length > 0;
+  }
+
   async function mvuPayloadAt(messageId) {
     const numericId = Number(messageId);
     if (!Number.isInteger(numericId) || numericId < 0) throw new Error('缺少可固定的MVU消息楼层');
@@ -1121,6 +1135,22 @@ ${bindingObligation}
   async function currentMvuState(messageId) {
     try { return deepClone(statDataOf(await mvuPayloadAt(messageId)) ?? null); }
     catch { return null; }
+  }
+
+  // Direct transplant of the mature previousMvuData scan used by the formal
+  // Doctor: the pre-update baseline is the nearest earlier assistant floor
+  // with usable stat_data, never an assumed messageId - 1 user row.
+  async function previousMvuPayload(messageId) {
+    const chat = ctx()?.chat || [];
+    for (let cursor = Number(messageId) - 1; cursor >= 0; cursor -= 1) {
+      const message = chat[cursor];
+      if (!message || message.is_user || message.is_system) continue;
+      try {
+        const payload = await mvuPayloadAt(cursor);
+        if (hasUsableStatData(payload)) return payload;
+      } catch { /* an older floor may not expose MVU data */ }
+    }
+    return null;
   }
 
   function disableNativeStoryPostReply() {
@@ -1176,12 +1206,14 @@ ${bindingObligation}
       const rules = await so.collectMvuUpdateRules(wiBlock);
       if (rules.length) wiBlock = [wiBlock, ...rules].filter(Boolean).join('\n\n');
     }
-    const baselinePayload = await mvuPayloadAt(target.index);
-    if (baselinePayload === null || baselinePayload === undefined) {
-      throw new Error('固定楼层没有可读取的MVU快照，不能用空状态冒充变量正确');
+    const postUpdatePayload = await mvuPayloadAt(target.index);
+    if (!hasUsableStatData(postUpdatePayload)) {
+      throw new Error('固定楼层没有可用的stat_data快照，不能用空状态或显示缓存冒充变量正确');
     }
-    const baselineDigest = JSON.stringify(baselinePayload);
-    const stat = deepClone(statDataOf(baselinePayload));
+    const postUpdateDigest = JSON.stringify(postUpdatePayload);
+    const stat = deepClone(statDataOf(postUpdatePayload));
+    const preUpdatePayload = await previousMvuPayload(target.index);
+    const preUpdateStat = deepClone(statDataOf(preUpdatePayload) ?? null);
     requireTaskOwner(owner, target, '变量诊断上下文完成');
     const statStr = stat ? JSON.stringify(stat, null, 2) : '';
     const aiIdx = target.index;
@@ -1194,12 +1226,58 @@ ${bindingObligation}
     const baseSystemPrompt = so.buildDiagnosePromptFrom(storyCtx, storySettings, {
       wiBlock, statStr, latestBlock, latestReply, auto: true,
     });
+    const hasOriginalUpdate = Boolean(latestBlock);
+    const evidenceAddendum = hasOriginalUpdate
+      ? '【Doctor闭环核对补充】下方 current post-update 只表示原更新实际落地后的观测结果，不保证语义正确。对于本次调用，必须先依据权威规则、触发用户输入和最终接受正文独立推导应有变化；原更新块和 current 值都只是待核对对象。若应有结果与 current 不同，必须输出叠加在 current 上的最小纠正补丁。'
+      : '【Doctor闭环核对补充】本楼没有完整 UpdateVariable 更新块。下方 current pre-update 是本轮变化尚未写入时的当前起点，不是本回合已经完成后的正确结果。必须依据权威规则、触发用户输入和最终接受正文独立推导本回合全部应有变化，并输出叠加在这个 current 起点上的完整本轮补丁。';
+    const systemWithEvidence = `${baseSystemPrompt}\n\n${evidenceAddendum}`;
     const systemPrompt = settings().globalPrompt
-      ? `${baseSystemPrompt}\n\n【用户的全局自定义模型适配附加提示词】\n${settings().globalPrompt}`
-      : baseSystemPrompt;
-    const userMsg = latestBlock
+      ? `${systemWithEvidence}\n\n【用户的全局自定义模型适配附加提示词】\n${settings().globalPrompt}`
+      : systemWithEvidence;
+    const baseTask = hasOriginalUpdate
       ? '【自动诊断】最新一条 AI 回复里带有 <UpdateVariable> 更新。请按本卡 MVU 规则与当前状态核验它：有错就只输出一个修正后的 <UpdateVariable> 区块（仅含需改正的字段）；完全正确则在 <JSONPatch> 里输出空数组（[]）。'
       : '【自动诊断】最新一条 AI 回复的正文里【没有】变量更新区块。请充当变量更新引擎：通读这条回复，依本卡 MVU 规则与当前状态，推导出本回合应当发生的全部变量更新，输出一个 <UpdateVariable> 区块把状态更新到位；若这条回复确实不涉及任何变量变化，则在 <JSONPatch> 里输出空数组（[]）。';
+    let acceptedNarrative;
+    try {
+      acceptedNarrative = typeof so.stripMechanismBlocks === 'function'
+        ? String(so.stripMechanismBlocks(latestReply) || '').trim()
+        : latestReply;
+    } catch { acceptedNarrative = latestReply; }
+    if (!acceptedNarrative) acceptedNarrative = '本楼没有可独立读取的叙事正文，只有变量机制区块。';
+    const currentStateTag = hasOriginalUpdate
+      ? 'current_post_update_stat_data'
+      : 'current_pre_update_stat_data';
+    const auditInstruction = hasOriginalUpdate
+      ? '【核对顺序】先依据触发输入、最终正文和权威规则，独立列出本回合每一组明确应发生的变化；原更新块和当前值都只是待核对对象，不是正确答案。再把应有结果与更新前、更新后的状态逐项比较，连同配套字段一起检查。纠正补丁必须叠加在 current post-update 状态上，不得从前态重放整回合。只有全部变化组核对后确实没有差异，才输出空 JSONPatch。'
+      : '【核对顺序】本楼没有原更新块。先依据触发输入、最终正文和权威规则，独立列出本回合每一组明确应发生的变化；把 current pre-update 作为尚未应用本轮变化的起点，生成叠加在这个起点上的完整本轮补丁，连同配套字段一起更新。不得把 current 起点误当成本回合已经完成后的结果；只有正文确实没有任何应写入的变化，才输出空 JSONPatch。';
+    // Minimal transplant of legacy/0.7.5's mature four-source audit packet.
+    // Story Oracle still owns rules, transport, extraction and application;
+    // this adapter restores the pre/post/turn evidence that the post-state-only
+    // original cannot use to detect a correct delta applied to a wrong base.
+    const userMsg = `${baseTask}
+
+【本楼闭环核对材料】
+<pre_update_stat_data>
+${cropForModel(preUpdateStat ?? '宿主没有提供可读的更新前状态；请依据规则、触发输入和最终正文推导。', 30000)}
+</pre_update_stat_data>
+
+<${currentStateTag}>
+${cropForModel(stat ?? '当前状态不可用。', 30000)}
+</${currentStateTag}>
+
+<original_update_block>
+${cropForModel(latestBlock || '本楼没有完整UpdateVariable区块。', 16000)}
+</original_update_block>
+
+<triggering_user_input>
+${cropForModel(previousUser(target.index) || '宿主没有提供可读的触发用户输入。', 18000)}
+</triggering_user_input>
+
+<accepted_narrative>
+${cropForModel(acceptedNarrative, 40000)}
+</accepted_narrative>
+
+${auditInstruction}`;
     const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }];
     const request = { systemPrompt, userMsg };
     const diagnosisAttempts = [];
@@ -1228,7 +1306,7 @@ ${bindingObligation}
         if (!transportError) break;
         requireTaskOwner(owner, target, `变量诊断运输回执第${attempt}次返回后`);
         const retryBaseline = await mvuPayloadAt(target.index);
-        if (JSON.stringify(retryBaseline) !== baselineDigest) {
+        if (JSON.stringify(retryBaseline) !== postUpdateDigest) {
           throw Object.assign(new Error('变量诊断运输错误恢复期间固定楼层MVU基线已变化，本次旧诊断已废弃'), { code: STALE_TASK });
         }
         if (attempt === 1) setPhase('diagnosing', '故事神谕返回运输错误，正在按原请求自动重试一次');
@@ -1241,7 +1319,7 @@ ${bindingObligation}
     }
     requireTaskOwner(owner, target, '变量诊断模型返回');
     const unchangedPayload = await mvuPayloadAt(target.index);
-    if (JSON.stringify(unchangedPayload) !== baselineDigest) {
+    if (JSON.stringify(unchangedPayload) !== postUpdateDigest) {
       throw enrichDiagnosisError(Object.assign(new Error('模型诊断期间固定楼层MVU基线已变化，本次旧诊断已废弃'), { code: STALE_TASK }));
     }
 
@@ -1313,16 +1391,30 @@ ${bindingObligation}
       else so.refreshMessageBar(aiIdx);
       refreshAcceptedTarget(target);
     }
-    so.notifyAutoDiagnose(result, patchBlock);
+    // The original notifier describes nochange as proven clean.  Doctor has
+    // stronger evidence semantics: nochange only means the model proposed no
+    // state-changing repair, so the honest Doctor report/UI owns that outcome.
+    if (result.status === 'applied') so.notifyAutoDiagnose(result, patchBlock);
     return {
       ok: true,
       status: result.status,
+      semanticProof: false,
+      verdict: result.status === 'applied'
+        ? '模型提出纠正，已由MVU应用并完成同楼读回'
+        : '模型未提出会改变当前状态的修复；这不等于脚本证明变量绝对正确',
       raw: String(raw),
       patchBlock: String(patchBlock || ''),
       request,
       diagnosisAttempts: deepClone(diagnosisAttempts),
       mvu: await currentMvuState(target.index),
     };
+  }
+
+  function diagnosisDisplayLabel(value) {
+    const status = typeof value === 'string' ? value : value?.status;
+    if (status === 'applied') return '已修复并读回';
+    if (status === 'nochange') return '模型未提出有效修复（不等于已证明正确）';
+    return status || '已保留';
   }
 
   function projectObservableWorld(worldState) {
@@ -2712,7 +2804,8 @@ ${bindingObligation}
       runtime.lastResult = result;
       runtime.failedStep = '';
       await recordRunReport({ at: new Date().toISOString(), target: deepClone(target), result: deepClone(result), worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null });
-      setPhase('done', `本楼变量与人物完成：变量${result.diagnosis?.status || '已保留'}；档案${result.profile?.count ?? 0}张。原版世界引擎独立运行，当前第${result.world.round}轮`, result);
+      const diagnosisLabel = diagnosisDisplayLabel(result.diagnosis);
+      setPhase('done', `本楼变量与人物完成：变量${diagnosisLabel}；档案${result.profile?.count ?? 0}张。原版世界引擎独立运行，当前第${result.world.round}轮`, result);
       return result;
     } catch (error) {
       if (error?.doctorWrittenTarget && target?.generationKey && runtime.pipelineEpoch === owner) {
@@ -4057,7 +4150,7 @@ ${bindingObligation}
             setPhase('diagnosing', '正在手动复检本楼MVU');
             const value = await runManualDiagnosisAndResume(target);
             if (!value?.diagnosis && !value?.profile && !value?.world) {
-              setPhase('done', `MVU手动复检完成：${value.status}`, value);
+              setPhase('done', `MVU手动复检完成：${diagnosisDisplayLabel(value)}`, value);
             }
           }
           catch (error) { if (error?.code !== STALE_TASK) setPhase('failed', `MVU手动复检失败：${error.message || error}`); }

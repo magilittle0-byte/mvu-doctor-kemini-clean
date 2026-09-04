@@ -258,6 +258,8 @@ async function installHarness(page, options = {}) {
     window.__downloads = [];
     window.__profilePrompts = [];
     window.__modelCalls = [];
+    window.__diagnosisRequests = [];
+    window.__storyNotifications = [];
     window.__discoveryCalls = 0;
     window.__metadataByChat = metadataByChat;
     window.__context = context;
@@ -320,19 +322,25 @@ async function installHarness(page, options = {}) {
       getMvuStatData: async () => structuredClone(mvuState),
       resolveAutoTargetMessage: (chat, index) => ({ idx: index, text: chat[index]?.mes || '' }),
       extractUpdateBlock,
+      stripMechanismBlocks: (value) => String(value || '')
+        .replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/giu, '')
+        .replace(/<UpdateVariable>[\s\S]*$/iu, '')
+        .replace(/\n{3,}/gu, '\n\n').trim(),
       buildDiagnosePromptFrom: () => 'diagnose the accepted final',
       beginPostReplyCall: () => { const controller = new AbortController(); return { signal: controller.signal, end() {} }; },
       showAutoDiagGenerating: () => null,
       dismissToast() {},
-      callDirect: async () => {
+      callDirect: async (_endpoint, _apiKey, body) => {
         window.__stages.push('diagnosis');
+        window.__diagnosisRequests.push(structuredClone(body?.messages || []));
         const reply = queuedDiagnosisReplies.length ? queuedDiagnosisReplies.shift() : activeDiagnosisReply;
         if (!slowDiagnosis) return reply;
         return new Promise((resolve) => { pendingDiagnoses.push({ resolve }); });
       },
       resolveEndpointUrl: (settings) => settings.endpoint,
-      callProfile: async () => {
+      callProfile: async (_profileId, messages) => {
         window.__stages.push('diagnosis');
+        window.__diagnosisRequests.push(structuredClone(messages || []));
         const reply = queuedDiagnosisReplies.length ? queuedDiagnosisReplies.shift() : activeDiagnosisReply;
         if (!slowDiagnosis) return reply;
         return new Promise((resolve) => { pendingDiagnoses.push({ resolve }); });
@@ -344,7 +352,9 @@ async function installHarness(page, options = {}) {
         if (Array.isArray(message.swipes) && typeof message.swipes[message.swipe_id] === 'string') message.swipes[message.swipe_id] = message.mes;
       },
       refreshMessageBar() {},
-      notifyAutoDiagnose() {},
+      notifyAutoDiagnose(result, patch) {
+        window.__storyNotifications.push({ status: String(result?.status || ''), patch: String(patch || '') });
+      },
       cancelPostReply() {},
       getFixCfg: () => ({ ...storyFixCfg }),
       setFixCfg: (next) => Object.assign(storyFixCfg, next),
@@ -549,7 +559,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.0 native World ownership browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.1 native World ownership and variable evidence browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -1912,6 +1922,125 @@ test('0.9.0 native World ownership browser smoke', { timeout: 180000 }, async (t
       } finally { await page.close(); }
     });
 
+    await t.test('diagnosis restores the mature pre/post/turn evidence packet and applies a residual fix to post-state', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReply: '<UpdateVariable><Analysis>当前值7距离本轮明确目标12仍差5。</Analysis><JSONPatch>[{"op":"delta","path":"/测试状态/属性","value":5}]</JSONPatch></UpdateVariable>',
+        });
+        await page.evaluate(async () => {
+          const clone = (value) => structuredClone(value);
+          const states = new Map([
+            [0, { stat_data: { 测试状态: { 属性: 5 } } }],
+            [1, { display_data: { 测试状态: { 属性: 999 } } }],
+            [3, { stat_data: { 测试状态: { 属性: 7 } } }],
+          ]);
+          const internals = window.StoryOracleAPI.unsafe.eval('get doctor test internals');
+          internals.getMvu = async () => ({
+            async getMvuData(request) {
+              window.__mvuReads.push(clone(request));
+              const id = Number(request?.message_id);
+              return states.has(id) ? clone(states.get(id)) : null;
+            },
+            async parseMessage(block, oldData) {
+              const next = clone(oldData);
+              const patchText = String(block).match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch>/iu)?.[1] || '[]';
+              const operations = JSON.parse(patchText);
+              for (const operation of operations) {
+                const parts = String(operation.path || '').split('/').slice(1);
+                let parent = next.stat_data;
+                for (const part of parts.slice(0, -1)) parent = parent[part];
+                const key = parts.at(-1);
+                if (operation.op === 'delta') parent[key] += Number(operation.value || 0);
+                else if (operation.op === 'replace') parent[key] = clone(operation.value);
+              }
+              return next;
+            },
+            async replaceMvuData(next, request) {
+              states.set(Number(request?.message_id), clone(next));
+            },
+          });
+          window.__semanticState = (id) => clone(states.get(Number(id)) || null);
+          const prior = '上一回合的测试状态仍是旧默认值5。';
+          const displayOnly = '这一楼只有显示缓存，不能成为变量前态。';
+          const user = '本回合把初始值明确设为10，并获得2点奖励。';
+          const assistant = '白露确认初始值10，奖励生效后最终值应为12。\n<UpdateVariable><Analysis>只记录奖励。</Analysis><JSONPatch>[{"op":"delta","path":"/测试状态/属性","value":2}]</JSONPatch></UpdateVariable>';
+          window.__setChat([
+            { is_user: false, is_system: false, mes: prior, swipe_id: 0, swipes: [prior] },
+            { is_user: false, is_system: false, mes: displayOnly, swipe_id: 0, swipes: [displayOnly] },
+            { is_user: true, is_system: false, mes: user },
+          ]);
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          window.__append({ is_user: false, is_system: false, mes: assistant, swipe_id: 0, swipes: [assistant] });
+          await window.__emit('message_received', 3, 'normal');
+          await window.__emit('generation_ended');
+        });
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => {
+          const request = window.__diagnosisRequests.at(-1) || [];
+          const systemMessage = String(request.find((message) => message.role === 'system')?.content || '');
+          const userMessage = String(request.find((message) => message.role === 'user')?.content || '');
+          const accepted = userMessage.match(/<accepted_narrative>\s*([\s\S]*?)\s*<\/accepted_narrative>/iu)?.[1] || '';
+          return {
+            systemMessage,
+            userMessage,
+            accepted,
+            current: window.__semanticState(3),
+            pre: window.__semanticState(0),
+            notifications: structuredClone(window.__storyNotifications),
+            result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          };
+        });
+        const orderedTags = [
+          '<pre_update_stat_data>', '<current_post_update_stat_data>', '<original_update_block>',
+          '<triggering_user_input>', '<accepted_narrative>', '【核对顺序】',
+        ];
+        let previousPosition = -1;
+        for (const tag of orderedTags) {
+          const position = evidence.userMessage.indexOf(tag);
+          assert.ok(position > previousPosition, `${tag} must remain in the mature evidence order`);
+          previousPosition = position;
+        }
+        assert.match(evidence.systemMessage, /current post-update\s+只表示原更新实际落地后的观测结果，不保证语义正确/u);
+        assert.match(evidence.userMessage, /<pre_update_stat_data>[\s\S]*"属性"\s*:\s*5/u);
+        assert.match(evidence.userMessage, /当前值[\s\S]*7|"属性"\s*:\s*7/u);
+        assert.match(evidence.userMessage, /初始值明确设为10/u);
+        assert.match(evidence.accepted, /最终值应为12/u);
+        assert.doesNotMatch(evidence.accepted, /<UpdateVariable>/iu);
+        assert.equal(evidence.pre.stat_data.测试状态.属性, 5);
+        assert.equal(evidence.current.stat_data.测试状态.属性, 12, 'the correction is residual against post-state, not a replay of the old delta');
+        assert.equal(evidence.result.diagnosis.status, 'applied');
+        assert.equal(evidence.result.diagnosis.semanticProof, false);
+        assert.deepEqual(evidence.notifications.map((entry) => entry.status), ['applied']);
+      } finally { await page.close(); }
+    });
+
+    await t.test('diagnosis without an inline update treats current state as the unapplied starting point', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReply: '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>',
+        });
+        await runAcceptedReply(page, '白露看了一眼窗外，本轮没有发生需要写入变量的变化。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => {
+          const request = window.__diagnosisRequests.at(-1) || [];
+          return {
+            systemMessage: String(request.find((message) => message.role === 'system')?.content || ''),
+            userMessage: String(request.find((message) => message.role === 'user')?.content || ''),
+          };
+        });
+        assert.match(evidence.systemMessage, /本楼没有完整 UpdateVariable 更新块/u);
+        assert.match(evidence.systemMessage, /current pre-update 是本轮变化尚未写入时的当前起点/u);
+        assert.doesNotMatch(evidence.systemMessage, /下方 current post-update 只表示原更新实际落地后的观测结果/u);
+        assert.match(evidence.userMessage, /<current_pre_update_stat_data>[\s\S]*<\/current_pre_update_stat_data>/u);
+        assert.doesNotMatch(evidence.userMessage, /<current_post_update_stat_data>/u);
+        assert.match(evidence.userMessage, /生成叠加在这个起点上的完整本轮补丁/u);
+        assert.match(evidence.userMessage, /不得把 current 起点误当成本回合已经完成后的结果/u);
+      } finally { await page.close(); }
+    });
+
     await t.test('Story Oracle wrapped empty JSONPatch is the original nochange success path', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
@@ -1921,9 +2050,52 @@ test('0.9.0 native World ownership browser smoke', { timeout: 180000 }, async (t
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          notifications: window.__storyNotifications,
         }));
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.diagnosis.status, 'nochange');
+        assert.equal(evidence.result.diagnosis.semanticProof, false);
+        assert.match(evidence.result.diagnosis.verdict, /不等于脚本证明变量绝对正确/u);
+        assert.deepEqual(evidence.notifications, [], 'model nochange must not invoke Story Oracle\'s misleading clean-success notifier');
+      } finally { await page.close(); }
+    });
+
+    await t.test('display-only or empty wrapped state cannot masquerade as current stat_data', async () => {
+      for (const invalidState of [{ display_data: { hp: 10 } }, { stat_data: {} }]) {
+        const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+        try {
+          await installHarness(page, { initialMvuState: invalidState });
+          await runAcceptedReply(page);
+          await waitForSettled(page, 'failed');
+          const evidence = await page.evaluate(() => ({
+            result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+            requests: window.__diagnosisRequests,
+            stages: window.__stages,
+          }));
+          assert.equal(evidence.result.failedStep, 'diagnosis');
+          assert.match(evidence.result.error, /没有可用的stat_data快照/u);
+          assert.deepEqual(evidence.requests, []);
+          assert.deepEqual(evidence.stages, []);
+        } finally { await page.close(); }
+      }
+    });
+
+    await t.test('a mechanism-only reply keeps accepted narrative empty instead of duplicating its update block', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReply: '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>',
+          discoveryReplies: [discoveryEnvelope([], '本轮没有叙事人物。')],
+        });
+        await runAcceptedReply(page, '<UpdateVariable><Analysis>只有机制更新。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>');
+        await waitForSettled(page, 'done');
+        const accepted = await page.evaluate(() => {
+          const request = window.__diagnosisRequests.at(-1) || [];
+          const userMessage = String(request.find((message) => message.role === 'user')?.content || '');
+          return userMessage.match(/<accepted_narrative>\s*([\s\S]*?)\s*<\/accepted_narrative>/iu)?.[1] || '';
+        });
+        assert.match(accepted, /只有变量机制区块/u);
+        assert.doesNotMatch(accepted, /<UpdateVariable>/iu);
       } finally { await page.close(); }
     });
 

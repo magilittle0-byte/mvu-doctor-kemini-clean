@@ -1,4 +1,6 @@
-# MVU 人物与世界医生（Kemini Clean 0.9.0）
+# MVU 人物与世界医生（Kemini Clean 0.9.1）
+
+0.9.1 修复真实首回合暴露的变量漏判：Story Oracle 原件的 post-state 诊断只看“当前结果是否已出现”，无法稳定识别“正确增量应用在错误旧默认值上”。Doctor 现在最小移植旧 Clean 0.7.5 与正式医生的成熟取证顺序，把上一有效 MVU、当前 post-state、原更新块、触发用户输入和最终接受正文作为紧邻任务的闭环材料；仍由 Story Oracle 原件负责规则、模型调用与区块提取，由官方 MVU 负责解析、写入和同楼读回。空补丁只显示为“模型未提出有效修复”，不再冒充脚本已经证明变量绝对正确。
 
 0.9.0 修正 0.8.x 最根本的整合错误：仓库虽然逐字节内置了 World Engine 3.0.2，却在外层关闭原生自动生命周期，再另造世界调度、重 roll、提交收据和全量上下文桥。现在这些接管已经删除，World 的事件监听、节拍、提示、宽容解析、重试、存档、checkpoint、重 roll、注入、设置和完整界面重新由原件拥有。Doctor 只在原生 `evolve` 真正开始前等待同楼变量诊断进入终态；诊断失败不会拦截 World，人物阶段也完全不是 World 的前置条件。
 
@@ -18,7 +20,7 @@ Disnight World Engine v3.0.2 仍由自己的宿主事件、scheduler 和原生 `
 - `vendor/life-state-v5.35/`：保留用户提供的两份原始 JSON 与逐字提取脚本。人物档案复用其宽容 JSON 提取和“原结果一次、定向修复最多一次”方式。
 - `profile-engine.js`：只实现 Story 变量复检与人物档案之间确实不存在的宿主胶水，包括最终回复身份、人物档案 Schema/原子提交、恢复收据、完整报告与响应式控制台；World 页只读显示原件状态并可打开原版完整面板。
 
-逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。0.9.0 恢复原生 World 所有权的逐项删除与最小适配见 [`docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md`](docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md)。冻结原件可分别运行：
+逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。0.9.0 恢复原生 World 所有权的逐项删除与最小适配见 [`docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md`](docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md)；0.9.1 变量闭环取证见 [`docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md`](docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md)。冻结原件可分别运行：
 
 0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)；0.8.7 的数据库来源行绑定与失败证据修复见 [`docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md`](docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md)；0.8.8 的占位词边界根修见 [`docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md`](docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md)；0.8.9 的人物发现称谓绑定修复见 [`docs/0.8.9-PROFILE-DISCOVERY-BINDING-SOURCE-MAP.md`](docs/0.8.9-PROFILE-DISCOVERY-BINDING-SOURCE-MAP.md)。
 
