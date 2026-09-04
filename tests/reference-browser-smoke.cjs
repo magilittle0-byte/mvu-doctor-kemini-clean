@@ -559,7 +559,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.6 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.7 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -2248,7 +2248,7 @@ test('0.9.6 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       } finally { await page.close(); }
     });
 
-    await t.test('diagnosis receipts follow official MVU array insert, rounded delta, date, and described-value semantics', async () => {
+    await t.test('official MVU alone applies array inserts, rounded deltas, dates, and described values', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -2325,67 +2325,57 @@ test('0.9.6 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       } finally { await page.close(); }
     });
 
-    await t.test('a mixed diagnosis patch records partial, persists only the readback-confirmed operation, and still runs profile', async () => {
+    await t.test('an already-normalized object insert is not reinterpreted by a shadow patch engine', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
-          initialMvuState: { stat_data: { 契约者: { 未分配属性点: 15 } } },
-          diagnosisReply: '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/契约者/未分配属性点","value":0},{"op":"replace","path":"/契约者/外貌","value":"不存在的路径不得写回"},{"op":"remove","path":"/不存在的父级/嵌套字段"}]</JSONPatch></UpdateVariable>',
+          initialMvuState: { stat_data: { 契约者: { 背包: { 新手短刃: { 名称: '新手短刃', 倍率: 1, 模板补全: '由官方MVU schema规范化' } } } } },
+          diagnosisReply: '<UpdateVariable><Analysis>倍率已经是整数1，不需要改变其他字段。</Analysis><JSONPatch>[{"op":"replace","path":"/契约者/背包/新手短刃/倍率","value":1}]</JSONPatch></UpdateVariable>',
         });
         await page.evaluate(() => {
           const clone = (value) => structuredClone(value);
-          const states = new Map([[1, { stat_data: { 契约者: { 未分配属性点: 15 } } }]]);
+          const states = new Map([[1, { stat_data: { 契约者: { 背包: { 新手短刃: {
+            名称: '新手短刃', 倍率: 1, 模板补全: '由官方MVU schema规范化',
+          } } } } }]]);
+          let parseCount = 0;
+          let replaceCount = 0;
           const internals = window.StoryOracleAPI.unsafe.eval('get doctor test internals');
           internals.getMvu = async () => ({
             async getMvuData(request) {
               return clone(states.get(Number(request?.message_id)) || null);
             },
             async parseMessage(block, oldData) {
-              const next = clone(oldData);
-              const patchText = String(block).match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch>/iu)?.[1] || '[]';
-              for (const operation of JSON.parse(patchText)) {
-                const parts = String(operation.path || '').split('/').slice(1);
-                let parent = next.stat_data;
-                for (const part of parts.slice(0, -1)) {
-                  if (!parent || typeof parent !== 'object' || !Object.hasOwn(parent, part)) return next;
-                  parent = parent[part];
-                }
-                const key = parts.at(-1);
-                if (operation.op === 'replace' && Object.hasOwn(parent, key)) parent[key] = clone(operation.value);
-              }
-              return next;
+              parseCount += 1;
+              return clone(oldData);
             },
             async replaceMvuData(next, request) {
+              replaceCount += 1;
               states.set(Number(request?.message_id), clone(next));
             },
           });
-          window.__mixedMvuState = () => clone(states.get(1));
+          window.__normalizedInsertEvidence = () => ({
+            state: clone(states.get(1)), parseCount, replaceCount,
+          });
         });
-        await runAcceptedReply(page, '白露核对完行囊，准备继续赶路。');
+        await runAcceptedReply(page, '白露确认行囊里已经出现新手短刃。\n<UpdateVariable><Analysis>把新手短刃加入对象背包，schema随后补齐模板字段。</Analysis><JSONPatch>[{"op":"insert","path":"/契约者/背包/新手短刃","value":{"名称":"新手短刃","倍率":1.0}}]</JSONPatch></UpdateVariable>');
         await waitForSettled(page, 'done');
-        await page.locator('#mvu-ref-launcher').click();
         const evidence = await page.evaluate(() => ({
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
-          detail: window.MVUDoctorProfileEngine.getRuntime().detail,
-          state: window.__mixedMvuState(),
-          message: window.__context.chat[1]?.mes || '',
+          official: window.__normalizedInsertEvidence(),
           stages: [...window.__stages],
-          panel: document.getElementById('mvu-ref-panel')?.textContent || '',
         }));
-        assert.equal(evidence.result.status, 'complete_with_warning');
-        assert.equal(evidence.result.diagnosis.status, 'partial');
-        assert.equal(evidence.result.diagnosis.applicationComplete, false);
+        assert.equal(evidence.result.status, 'complete');
+        assert.equal(evidence.result.diagnosis.status, 'nochange');
+        assert.equal(evidence.result.diagnosis.applicationComplete, true);
         assert.equal(evidence.result.diagnosis.canProceed, true);
-        assert.equal(evidence.state.stat_data.契约者.未分配属性点, 0, 'the legal patch must be committed and read back');
-        assert.deepEqual(evidence.result.diagnosis.unresolved.map((item) => [item.path, item.outcome]), [
-          ['/契约者/外貌', 'not_in_schema'],
-          ['/不存在的父级/嵌套字段', 'not_in_schema'],
-        ]);
-        assert.match(evidence.message, /未分配属性点/u);
-        assert.doesNotMatch(evidence.message, /不存在的路径不得写回/u);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'profile'], 'partial variable repair must not suppress the independent profile stage');
-        assert.match(evidence.detail, /变量仍有警告.*部分修复：仍有2项未落地/u);
-        assert.match(evidence.panel, /warning[\s\S]*部分修复：仍有2项未落地/u, 'the panel must expose partial rather than a green success');
+        assert.equal(evidence.result.diagnosis.verificationMode, 'story-oracle-official-mvu');
+        assert.equal(evidence.result.diagnosis.officialResult, 'parsed-equivalent');
+        assert.deepEqual(evidence.result.diagnosis.operations, []);
+        assert.deepEqual(evidence.result.diagnosis.unresolved, []);
+        assert.equal(evidence.official.parseCount, 1, 'the correction must be parsed exactly once by official MVU');
+        assert.equal(evidence.official.replaceCount, 0, 'an official no-op must remain zero-write');
+        assert.equal(evidence.official.state.stat_data.契约者.背包.新手短刃.模板补全, '由官方MVU schema规范化');
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
       } finally { await page.close(); }
     });
 
@@ -2403,7 +2393,7 @@ test('0.9.6 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.diagnosis.status, 'nochange');
         assert.equal(evidence.result.diagnosis.semanticProof, false);
-        assert.match(evidence.result.diagnosis.verdict, /不等于脚本能证明所有剧情语义绝对正确/u);
+        assert.match(evidence.result.diagnosis.verdict, /不是脚本对剧情语义的独立证明/u);
         assert.deepEqual(evidence.notifications, [], 'model nochange must not invoke Story Oracle\'s misleading clean-success notifier');
       } finally { await page.close(); }
     });

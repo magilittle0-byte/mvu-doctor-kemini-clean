@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const VERSION = '0.9.6';
+  const VERSION = '0.9.7';
   const WORLD_VERSION = '3.0.2';
   const WORLD_GLOBALS = ['WORLD_ENGINE_STORE', 'WORLD_ENGINE_CORE', 'WORLD_ENGINE_API'];
   const WORLD_SETTINGS_KEY = 'world_engine_settings';

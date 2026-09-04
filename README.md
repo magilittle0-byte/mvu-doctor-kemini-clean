@@ -1,10 +1,12 @@
-# MVU 人物与世界医生（Kemini Clean 0.9.6）
+# MVU 人物与世界医生（Kemini Clean 0.9.7）
+
+0.9.7 修正 0.9.6 真实新聊天首轮暴露的变量假失败：正文的对象 `insert` 已被官方 MVU 正确写入并按 schema 补全，Doctor 最终状态与宿主同楼读回也完全一致，但 0.9.5 新增的本地逐操作模拟器无法复现官方模板归一化，反而把已存在的物品判成“未落地”。该影子执行器、上一楼重放、局部补丁剔除和 `partial` 判定现已删除。变量链重新与 Story Oracle v1.35.4 原件一致：一次模型诊断，只调用一次官方 `Mvu.parseMessage`；候选有变化才 `replaceMvuData`，随后核对固定楼层完整读回。身份固定、运输错误识别、手动复检、撤销、刷新和诊断导出仍保留，因为这些只负责宿主安全，不解释 MVU 操作语义。
 
 0.9.6 修正了 0.9.5 真实首轮仍然暴露的语义断点：Doctor 主体提示确实只进入原生 World 请求一次，原生解析、合并和保存也成功，但脚本把唯一档案人物硬指定为第一行动者；当该人物本轮只能等待玩家时，模型便回到玩家中心，把建档和旧背景换句话写入摘要或黑箱，没有产生可跨轮追踪的非玩家世界行动。现在接缝直接沿用 World 3.0.2 自己的强制随机任务写法：脚本轮换人物仍是优先候选，但只会等待玩家时回退到原生 World、世界书或近期对话中的既存人物、势力、组织或环境过程；本轮已实施动作必须进入 `events`、`factions`、`winds`、`worldTrends` 或 `blackbox.secretActions` 等原生状态，不能只改摘要、影响链、声誉或复述正文。没有新增 scheduler、schema、解析器、存储或二次模型调用。
 
 0.9.5 撤销了 0.9.4 未通过真实首轮的 World 接缝：Doctor 不再劫持原生 Memory 资料槽，也不再覆盖 World 自己的字段归属。World 3.0.2 的原生生命周期、骰子、一次调用、宽容解析、合并、存档、checkpoint、重 roll 和 UI 不变；仅在它本来拼接区域／远方／近端随机任务的 `extraInstructions` 数组末尾调用一个可选人物 provider。provider 只给一名主行动者及至多两名必要关系人物，要求从主体目标产生尝试、由世界裁决，再严格按原生规则把无目击、无痕且有跨轮价值的已实施私密行动写入 `blackbox`，把可观察的持续进程写入 `events` 等对应字段。没有档案时，World 仍从自己的状态、世界书和近期对话选择非玩家人物、势力或环境过程。
 
-同版把变量医生缩回 Story Oracle 原样主链：世界书规则＋当前状态＋本楼回复，经一次模型调用得到最小补丁，再由官方 MVU 解析、写入和读回。Doctor 只补官方接口没有提供的逐操作回执；一个合法操作写入成功时，不再把同批不存在于 schema 或没有落地的路径一并显示成成功。可落地部分照常保存，未落地项明确显示“部分修复”并保留手动复检，人物和 World 不被新门禁卡死。
+同版曾试图在 Story Oracle 主链后补一套官方接口没有提供的逐操作回执。真实运行证明它会把官方 schema 模板和对象归一化误判成失败；0.9.7 已整段移除，不再作为当前机制。
 
 0.9.4 曾尝试把完整人物投影和行动命令写入 Memory 上下文；真实首轮证明任务位置错误，且过宽的字段指令让模型把玩家旧背景误报成本轮黑箱变化。该候选已废弃，不能作为可用证据。
 
@@ -12,7 +14,7 @@
 
 0.9.2 修复真实 390×844 酒馆视口暴露的控制台裁切：五个标签在手机上改为 3+2 响应式网格，保留不小于 44px 的触控目标并消除标签栏横向滚动；验收脚本也只检查 Doctor 自己的面板，并实际滚动到总览末端确认操作可达，不再把宿主页面宽度或隐藏页按钮误判成 Doctor 失败。变量、人物和原生 World 运行逻辑均未改动。
 
-0.9.1 曾针对真实首回合的变量漏判加入前态／后态长证据包；0.9.5 已用 Story Oracle 原样短主链与脚本逐操作读回取代该历史实现。空补丁仍只表示“模型未提出状态改动”，不冒充脚本已经证明全部剧情语义正确。
+0.9.1 曾针对真实首回合的变量漏判加入前态／后态长证据包；0.9.5 曾改成 Story Oracle 短主链外加本地逐操作重放，0.9.7 又按真实失败证据删除了后者，只保留 Story Oracle 的一次诊断与官方 MVU 解析／写入／同楼读回。空补丁仍只表示“模型未提出状态改动”，不冒充脚本已经证明全部剧情语义正确。
 
 0.9.0 修正 0.8.x 最根本的整合错误：仓库虽然逐字节内置了 World Engine 3.0.2，却在外层关闭原生自动生命周期，再另造世界调度、重 roll、提交收据和全量上下文桥。这些接管已经删除，World 的事件监听、节拍、提示、宽容解析、重试、存档、checkpoint、重 roll、注入、设置和完整界面重新由原件拥有。0.9.5 仍只保留同楼 accepted-final 屏障，没有恢复旧调度器。
 
@@ -32,7 +34,7 @@ Disnight World Engine v3.0.2 仍由自己的宿主事件、scheduler 和原生 `
 - `vendor/life-state-v5.35/`：保留用户提供的两份原始 JSON 与逐字提取脚本。人物档案复用其宽容 JSON 提取和“原结果一次、定向修复最多一次”方式。
 - `profile-engine.js`：只实现 Story 变量复检与人物档案之间确实不存在的宿主胶水，包括最终回复身份、人物档案 Schema/原子提交、恢复收据、完整报告与响应式控制台；World 页只读显示原件状态并可打开原版完整面板。
 
-逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。0.9.0 恢复原生 World 所有权的逐项删除与最小适配见 [`docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md`](docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md)；0.9.1 变量闭环取证见 [`docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md`](docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md)；0.9.2 移动端布局与验收边界见 [`docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md`](docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md)；0.9.3 的原生手动路径、公开等级筛选和共享 API 顺序点见 [`docs/0.9.3-MATURE-WORLD-ADAPTER-SOURCE-MAP.md`](docs/0.9.3-MATURE-WORLD-ADAPTER-SOURCE-MAP.md)；0.9.4 的失败尝试见 [`docs/0.9.4-WORLD-ACTOR-SEED-SOURCE-MAP.md`](docs/0.9.4-WORLD-ACTOR-SEED-SOURCE-MAP.md)；0.9.5 的根因与最小接缝见 [`docs/0.9.5-WORLD-NATIVE-TASK-SLOT-AND-MVU-RECEIPT-SOURCE-MAP.md`](docs/0.9.5-WORLD-NATIVE-TASK-SLOT-AND-MVU-RECEIPT-SOURCE-MAP.md)；0.9.6 的真实首轮语义失败与原生任务写法复用见 [`docs/0.9.6-WORLD-ACTOR-TASK-SEMANTIC-ROOT-FIX.md`](docs/0.9.6-WORLD-ACTOR-TASK-SEMANTIC-ROOT-FIX.md)。来源验证可运行：
+逐文件来源、哈希和改动类型见 [`docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md`](docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md)。0.9.0 恢复原生 World 所有权的逐项删除与最小适配见 [`docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md`](docs/0.9.0-NATIVE-WORLD-OWNERSHIP-SOURCE-MAP.md)；0.9.1 变量闭环取证见 [`docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md`](docs/0.9.1-VARIABLE-EVIDENCE-SOURCE-MAP.md)；0.9.2 移动端布局与验收边界见 [`docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md`](docs/0.9.2-MOBILE-LAYOUT-SOURCE-MAP.md)；0.9.3 的原生手动路径、公开等级筛选和共享 API 顺序点见 [`docs/0.9.3-MATURE-WORLD-ADAPTER-SOURCE-MAP.md`](docs/0.9.3-MATURE-WORLD-ADAPTER-SOURCE-MAP.md)；0.9.4 的失败尝试见 [`docs/0.9.4-WORLD-ACTOR-SEED-SOURCE-MAP.md`](docs/0.9.4-WORLD-ACTOR-SEED-SOURCE-MAP.md)；0.9.5 的根因与最小接缝见 [`docs/0.9.5-WORLD-NATIVE-TASK-SLOT-AND-MVU-RECEIPT-SOURCE-MAP.md`](docs/0.9.5-WORLD-NATIVE-TASK-SLOT-AND-MVU-RECEIPT-SOURCE-MAP.md)；0.9.6 的真实首轮语义失败与原生任务写法复用见 [`docs/0.9.6-WORLD-ACTOR-TASK-SEMANTIC-ROOT-FIX.md`](docs/0.9.6-WORLD-ACTOR-TASK-SEMANTIC-ROOT-FIX.md)；0.9.7 删除影子 MVU 执行器并恢复 Story Oracle 唯一解析链的根因记录见 [`docs/0.9.7-STORY-ORACLE-SINGLE-MVU-EXECUTOR-ROOT-FIX.md`](docs/0.9.7-STORY-ORACLE-SINGLE-MVU-EXECUTOR-ROOT-FIX.md)。来源验证可运行：
 
 0.8.1 的真实宿主生命周期根修及直接复用边界见 [`docs/0.8.1-LIFECYCLE-SOURCE-MAP.md`](docs/0.8.1-LIFECYCLE-SOURCE-MAP.md)；0.8.2 的 Story Oracle no-op 语义回归见 [`docs/0.8.2-STORY-NOOP-SOURCE-MAP.md`](docs/0.8.2-STORY-NOOP-SOURCE-MAP.md)；0.8.3 的人物发现边界见 [`docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md`](docs/0.8.3-PROFILE-DISCOVERY-SOURCE-MAP.md)；0.8.4 的档案占位词补填修复见 [`docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md`](docs/0.8.4-PROFILE-PLACEHOLDER-SOURCE-MAP.md)；0.8.5 的 Story Oracle 运输错误恢复见 [`docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md`](docs/0.8.5-STORY-TRANSPORT-RECOVERY-SOURCE-MAP.md)；0.8.6 的人物发现、恢复收据与报告真实落盘见 [`docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md`](docs/0.8.6-PROFILE-DISCOVERY-AND-DURABLE-REPORTS-SOURCE-MAP.md)；0.8.7 的数据库来源行绑定与失败证据修复见 [`docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md`](docs/0.8.7-DATABASE-ROW-BINDING-SOURCE-MAP.md)；0.8.8 的占位词边界根修见 [`docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md`](docs/0.8.8-PROFILE-PLACEHOLDER-BOUNDARY-SOURCE-MAP.md)；0.8.9 的人物发现称谓绑定修复见 [`docs/0.8.9-PROFILE-DISCOVERY-BINDING-SOURCE-MAP.md`](docs/0.8.9-PROFILE-DISCOVERY-BINDING-SOURCE-MAP.md)。
 

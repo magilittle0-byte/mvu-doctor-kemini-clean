@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.6';
+  const ENGINE_VERSION = '0.9.7';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -774,267 +774,6 @@
     catch { return decoded; }
   }
 
-  function jsonPointerState(root, pointer) {
-    const raw = text(pointer);
-    if (!raw.startsWith('/')) return { exists: false, parentExists: false, value: undefined };
-    const segments = raw.split('/').slice(1).map(decodeJsonPointerSegment);
-    if (segments.length === 0) return { exists: true, parentExists: true, value: root, parent: undefined, key: '' };
-    let current = root;
-    for (let index = 0; index < segments.length - 1; index += 1) {
-      const key = segments[index];
-      if (current === null || typeof current !== 'object' || !Object.prototype.hasOwnProperty.call(current, key)) {
-        return { exists: false, parentExists: false, value: undefined, parent: undefined, key: segments.at(-1) };
-      }
-      current = current[key];
-    }
-    const key = segments.at(-1);
-    const parentExists = current !== null && typeof current === 'object';
-    if (!parentExists || !Object.prototype.hasOwnProperty.call(current, key)) {
-      return { exists: false, parentExists, value: undefined, parent: parentExists ? current : undefined, key };
-    }
-    return { exists: true, parentExists: true, value: current[key], parent: current, key };
-  }
-
-  function jsonValueEqual(left, right) {
-    return JSON.stringify(left) === JSON.stringify(right);
-  }
-
-  function arrayInsertApplied(beforeArray, afterArray, key, value) {
-    if (!Array.isArray(beforeArray) || !Array.isArray(afterArray)
-      || afterArray.length !== beforeArray.length + 1) return false;
-    const index = key === '-' ? beforeArray.length : Number(key);
-    if (key !== '-' && (!/^\d+$/u.test(String(key)) || !Number.isInteger(index)
-      || index < 0 || index > beforeArray.length)) return false;
-    if (!jsonValueEqual(afterArray[index], value)) return false;
-    for (let cursor = 0; cursor < index; cursor += 1) {
-      if (!jsonValueEqual(afterArray[cursor], beforeArray[cursor])) return false;
-    }
-    for (let cursor = index; cursor < beforeArray.length; cursor += 1) {
-      if (!jsonValueEqual(afterArray[cursor + 1], beforeArray[cursor])) return false;
-    }
-    return true;
-  }
-
-  function officialDeltaExpected(beforeValue, delta) {
-    if (typeof delta !== 'number' || !Number.isFinite(delta)) return { supported: false };
-    const isValueWithDescription = Array.isArray(beforeValue)
-      && beforeValue.length === 2
-      && typeof beforeValue[1] === 'string'
-      && typeof beforeValue[0] !== 'object';
-    const baseValue = isValueWithDescription ? beforeValue[0] : beforeValue;
-    let expected;
-    if (baseValue instanceof Date && Number.isFinite(baseValue.getTime())) {
-      expected = new Date(baseValue.getTime() + delta).toISOString();
-    } else if (typeof baseValue === 'string') {
-      const parsedDate = new Date(baseValue);
-      if (!Number.isFinite(parsedDate.getTime()) || !Number.isNaN(Number(baseValue))) return { supported: false };
-      expected = new Date(parsedDate.getTime() + delta).toISOString();
-    } else if (typeof baseValue === 'number' && Number.isFinite(baseValue)) {
-      expected = parseFloat((baseValue + delta).toPrecision(12));
-    } else {
-      return { supported: false };
-    }
-    if (!isValueWithDescription) return { supported: true, value: expected };
-    const wrapped = structuredClone(beforeValue);
-    wrapped[0] = expected;
-    return { supported: true, value: wrapped };
-  }
-
-  function diagnosisPatchOperations(block) {
-    const patches = taggedTextBlocks(block, 'JSONPatch');
-    if (patches.length !== 1) throw new Error(`必须且只能有一个JSONPatch，实际${patches.length}个`);
-    const source = String(patches[0] || '')
-      .replace(/^\s*```(?:json)?\s*/iu, '')
-      .replace(/\s*```\s*$/u, '')
-      .trim();
-    const parsed = parseJsonCandidate(source);
-    if (!Array.isArray(parsed)) throw new Error('JSONPatch内容必须是数组');
-    if (parsed.some((operation) => !operation || typeof operation !== 'object' || Array.isArray(operation))) {
-      throw new Error('JSONPatch中的每一项都必须是操作对象');
-    }
-    return parsed;
-  }
-
-  function pointerParentPath(pointer) {
-    const raw = text(pointer);
-    const index = raw.lastIndexOf('/');
-    return index > 0 ? raw.slice(0, index) : '';
-  }
-
-  // Sequential receipt simulation is adapted directly from the mature
-  // simulateOps loop.  It never writes state; official Mvu.parseMessage remains
-  // the only parser/executor.  The local copy exists only because that API does
-  // not expose one receipt per operation.
-  function simulateDiagnosisOperation(root, operation, index, source) {
-    const op = text(operation?.op).toLocaleLowerCase('en-US');
-    const path = text(op === 'move' ? (operation?.to || operation?.path) : operation?.path);
-    const receipt = (outcome, detail = '', touches = [], nextRoot = root) => ({
-      root: nextRoot,
-      receipt: { source, index, op, path, outcome, ...(detail ? { detail } : {}) },
-      touches,
-    });
-    if (!['replace', 'delta', 'insert', 'remove', 'move'].includes(op)) {
-      return receipt('unapplied', '未知操作类型');
-    }
-
-    const candidate = deepClone(root);
-    if (op === 'move') {
-      const fromPath = text(operation?.from);
-      const sourceState = jsonPointerState(candidate, fromPath);
-      if (!sourceState.exists) return receipt('not_in_schema', 'move.from不存在');
-      const movedValue = deepClone(sourceState.value);
-      const sourceTouch = Array.isArray(sourceState.parent) ? pointerParentPath(fromPath) : fromPath;
-      if (Array.isArray(sourceState.parent)) sourceState.parent.splice(Number(sourceState.key), 1);
-      else delete sourceState.parent[sourceState.key];
-      const destination = jsonPointerState(candidate, path);
-      if (!destination.parentExists) return receipt('not_in_schema', 'move.to父路径不存在');
-      const destinationTouch = Array.isArray(destination.parent) ? pointerParentPath(path) : path;
-      if (Array.isArray(destination.parent)) {
-        const targetIndex = destination.key === '-' ? destination.parent.length : Number(destination.key);
-        if (destination.key !== '-' && (!/^\d+$/u.test(String(destination.key))
-          || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex > destination.parent.length)) {
-          return receipt('unapplied', 'move.to数组位置无效');
-        }
-        destination.parent.splice(targetIndex, 0, movedValue);
-      } else {
-        destination.parent[destination.key] = movedValue;
-      }
-      return receipt(jsonValueEqual(root, candidate) ? 'already_correct' : 'applied', '', [sourceTouch, destinationTouch], candidate);
-    }
-
-    const current = jsonPointerState(candidate, path);
-    if (op === 'replace') {
-      if (!current.exists) return receipt('not_in_schema', 'replace目标不存在');
-      if (jsonValueEqual(current.value, operation?.value)) return receipt('already_correct', '', [path]);
-      current.parent[current.key] = deepClone(operation?.value);
-      return receipt('applied', '', [path], candidate);
-    }
-    if (op === 'delta') {
-      if (!current.exists) return receipt('not_in_schema', 'delta目标不存在');
-      const expected = officialDeltaExpected(current.value, operation?.value);
-      if (!expected.supported) return receipt('unapplied', 'delta类型不符合官方MVU语义');
-      const outcome = jsonValueEqual(current.value, expected.value) ? 'already_correct' : 'applied';
-      current.parent[current.key] = deepClone(expected.value);
-      return receipt(outcome, '', [path], candidate);
-    }
-    if (op === 'insert') {
-      if (!current.parentExists) return receipt('not_in_schema', 'insert父路径不存在');
-      if (Array.isArray(current.parent)) {
-        const beforeArray = deepClone(current.parent);
-        const targetIndex = current.key === '-' ? current.parent.length : Number(current.key);
-        if (current.key !== '-' && (!/^\d+$/u.test(String(current.key))
-          || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex > current.parent.length)) {
-          return receipt('unapplied', 'insert数组位置无效');
-        }
-        current.parent.splice(targetIndex, 0, deepClone(operation?.value));
-        if (!arrayInsertApplied(beforeArray, current.parent, current.key, operation?.value)) {
-          return receipt('unapplied', 'insert数组位移核验失败');
-        }
-        return receipt('applied', '', [pointerParentPath(path)], candidate);
-      }
-      if (current.exists) {
-        return jsonValueEqual(current.value, operation?.value)
-          ? receipt('already_correct', '', [path])
-          : receipt('unapplied', 'insert对象键已存在');
-      }
-      current.parent[current.key] = deepClone(operation?.value);
-      return receipt('applied', '', [path], candidate);
-    }
-    if (!current.parentExists) return receipt('not_in_schema', 'remove父路径不存在');
-    if (!current.exists) return receipt('already_correct', '', [path]);
-    if (Array.isArray(current.parent)) {
-      current.parent.splice(Number(current.key), 1);
-      return receipt('applied', '', [pointerParentPath(path)], candidate);
-    }
-    delete current.parent[current.key];
-    return receipt('applied', '', [path], candidate);
-  }
-
-  function auditDiagnosisPatch(block, beforeData, afterData, source) {
-    let operations = [];
-    try { operations = diagnosisPatchOperations(block); }
-    catch (error) {
-      return [{ source, index: 0, op: '', path: '', outcome: 'unapplied', detail: `JSONPatch回执解析失败：${error.message || error}` }];
-    }
-    let expectedRoot = deepClone(statDataOf(beforeData) || {});
-    const simulated = operations.map((operation, index) => {
-      const result = simulateDiagnosisOperation(expectedRoot, operation, index, source);
-      expectedRoot = result.root;
-      return result;
-    });
-    const actualRoot = statDataOf(afterData) || {};
-    const mismatchedTouches = new Set();
-    for (const result of simulated) {
-      if (!['applied', 'already_correct'].includes(result.receipt.outcome)) continue;
-      for (const touchedPath of result.touches) {
-        const expected = touchedPath ? jsonPointerState(expectedRoot, touchedPath) : { exists: true, value: expectedRoot };
-        const actual = touchedPath ? jsonPointerState(actualRoot, touchedPath) : { exists: true, value: actualRoot };
-        if (expected.exists !== actual.exists || !jsonValueEqual(expected.value, actual.value)) mismatchedTouches.add(touchedPath);
-      }
-    }
-    return simulated.map((result) => {
-      const operationMismatch = ['applied', 'already_correct'].includes(result.receipt.outcome)
-        && result.touches.some((path) => mismatchedTouches.has(path));
-      return operationMismatch
-        ? { ...result.receipt, outcome: 'unapplied', detail: '官方MVU最终读回与顺序核验结果不一致' }
-        : result.receipt;
-    });
-  }
-
-  function auditDiagnosisPatchWithoutBaseline(block, currentData, source) {
-    let operations = [];
-    try { operations = diagnosisPatchOperations(block); }
-    catch (error) {
-      return [{ source, index: 0, op: '', path: '', outcome: 'unapplied', detail: `JSONPatch回执解析失败：${error.message || error}` }];
-    }
-    const currentRoot = statDataOf(currentData) || {};
-    return operations.map((operation, index) => {
-      const op = text(operation?.op).toLocaleLowerCase('en-US');
-      const path = text(op === 'move' ? (operation?.to || operation?.path) : operation?.path);
-      const current = jsonPointerState(currentRoot, path);
-      if (!['replace', 'delta', 'insert', 'remove', 'move'].includes(op)) {
-        return { source, index, op, path, outcome: 'unapplied', detail: '未知操作类型' };
-      }
-      if ((op === 'replace' || op === 'delta') && !current.exists) {
-        return { source, index, op, path, outcome: 'not_in_schema' };
-      }
-      if ((op === 'insert' || op === 'remove') && !current.exists && !current.parentExists) {
-        return { source, index, op, path, outcome: 'not_in_schema' };
-      }
-      if (op === 'replace' && JSON.stringify(current.value) === JSON.stringify(operation?.value)) {
-        return { source, index, op, path, outcome: 'already_correct', detail: '无前态，但当前最终值与replace目标一致' };
-      }
-      if (op === 'remove' && !current.exists && current.parentExists) {
-        return { source, index, op, path, outcome: 'already_correct', detail: '无前态，但目标已不存在' };
-      }
-      return { source, index, op, path, outcome: 'unverified', detail: '首个助手楼没有可读的更新前MVU，无法机械证明该操作已正确落地' };
-    });
-  }
-
-  function reconcileOriginalReceipts(originalReceipts, correctionReceipts) {
-    const correctedPaths = new Set((correctionReceipts || [])
-      .filter((receipt) => ['applied', 'already_correct'].includes(receipt.outcome))
-      .map((receipt) => receipt.path)
-      .filter(Boolean));
-    return (originalReceipts || []).map((receipt) => correctedPaths.has(receipt.path)
-      ? { ...receipt, outcome: 'superseded', detail: '同一路径已由本次纠正补丁取代并读回' }
-      : receipt);
-  }
-
-  function appliedDiagnosisBlock(block, receipts) {
-    const operations = diagnosisPatchOperations(block);
-    const acceptedIndexes = new Set((receipts || [])
-      .filter((receipt) => ['applied', 'already_correct'].includes(receipt.outcome))
-      .map((receipt) => Number(receipt.index)));
-    const accepted = operations.filter((_operation, index) => acceptedIndexes.has(index));
-    const analysis = taggedTextBlocks(block, 'Analysis')[0]?.trim()
-      || '变量医生只保留已由MVU读回确认的纠正操作。';
-    return [
-      '<UpdateVariable>', '<Analysis>', analysis.replace(/[<>]/gu, ''), '</Analysis>',
-      '<JSONPatch>', JSON.stringify(accepted, null, 2), '</JSONPatch>', '</UpdateVariable>',
-    ].join('\n');
-  }
-
   function jsonPatchActorNames(content) {
     const names = new Set();
     for (const block of taggedTextBlocks(content, 'JSONPatch')) {
@@ -1541,22 +1280,6 @@ ${bindingObligation}
     catch { return null; }
   }
 
-  // Direct transplant of the mature previousMvuData scan used by the formal
-  // Doctor: the pre-update baseline is the nearest earlier assistant floor
-  // with usable stat_data, never an assumed messageId - 1 user row.
-  async function previousMvuPayload(messageId) {
-    const chat = ctx()?.chat || [];
-    for (let cursor = Number(messageId) - 1; cursor >= 0; cursor -= 1) {
-      const message = chat[cursor];
-      if (!message || message.is_user || message.is_system) continue;
-      try {
-        const payload = await mvuPayloadAt(cursor);
-        if (hasUsableStatData(payload)) return payload;
-      } catch { /* an older floor may not expose MVU data */ }
-    }
-    return null;
-  }
-
   function disableNativeStoryPostReply() {
     const so = storyInternals();
     try {
@@ -1616,7 +1339,6 @@ ${bindingObligation}
     }
     const postUpdateDigest = JSON.stringify(postUpdatePayload);
     const stat = deepClone(statDataOf(postUpdatePayload));
-    const preUpdatePayload = await previousMvuPayload(target.index);
     requireTaskOwner(owner, target, '变量诊断上下文完成');
     const statStr = stat ? JSON.stringify(stat, null, 2) : '';
     const aiIdx = target.index;
@@ -1695,45 +1417,35 @@ ${bindingObligation}
         code: 'story_oracle_unrecognized_diagnosis', raw: String(raw || '').slice(0, 16000),
       }));
     }
-    const originalOperations = latestBlock
-      ? (preUpdatePayload
-        ? auditDiagnosisPatch(latestBlock, preUpdatePayload, unchangedPayload, 'original')
-        : auditDiagnosisPatchWithoutBaseline(latestBlock, unchangedPayload, 'original'))
-      : [];
-    let correctionOperations = [];
-    let result = { status: 'nochange', stateChanged: false };
-    if (patchBlock && !explicitEmpty) {
+    // Story Oracle owns the mature semantic chain: one model verdict followed
+    // by one official MVU parse.  Do not replay the original patch through a
+    // second local JSON-Patch interpreter; official MVU may apply schema
+    // templates or normalize inserted objects, which a shadow interpreter
+    // cannot reproduce and would therefore misreport as an application fault.
+    let result = {
+      status: 'nochange',
+      stateChanged: false,
+      officialResult: explicitEmpty ? 'explicit-empty' : 'no-patch',
+    };
+    if (patchBlock) {
       const opts = { type: 'message', message_id: target.index };
       const oldData = unchangedPayload;
       const snapshot = deepClone(oldData);
-      const candidateData = await Mvu.parseMessage(patchBlock, oldData);
+      let candidateData;
+      try { candidateData = await Mvu.parseMessage(patchBlock, oldData); }
+      catch (error) { throw enrichDiagnosisError(error); }
       requireTaskOwner(owner, target, '变量补丁解析完成');
       if (!candidateData) result = { status: 'failed' };
-      else {
-        correctionOperations = auditDiagnosisPatch(patchBlock, oldData, candidateData, 'correction');
-        const unsafeCandidate = correctionOperations.some((receipt) => ['not_in_schema', 'unapplied'].includes(receipt.outcome));
-        let newData = candidateData;
-        if (unsafeCandidate) {
-          let safeBlock = '';
-          try { safeBlock = appliedDiagnosisBlock(patchBlock, correctionOperations); }
-          catch { safeBlock = '<UpdateVariable><Analysis>没有可安全落地的操作。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>'; }
-          newData = diagnosisPatchOperations(safeBlock).length
-            ? await Mvu.parseMessage(safeBlock, oldData)
-            : deepClone(oldData);
-          requireTaskOwner(owner, target, '变量补丁剔除未落地操作后');
-          if (!newData) result = { status: 'failed' };
-          else correctionOperations = auditDiagnosisPatch(patchBlock, oldData, newData, 'correction');
-        }
-        if (result.status !== 'failed' && JSON.stringify(newData) === JSON.stringify(oldData)) {
-          result = { status: 'nochange', stateChanged: false };
+      else if (JSON.stringify(candidateData) === JSON.stringify(oldData)) {
+          result = { status: 'nochange', stateChanged: false, officialResult: 'parsed-equivalent' };
         } else if (result.status !== 'failed') {
         requireTaskOwner(owner, target, '变量补丁写入前');
-        await Mvu.replaceMvuData(newData, opts);
+        await Mvu.replaceMvuData(candidateData, opts);
         let readback;
         try {
           requireTaskOwner(owner, target, '变量补丁写入完成');
           readback = await Promise.resolve(Mvu.getMvuData(opts));
-          if (JSON.stringify(readback) !== JSON.stringify(newData)) {
+          if (JSON.stringify(readback) !== JSON.stringify(candidateData)) {
             throw enrichDiagnosisError(Object.assign(new Error('MVU固定楼层写后读回与预期不一致，本轮不能宣称修复成功'), {
               code: 'host_mvu_readback_mismatch', raw: String(raw || '').slice(0, 16000),
             }));
@@ -1741,24 +1453,23 @@ ${bindingObligation}
         } catch (error) {
           let current = null;
           try { current = await Promise.resolve(Mvu.getMvuData(opts)); } catch { current = null; }
-          if (JSON.stringify(current) === JSON.stringify(newData)) {
+          if (JSON.stringify(current) === JSON.stringify(candidateData)) {
             try { await Promise.resolve(Mvu.replaceMvuData(snapshot, opts)); } catch { /* best-effort rollback */ }
           }
           throw error;
         }
-        correctionOperations = auditDiagnosisPatch(patchBlock, oldData, readback, 'correction');
-        result = { status: 'applied', stateChanged: true, snapshot, readback: deepClone(readback) };
+        result = {
+          status: 'applied',
+          stateChanged: true,
+          snapshot,
+          readback: deepClone(readback),
+          officialResult: 'readback-confirmed',
+        };
         }
-      }
     }
     if (result.status === 'failed') throw enrichDiagnosisError(new Error('故事神谕返回了无法由MVU应用的变量补丁'));
-    const operationReceipts = [...reconcileOriginalReceipts(originalOperations, correctionOperations), ...correctionOperations];
-    const unresolved = operationReceipts.filter((receipt) => ['not_in_schema', 'unapplied', 'unverified'].includes(receipt.outcome));
-    if (unresolved.length) result.status = 'partial';
     if (result.stateChanged && aiIdx >= 0) {
-      const writeBackBlock = result.status === 'partial'
-        ? appliedDiagnosisBlock(patchBlock, correctionOperations)
-        : patchBlock;
+      const writeBackBlock = patchBlock;
       let doctorWrittenTarget = null;
       if (!latestBlock) {
         try {
@@ -1787,15 +1498,15 @@ ${bindingObligation}
       ok: true,
       status: result.status,
       semanticProof: false,
-      applicationComplete: unresolved.length === 0,
+      applicationComplete: true,
       canProceed: true,
-      operations: operationReceipts,
-      unresolved,
-      verdict: result.status === 'partial'
-        ? `${result.stateChanged ? '可落地修复已写入并读回' : '本次没有可安全落地的状态改动'}；仍有${unresolved.length}项操作不在当前schema、未落地或缺少前态证明，人物与World继续独立运行`
-        : (result.status === 'applied'
-          ? '模型提出纠正，已由MVU应用并完成同楼读回'
-          : '模型没有提出状态改动；原更新操作均已逐项核对，没有发现未落地路径，但这不等于脚本能证明所有剧情语义绝对正确'),
+      verificationMode: 'story-oracle-official-mvu',
+      officialResult: result.officialResult,
+      operations: [],
+      unresolved: [],
+      verdict: result.status === 'applied'
+        ? '模型提出纠正；候选只由官方MVU解析，已写入固定楼层并完成同楼读回'
+        : '模型没有提出会改变当前状态的修复；本轮零写入。这是Story Oracle诊断结论，不是脚本对剧情语义的独立证明',
       raw: String(raw),
       patchBlock: String(patchBlock || ''),
       request,

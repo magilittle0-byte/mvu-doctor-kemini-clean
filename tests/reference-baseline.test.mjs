@@ -114,6 +114,19 @@ test('native World keeps ownership while Doctor uses the existing task slot and 
   assert.match(profile, /buildWorldActorInstruction,\s*\n/);
 });
 
+test('variable diagnosis keeps the Story Oracle single-parse chain and no shadow patch executor', () => {
+  const profile = read('profile-engine.js');
+  const diagnosis = profile.slice(
+    profile.indexOf('async function runStoryDiagnosis'),
+    profile.indexOf('function diagnosisDisplayLabel'),
+  );
+  assert.equal((diagnosis.match(/Mvu\.parseMessage\(/g) || []).length, 1);
+  assert.match(diagnosis, /verificationMode: 'story-oracle-official-mvu'/);
+  assert.match(diagnosis, /MVU固定楼层写后读回与预期不一致/);
+  assert.doesNotMatch(profile, /previousMvuPayload|simulateDiagnosisOperation|auditDiagnosisPatch|appliedDiagnosisBlock|operationReceipts/);
+  assert.doesNotMatch(diagnosis, /unsafeCandidate|safeBlock|result\.status = 'partial'/);
+});
+
 test('native core filtering keeps user filters while stripping MVU blocks before and after backfill filtering', () => {
   const index = read('index.js');
   const filter = index.slice(index.indexOf('function filterMvuMechanismBlocks'), index.indexOf('function installWorldDialogueFilterBridge'));
@@ -309,7 +322,7 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
       });
     }
     vm.runInNewContext(`
-      const VERSION = '0.9.6';
+      const VERSION = '0.9.7';
       const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
       let worldbookInitialization = { chatId: '', promise: null, attempt: 0 };
       let worldbookAttemptSerial = 0;
@@ -357,10 +370,10 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
   const upgradedMarker = upgradedEvolution[Symbol.for('mvu-doctor.native-world-diagnosis-barrier')];
   assert.equal(upgradedMarker.version, undefined, 'the fixture must begin with the unversioned 0.9.3 receipt');
   assert.equal(upgraded.sandbox.installWorldEvolutionDiagnosisBarrier(), true);
-  assert.equal(upgradedMarker.version, '0.9.6');
+  assert.equal(upgradedMarker.version, '0.9.7');
   assert.equal(upgradedMarker.installed, upgradedEvolution.evolve);
   assert.equal(await upgradedEvolution.evolve({ round: 1 }, '用户行动', '最终正文', {}), 'native-evolved');
-  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.6 must unwrap rather than stack the legacy barrier');
+  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.7 must unwrap rather than stack the legacy barrier');
   assert.equal(upgraded.calls.originals.length, 1);
   assert.equal(upgraded.calls.waits[0].throughProfile, true);
 
@@ -602,7 +615,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.6');
+  assert.equal(manifest.version, '0.9.7');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
