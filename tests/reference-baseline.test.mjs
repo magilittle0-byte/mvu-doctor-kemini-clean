@@ -171,17 +171,22 @@ test('shared World API lane is FIFO, preserves arguments, releases after failure
   let maxActive = 0;
   let releaseFirst;
   const calls = [];
+  const attempts = new Map();
   const sandbox = {
     console,
     window: {
       WORLD_ENGINE_API: {
         async callApi(...args) {
           calls.push(structuredClone(args));
+          attempts.set(args[0], (attempts.get(args[0]) || 0) + 1);
           active += 1;
           maxActive = Math.max(maxActive, active);
           try {
             if (args[0] === 'first') await new Promise((resolve) => { releaseFirst = resolve; });
             if (args[0] === 'fail') throw new Error('synthetic failure');
+            if (args[0] === 'relay-fault-once' && attempts.get(args[0]) === 1) return '[API 错误] failed to read request body';
+            if (args[0] === 'relay-fault-repeat') return '[API Error] request failed';
+            if (args[0] === 'valid-json-error-text') return '{"world_digest":"HTTP request failed with status 500 was recorded"}';
             return `done:${args[0]}`;
           } finally {
             active -= 1;
@@ -191,12 +196,16 @@ test('shared World API lane is FIFO, preserves arguments, releases after failure
     },
   };
   vm.runInNewContext(`
+    const VERSION = '0.9.8';
     const WORLD_API_SERIAL_LANE = Symbol.for('mvu-doctor.shared-world-api-serial-lane');
     ${serialLane}
     this.installWorldApiSerialLane = installWorldApiSerialLane;
   `, sandbox);
   assert.equal(sandbox.installWorldApiSerialLane(), true);
   const installed = sandbox.window.WORLD_ENGINE_API.callApi;
+  const marker = sandbox.window.WORLD_ENGINE_API[Symbol.for('mvu-doctor.shared-world-api-serial-lane')];
+  assert.equal(marker.version, '0.9.8');
+  assert.equal(marker.installed, installed);
   assert.equal(sandbox.installWorldApiSerialLane(), true);
   assert.equal(sandbox.window.WORLD_ENGINE_API.callApi, installed, 'hot reload must not wrap the lane twice');
 
@@ -217,6 +226,23 @@ test('shared World API lane is FIFO, preserves arguments, releases after failure
   await assert.rejects(sandbox.window.WORLD_ENGINE_API.callApi('fail'), /synthetic failure/u);
   assert.equal(await sandbox.window.WORLD_ENGINE_API.callApi('after-failure'), 'done:after-failure');
 
+  assert.equal(await sandbox.window.WORLD_ENGINE_API.callApi('relay-fault-once'), 'done:relay-fault-once');
+  assert.equal(attempts.get('relay-fault-once'), 2, 'an explicit relay error envelope gets exactly one identical retry');
+  const retryCalls = calls.filter((args) => args[0] === 'relay-fault-once');
+  assert.deepEqual(retryCalls[1], retryCalls[0], 'the retry must preserve every original argument');
+  await assert.rejects(
+    sandbox.window.WORLD_ENGINE_API.callApi('relay-fault-repeat'),
+    (error) => error?.code === 'world_api_transport_error_content',
+  );
+  assert.equal(attempts.get('relay-fault-repeat'), 2, 'a repeated relay envelope stops after the single retry');
+  assert.equal(await sandbox.window.WORLD_ENGINE_API.callApi('ordinary non-JSON prose'), 'done:ordinary non-JSON prose');
+  assert.equal(attempts.get('ordinary non-JSON prose'), 1, 'ordinary content is not reclassified as a transport failure');
+  assert.equal(
+    await sandbox.window.WORLD_ENGINE_API.callApi('valid-json-error-text'),
+    '{"world_digest":"HTTP request failed with status 500 was recorded"}',
+  );
+  assert.equal(attempts.get('valid-json-error-text'), 1, 'error wording inside valid World JSON must not trigger a retry');
+
   const aborted = new AbortController();
   aborted.abort();
   await assert.rejects(
@@ -226,6 +252,41 @@ test('shared World API lane is FIFO, preserves arguments, releases after failure
   assert.equal(calls.some((args) => args[0] === 'cancelled-before-start'), false, 'cancelled queued work must not reach the native API');
   assert.equal(await sandbox.window.WORLD_ENGINE_API.callApi('after-abort'), 'done:after-abort');
   assert.equal(maxActive, 1);
+
+  const upgradeNativeCalls = [];
+  const upgradeNative = async (...args) => {
+    upgradeNativeCalls.push(structuredClone(args));
+    if (upgradeNativeCalls.length === 1) return '[API 错误] failed to read request body';
+    return 'upgraded-success';
+  };
+  let legacyWrapperCalls = 0;
+  const legacyWrapper = async (...args) => {
+    legacyWrapperCalls += 1;
+    return upgradeNative(...args);
+  };
+  const legacyReceipt = { original: upgradeNative, sequence: () => legacyWrapperCalls };
+  const upgradeSandbox = {
+    console,
+    window: { WORLD_ENGINE_API: { callApi: legacyWrapper } },
+  };
+  Object.defineProperty(
+    upgradeSandbox.window.WORLD_ENGINE_API,
+    Symbol.for('mvu-doctor.shared-world-api-serial-lane'),
+    { value: legacyReceipt, configurable: false },
+  );
+  vm.runInNewContext(`
+    const VERSION = '0.9.8';
+    const WORLD_API_SERIAL_LANE = Symbol.for('mvu-doctor.shared-world-api-serial-lane');
+    ${serialLane}
+    this.installWorldApiSerialLane = installWorldApiSerialLane;
+  `, upgradeSandbox);
+  assert.equal(upgradeSandbox.installWorldApiSerialLane(), true);
+  assert.notEqual(upgradeSandbox.window.WORLD_ENGINE_API.callApi, legacyWrapper);
+  assert.equal(legacyReceipt.version, '0.9.8');
+  assert.equal(legacyReceipt.installed, upgradeSandbox.window.WORLD_ENGINE_API.callApi);
+  assert.equal(await upgradeSandbox.window.WORLD_ENGINE_API.callApi('upgrade-probe'), 'upgraded-success');
+  assert.equal(legacyWrapperCalls, 0, 'upgrading must unwrap rather than stack the legacy lane');
+  assert.deepEqual(upgradeNativeCalls.map((args) => args[0]), ['upgrade-probe', 'upgrade-probe']);
 });
 
 test('legacy actor wrapper is removed without changing native Memory context', () => {
@@ -322,7 +383,7 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
       });
     }
     vm.runInNewContext(`
-      const VERSION = '0.9.7';
+      const VERSION = '0.9.8';
       const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
       let worldbookInitialization = { chatId: '', promise: null, attempt: 0 };
       let worldbookAttemptSerial = 0;
@@ -370,10 +431,10 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
   const upgradedMarker = upgradedEvolution[Symbol.for('mvu-doctor.native-world-diagnosis-barrier')];
   assert.equal(upgradedMarker.version, undefined, 'the fixture must begin with the unversioned 0.9.3 receipt');
   assert.equal(upgraded.sandbox.installWorldEvolutionDiagnosisBarrier(), true);
-  assert.equal(upgradedMarker.version, '0.9.7');
+  assert.equal(upgradedMarker.version, '0.9.8');
   assert.equal(upgradedMarker.installed, upgradedEvolution.evolve);
   assert.equal(await upgradedEvolution.evolve({ round: 1 }, '用户行动', '最终正文', {}), 'native-evolved');
-  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.7 must unwrap rather than stack the legacy barrier');
+  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.8 must unwrap rather than stack the legacy barrier');
   assert.equal(upgraded.calls.originals.length, 1);
   assert.equal(upgraded.calls.waits[0].throughProfile, true);
 
@@ -615,7 +676,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.7');
+  assert.equal(manifest.version, '0.9.8');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');

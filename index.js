@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const VERSION = '0.9.7';
+  const VERSION = '0.9.8';
   const WORLD_VERSION = '3.0.2';
   const WORLD_GLOBALS = ['WORLD_ENGINE_STORE', 'WORLD_ENGINE_CORE', 'WORLD_ENGINE_API'];
   const WORLD_SETTINGS_KEY = 'world_engine_settings';
@@ -42,11 +42,19 @@
   function installWorldApiSerialLane() {
     const api = window.WORLD_ENGINE_API;
     if (!api?.callApi) return false;
-    if (api[WORLD_API_SERIAL_LANE]) return true;
-    const original = api.callApi.bind(api);
+    const previous = api[WORLD_API_SERIAL_LANE];
+    if (previous?.version === VERSION) return api.callApi === previous.installed;
+    const original = typeof previous?.original === 'function' ? previous.original : api.callApi.bind(api);
+    const isExplicitTransportErrorContent = (value) => {
+      const response = String(value || '').trim();
+      const errorEnvelope = /^\[(?:(?:api|http|request)\s*)?(?:error|failed|failure|错误|失败)\](?:\s|$)/iu.test(response);
+      const englishStatus = /^(?:request|api|http)\b[^\r\n]{0,240}\b(?:failed|failure|error|status|[45]\d{2})\b[^\r\n]{0,240}$/iu.test(response);
+      const localizedStatus = /^(?:请求|接口|api|http)[^\r\n]{0,240}(?:失败|错误|状态码|错误码|status|code|[45]\d{2})[^\r\n]{0,240}$/iu.test(response);
+      return errorEnvelope || englishStatus || localizedStatus;
+    };
     let tail = Promise.resolve();
     let sequence = 0;
-    api.callApi = function(...args) {
+    const installed = function(...args) {
       sequence += 1;
       const signal = args[3];
       const run = async () => {
@@ -55,7 +63,18 @@
           error.name = 'AbortError';
           throw error;
         }
-        return original(...args);
+        let response = await original(...args);
+        if (!isExplicitTransportErrorContent(response)) return response;
+        if (signal?.aborted) {
+          const error = new Error('请求已取消');
+          error.name = 'AbortError';
+          throw error;
+        }
+        response = await original(...args);
+        if (!isExplicitTransportErrorContent(response)) return response;
+        const error = new Error('共享API连续返回显式运输错误内容；同一请求已自动重试一次');
+        error.code = 'world_api_transport_error_content';
+        throw error;
       };
       // Doctor profiles, native World and native Memory deliberately share
       // this one transport.  Serialize only their individual network calls;
@@ -64,9 +83,10 @@
       tail = request.then(() => undefined, () => undefined);
       return request;
     };
-    Object.defineProperty(api, WORLD_API_SERIAL_LANE, {
-      value: { original, sequence: () => sequence }, configurable: false,
-    });
+    api.callApi = installed;
+    const receipt = { original, installed, version: VERSION, sequence: () => sequence };
+    if (previous) Object.assign(previous, receipt);
+    else Object.defineProperty(api, WORLD_API_SERIAL_LANE, { value: receipt, configurable: false });
     return true;
   }
 
