@@ -119,8 +119,8 @@
 .mvu-ref-status strong { color: var(--mvu-ref-accent); text-transform: uppercase; min-width: 72px; }
 .mvu-ref-status.failed, .mvu-ref-status.report-incomplete { border-color: rgba(255, 116, 132, 0.6); }
 .mvu-ref-status.failed strong, .mvu-ref-status.report-incomplete strong { color: var(--mvu-ref-danger); }
-.mvu-ref-status.discarded, .mvu-ref-status.cancelled { border-color: rgba(255, 195, 103, 0.55); }
-.mvu-ref-status.discarded strong, .mvu-ref-status.cancelled strong { color: #ffc367; }
+.mvu-ref-status.discarded, .mvu-ref-status.cancelled, .mvu-ref-status.warning { border-color: rgba(255, 195, 103, 0.55); }
+.mvu-ref-status.discarded strong, .mvu-ref-status.cancelled strong, .mvu-ref-status.warning strong { color: #ffc367; }
 .mvu-ref-status span { min-width: 0; overflow-wrap: anywhere; }
 
 .mvu-ref-metrics {

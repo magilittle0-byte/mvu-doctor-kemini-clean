@@ -559,7 +559,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.5 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -857,7 +857,7 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       } finally { await page.close(); }
     });
 
-    await t.test('accepted final runs diagnosis and profile while native World remains independent', async () => {
+    await t.test('accepted final runs diagnosis and profile while World receives a bounded native extra-instruction', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
@@ -867,7 +867,7 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           stages: window.__stages,
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
-          actorSeeds: window.MVUDoctorProfileEngine.getWorldActorSeeds(),
+          actorInstruction: window.MVUDoctorProfileEngine.buildWorldActorInstruction({ round: 0, events: [] }),
           profileWrites: window.__profileStoreWrites(),
           modelCalls: window.__modelCalls,
           manualWorldCalls: window.__worldCalls,
@@ -881,14 +881,17 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.equal(evidence.runtime.lastResult.profile.count, 1);
         assert.equal(evidence.runtime.lastResult.profile.modelCalls, 2);
         assert.equal(Object.keys(evidence.profiles).length, 1);
-        assert.equal(evidence.actorSeeds.length, 1);
-        assert.equal(evidence.actorSeeds[0].name, completeProfile.name);
-        assert.equal(evidence.actorSeeds[0].personality.temperament, completeProfile.personality.temperament);
-        assert.equal(evidence.actorSeeds[0].personality.socialMotive, completeProfile.personality.socialMotive);
-        assert.equal(evidence.actorSeeds[0].currentState.emotion, completeProfile.currentState.emotion);
-        assert.equal(Object.hasOwn(evidence.actorSeeds[0], 'history'), false);
-        assert.equal(Object.hasOwn(evidence.actorSeeds[0], 'evidence'), false);
-        assert.equal(Object.hasOwn(evidence.actorSeeds[0], 'inferences'), false);
+        assert.match(evidence.actorInstruction, /【本轮非玩家主体推进】/u);
+        assert.match(evidence.actorInstruction, new RegExp(completeProfile.name, 'u'));
+        assert.match(evidence.actorInstruction, new RegExp(completeProfile.personality.coreDesire, 'u'));
+        assert.match(evidence.actorInstruction, new RegExp(completeProfile.personality.socialMotive, 'u'));
+        assert.match(evidence.actorInstruction, new RegExp(completeProfile.currentState.goal, 'u'));
+        assert.doesNotMatch(evidence.actorInstruction, new RegExp(completeProfile.personality.temperament, 'u'));
+        assert.doesNotMatch(evidence.actorInstruction, new RegExp(completeProfile.currentState.emotion, 'u'));
+        assert.doesNotMatch(evidence.actorInstruction, new RegExp(completeProfile.history, 'u'));
+        assert.doesNotMatch(evidence.actorInstruction, /最终正文中白露|可修订补全/u);
+        assert.doesNotMatch(evidence.actorInstruction, /blackbox[^\n]*仅(?:限|由)\{\{user\}\}/u, 'Doctor must not replace World\'s native blackbox ownership with a player-only rule');
+        assert.ok(evidence.actorInstruction.length <= 2200, 'the World extra-instruction has a hard bounded budget');
         assert.equal(evidence.profileWrites.length, 1);
         assert.deepEqual(evidence.manualWorldCalls, []);
         assert.equal(evidence.worldAbortCalls, 0);
@@ -909,10 +912,9 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
             'mvuDoctorReferenceProfileStore:chat-a',
             JSON.stringify(store),
           );
-          return window.MVUDoctorProfileEngine.getWorldActorSeeds();
+          return window.MVUDoctorProfileEngine.buildWorldActorInstruction({ round: 0 });
         });
-        assert.equal(withoutPlayer.length, 1, 'player profile must never enter World actor seeds');
-        assert.notEqual(withoutPlayer[0].name, '旧人格名');
+        assert.doesNotMatch(withoutPlayer, /旧人格名/u, 'player profile must never enter the World instruction');
         const authoritativeIdentity = await page.evaluate(() => {
           const store = window.MVUDoctorProfileEngine.getStore();
           const template = structuredClone(Object.values(store.profiles)[0]);
@@ -939,12 +941,12 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
             'mvuDoctorReferenceProfileStore:chat-a',
             JSON.stringify(store),
           );
-          return window.MVUDoctorProfileEngine.getWorldActorSeeds({ round: 0 }).map((seed) => seed.name);
+          return [0, 1, 2, 3].map((round) => window.MVUDoctorProfileEngine.buildWorldActorInstruction({ round }));
         });
         assert.doesNotMatch(authoritativeIdentity.join('|'), /锁定人格名/u, 'the chat-locked persona is the player');
         assert.match(authoritativeIdentity.join('|'), /默认但未激活人格/u, 'an inactive default persona must not be guessed as the player');
         assert.match(authoritativeIdentity.join('|'), /被询问角色/u, 'ordinary text asking an NPC name must not turn that NPC into the player');
-        const actorFairness = await page.evaluate(() => {
+        const actorSelection = await page.evaluate(() => {
           const source = structuredClone(Object.values(window.MVUDoctorProfileEngine.getStore().profiles)[0]);
           const inflate = (profileId, name) => {
             const profile = structuredClone(source);
@@ -980,24 +982,29 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
             'mvuDoctorReferenceProfileStore:chat-a',
             JSON.stringify(store),
           );
-          return [0, 1].map((round) => window.MVUDoctorProfileEngine
-            .getWorldActorSeeds({ round })
-            .map((seed) => seed.name));
+          return {
+            active: window.MVUDoctorProfileEngine.buildWorldActorInstruction({
+              round: 0,
+              events: [{ name: '后台甲正在筹备远处行动', stage: '筹备' }],
+            }),
+            rotating: [0, 1, 2].map((round) => window.MVUDoctorProfileEngine
+              .buildWorldActorInstruction({ round, events: [] })),
+          };
         });
-        assert.match(actorFairness[0].join('|'), /关联/u, 'the current user input must participate in related-actor selection');
-        assert.match(actorFairness[0].join('|'), /后台甲/u, 'round zero must reserve real budget for an off-screen actor');
-        assert.match(actorFairness[1].join('|'), /后台乙/u, 'native World rounds must rotate the reserved off-screen actor');
-        const disabledSeeds = await page.evaluate(() => {
+        assert.match(actorSelection.active, /后台甲/u, 'an existing native event selects its non-player actor first');
+        assert.match(actorSelection.rotating[0], /本轮主行动者是第一人/u);
+        assert.notEqual(actorSelection.rotating[0], actorSelection.rotating[1], 'round number rotates the native actor choice when no event owns the turn');
+        assert.ok(actorSelection.rotating.every((instruction) => instruction.length <= 2200));
+        const disabledInstruction = await page.evaluate(() => {
           window.__context.extensionSettings['mvu-doctor-kemini-clean'] = {
             mvuDoctorReferenceSettings: { enabled: true, profileEnabled: false },
           };
           return {
-            enabled: window.MVUDoctorProfileEngine.worldActorContextEnabled(),
-            seeds: window.MVUDoctorProfileEngine.getWorldActorSeeds({ round: 9 }),
+            instruction: window.MVUDoctorProfileEngine.buildWorldActorInstruction({ round: 9 }),
           };
         });
-        assert.equal(disabledSeeds.enabled, false);
-        assert.deepEqual(disabledSeeds.seeds, [], 'disabling the Doctor profile stage must stop exporting old profile data');
+        assert.match(disabledInstruction.instruction, /没有可用Doctor人物档案/u);
+        assert.doesNotMatch(disabledInstruction.instruction, /关联甲|后台甲/u, 'disabling profile export must not leak old profile data into World');
       } finally { await page.close(); }
     });
 
@@ -2137,7 +2144,7 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       } finally { await page.close(); }
     });
 
-    await t.test('diagnosis restores the mature pre/post/turn evidence packet and applies a residual fix to post-state', async () => {
+    await t.test('diagnosis keeps the Story Oracle prompt small and applies a residual fix to the current post-state', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -2196,33 +2203,18 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           const request = window.__diagnosisRequests.at(-1) || [];
           const systemMessage = String(request.find((message) => message.role === 'system')?.content || '');
           const userMessage = String(request.find((message) => message.role === 'user')?.content || '');
-          const accepted = userMessage.match(/<accepted_narrative>\s*([\s\S]*?)\s*<\/accepted_narrative>/iu)?.[1] || '';
           return {
             systemMessage,
             userMessage,
-            accepted,
             current: window.__semanticState(3),
             pre: window.__semanticState(0),
             notifications: structuredClone(window.__storyNotifications),
             result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
           };
         });
-        const orderedTags = [
-          '<pre_update_stat_data>', '<current_post_update_stat_data>', '<original_update_block>',
-          '<triggering_user_input>', '<accepted_narrative>', '【核对顺序】',
-        ];
-        let previousPosition = -1;
-        for (const tag of orderedTags) {
-          const position = evidence.userMessage.indexOf(tag);
-          assert.ok(position > previousPosition, `${tag} must remain in the mature evidence order`);
-          previousPosition = position;
-        }
-        assert.match(evidence.systemMessage, /current post-update\s+只表示原更新实际落地后的观测结果，不保证语义正确/u);
-        assert.match(evidence.userMessage, /<pre_update_stat_data>[\s\S]*"属性"\s*:\s*5/u);
-        assert.match(evidence.userMessage, /当前值[\s\S]*7|"属性"\s*:\s*7/u);
-        assert.match(evidence.userMessage, /初始值明确设为10/u);
-        assert.match(evidence.accepted, /最终值应为12/u);
-        assert.doesNotMatch(evidence.accepted, /<UpdateVariable>/iu);
+        assert.equal(evidence.systemMessage, 'diagnose the accepted final', 'the mature Story Oracle prompt remains the sole model context');
+        assert.equal(evidence.userMessage, '【自动诊断】最新一条 AI 回复里带有 <UpdateVariable> 更新。请按本卡 MVU 规则与当前状态核验它：有错就只输出一个修正后的 <UpdateVariable> 区块（仅含需改正的字段）；完全正确则在 <JSONPatch> 里输出空数组（[]）。');
+        assert.doesNotMatch(`${evidence.systemMessage}\n${evidence.userMessage}`, /<pre_update_stat_data>|<current_post_update_stat_data>|<original_update_block>|<triggering_user_input>|<accepted_narrative>|【核对顺序】/u);
         assert.equal(evidence.pre.stat_data.测试状态.属性, 5);
         assert.equal(evidence.current.stat_data.测试状态.属性, 12, 'the correction is residual against post-state, not a replay of the old delta');
         assert.equal(evidence.result.diagnosis.status, 'applied');
@@ -2246,13 +2238,150 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
             userMessage: String(request.find((message) => message.role === 'user')?.content || ''),
           };
         });
-        assert.match(evidence.systemMessage, /本楼没有完整 UpdateVariable 更新块/u);
-        assert.match(evidence.systemMessage, /current pre-update 是本轮变化尚未写入时的当前起点/u);
-        assert.doesNotMatch(evidence.systemMessage, /下方 current post-update 只表示原更新实际落地后的观测结果/u);
-        assert.match(evidence.userMessage, /<current_pre_update_stat_data>[\s\S]*<\/current_pre_update_stat_data>/u);
-        assert.doesNotMatch(evidence.userMessage, /<current_post_update_stat_data>/u);
-        assert.match(evidence.userMessage, /生成叠加在这个起点上的完整本轮补丁/u);
-        assert.match(evidence.userMessage, /不得把 current 起点误当成本回合已经完成后的结果/u);
+        assert.equal(evidence.systemMessage, 'diagnose the accepted final');
+        assert.equal(evidence.userMessage, '【自动诊断】最新一条 AI 回复的正文里【没有】变量更新区块。请充当变量更新引擎：通读这条回复，依本卡 MVU 规则与当前状态，推导出本回合应当发生的全部变量更新，输出一个 <UpdateVariable> 区块把状态更新到位；若这条回复确实不涉及任何变量变化，则在 <JSONPatch> 里输出空数组（[]）。');
+        assert.doesNotMatch(`${evidence.systemMessage}\n${evidence.userMessage}`, /<current_pre_update_stat_data>|<current_post_update_stat_data>|<accepted_narrative>/u);
+      } finally { await page.close(); }
+    });
+
+    await t.test('diagnosis receipts follow official MVU array insert, rounded delta, date, and described-value semantics', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReply: '<UpdateVariable><JSONPatch>['
+            + '{"op":"delta","path":"/测试状态/浮点","value":0.2},'
+            + '{"op":"delta","path":"/测试状态/浮点","value":0.3},'
+            + '{"op":"delta","path":"/测试状态/时间","value":60000},'
+            + '{"op":"delta","path":"/测试状态/说明值","value":3},'
+            + '{"op":"insert","path":"/测试状态/列表/-","value":"b"},'
+            + '{"op":"insert","path":"/测试状态/列表/-","value":"c"},'
+            + '{"op":"insert","path":"/测试状态/队列/1","value":"y"},'
+            + '{"op":"insert","path":"/测试状态/队列/-","value":"w"}'
+            + ']</JSONPatch></UpdateVariable>',
+        });
+        await page.evaluate(() => {
+          const clone = (value) => structuredClone(value);
+          const states = new Map([[1, { stat_data: { 测试状态: {
+            浮点: 0.1,
+            时间: '2026-09-04T00:00:00.000Z',
+            说明值: [2, '说明保持不变'],
+            列表: ['a'],
+            队列: ['x', 'z'],
+          } } }]]);
+          const internals = window.StoryOracleAPI.unsafe.eval('get doctor test internals');
+          internals.getMvu = async () => ({
+            async getMvuData(request) {
+              return clone(states.get(Number(request?.message_id)) || null);
+            },
+            async parseMessage(block, oldData) {
+              const next = clone(oldData);
+              const patchText = String(block).match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch>/iu)?.[1] || '[]';
+              for (const operation of JSON.parse(patchText)) {
+                const parts = String(operation.path || '').split('/').slice(1);
+                let parent = next.stat_data;
+                for (const part of parts.slice(0, -1)) parent = parent[part];
+                const key = parts.at(-1);
+                if (operation.op === 'insert') {
+                  const index = key === '-' ? parent.length : Number(key);
+                  parent.splice(index, 0, clone(operation.value));
+                  continue;
+                }
+                if (operation.op !== 'delta') continue;
+                const current = parent[key];
+                const wrapped = Array.isArray(current) && current.length === 2 && typeof current[1] === 'string';
+                const base = wrapped ? current[0] : current;
+                let updated;
+                if (typeof base === 'string') updated = new Date(new Date(base).getTime() + operation.value).toISOString();
+                else updated = parseFloat((base + operation.value).toPrecision(12));
+                if (wrapped) current[0] = updated;
+                else parent[key] = updated;
+              }
+              return next;
+            },
+            async replaceMvuData(next, request) {
+              states.set(Number(request?.message_id), clone(next));
+            },
+          });
+          window.__officialMvuState = () => clone(states.get(1));
+        });
+        await runAcceptedReply(page, '白露整理完物品，时间与记录随本轮行动更新。');
+        await waitForSettled(page, 'done');
+        const evidence = await page.evaluate(() => ({
+          state: window.__officialMvuState(),
+          diagnosis: window.MVUDoctorProfileEngine.getRuntime().lastResult.diagnosis,
+        }));
+        assert.equal(evidence.diagnosis.status, 'applied');
+        assert.equal(evidence.diagnosis.applicationComplete, true);
+        assert.deepEqual(evidence.diagnosis.unresolved, []);
+        assert.equal(evidence.state.stat_data.测试状态.浮点, 0.6);
+        assert.equal(evidence.state.stat_data.测试状态.时间, '2026-09-04T00:01:00.000Z');
+        assert.deepEqual(evidence.state.stat_data.测试状态.说明值, [5, '说明保持不变']);
+        assert.deepEqual(evidence.state.stat_data.测试状态.列表, ['a', 'b', 'c']);
+        assert.deepEqual(evidence.state.stat_data.测试状态.队列, ['x', 'y', 'z', 'w']);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a mixed diagnosis patch records partial, persists only the readback-confirmed operation, and still runs profile', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          initialMvuState: { stat_data: { 契约者: { 未分配属性点: 15 } } },
+          diagnosisReply: '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/契约者/未分配属性点","value":0},{"op":"replace","path":"/契约者/外貌","value":"不存在的路径不得写回"},{"op":"remove","path":"/不存在的父级/嵌套字段"}]</JSONPatch></UpdateVariable>',
+        });
+        await page.evaluate(() => {
+          const clone = (value) => structuredClone(value);
+          const states = new Map([[1, { stat_data: { 契约者: { 未分配属性点: 15 } } }]]);
+          const internals = window.StoryOracleAPI.unsafe.eval('get doctor test internals');
+          internals.getMvu = async () => ({
+            async getMvuData(request) {
+              return clone(states.get(Number(request?.message_id)) || null);
+            },
+            async parseMessage(block, oldData) {
+              const next = clone(oldData);
+              const patchText = String(block).match(/<JSONPatch\b[^>]*>([\s\S]*?)<\/JSONPatch>/iu)?.[1] || '[]';
+              for (const operation of JSON.parse(patchText)) {
+                const parts = String(operation.path || '').split('/').slice(1);
+                let parent = next.stat_data;
+                for (const part of parts.slice(0, -1)) {
+                  if (!parent || typeof parent !== 'object' || !Object.hasOwn(parent, part)) return next;
+                  parent = parent[part];
+                }
+                const key = parts.at(-1);
+                if (operation.op === 'replace' && Object.hasOwn(parent, key)) parent[key] = clone(operation.value);
+              }
+              return next;
+            },
+            async replaceMvuData(next, request) {
+              states.set(Number(request?.message_id), clone(next));
+            },
+          });
+          window.__mixedMvuState = () => clone(states.get(1));
+        });
+        await runAcceptedReply(page, '白露核对完行囊，准备继续赶路。');
+        await waitForSettled(page, 'done');
+        await page.locator('#mvu-ref-launcher').click();
+        const evidence = await page.evaluate(() => ({
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          detail: window.MVUDoctorProfileEngine.getRuntime().detail,
+          state: window.__mixedMvuState(),
+          message: window.__context.chat[1]?.mes || '',
+          stages: [...window.__stages],
+          panel: document.getElementById('mvu-ref-panel')?.textContent || '',
+        }));
+        assert.equal(evidence.result.status, 'complete_with_warning');
+        assert.equal(evidence.result.diagnosis.status, 'partial');
+        assert.equal(evidence.result.diagnosis.applicationComplete, false);
+        assert.equal(evidence.result.diagnosis.canProceed, true);
+        assert.equal(evidence.state.stat_data.契约者.未分配属性点, 0, 'the legal patch must be committed and read back');
+        assert.deepEqual(evidence.result.diagnosis.unresolved.map((item) => [item.path, item.outcome]), [
+          ['/契约者/外貌', 'not_in_schema'],
+          ['/不存在的父级/嵌套字段', 'not_in_schema'],
+        ]);
+        assert.match(evidence.message, /未分配属性点/u);
+        assert.doesNotMatch(evidence.message, /不存在的路径不得写回/u);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'profile'], 'partial variable repair must not suppress the independent profile stage');
+        assert.match(evidence.detail, /变量仍有警告.*部分修复：仍有2项未落地/u);
+        assert.match(evidence.panel, /warning[\s\S]*部分修复：仍有2项未落地/u, 'the panel must expose partial rather than a green success');
       } finally { await page.close(); }
     });
 
@@ -2270,7 +2399,7 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.diagnosis.status, 'nochange');
         assert.equal(evidence.result.diagnosis.semanticProof, false);
-        assert.match(evidence.result.diagnosis.verdict, /不等于脚本证明变量绝对正确/u);
+        assert.match(evidence.result.diagnosis.verdict, /不等于脚本能证明所有剧情语义绝对正确/u);
         assert.deepEqual(evidence.notifications, [], 'model nochange must not invoke Story Oracle\'s misleading clean-success notifier');
       } finally { await page.close(); }
     });
@@ -2295,7 +2424,7 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       }
     });
 
-    await t.test('a mechanism-only reply keeps accepted narrative empty instead of duplicating its update block', async () => {
+    await t.test('a mechanism-only reply does not create a second duplicated diagnosis narrative packet', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -2304,13 +2433,16 @@ test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         });
         await runAcceptedReply(page, '<UpdateVariable><Analysis>只有机制更新。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>');
         await waitForSettled(page, 'done');
-        const accepted = await page.evaluate(() => {
+        const request = await page.evaluate(() => {
           const request = window.__diagnosisRequests.at(-1) || [];
-          const userMessage = String(request.find((message) => message.role === 'user')?.content || '');
-          return userMessage.match(/<accepted_narrative>\s*([\s\S]*?)\s*<\/accepted_narrative>/iu)?.[1] || '';
+          return {
+            systemMessage: String(request.find((message) => message.role === 'system')?.content || ''),
+            userMessage: String(request.find((message) => message.role === 'user')?.content || ''),
+          };
         });
-        assert.match(accepted, /只有变量机制区块/u);
-        assert.doesNotMatch(accepted, /<UpdateVariable>/iu);
+        assert.equal(request.systemMessage, 'diagnose the accepted final');
+        assert.equal(request.userMessage, '【自动诊断】最新一条 AI 回复里带有 <UpdateVariable> 更新。请按本卡 MVU 规则与当前状态核验它：有错就只输出一个修正后的 <UpdateVariable> 区块（仅含需改正的字段）；完全正确则在 <JSONPatch> 里输出空数组（[]）。');
+        assert.doesNotMatch(`${request.systemMessage}\n${request.userMessage}`, /只有机制更新|<accepted_narrative>|<UpdateVariable><Analysis>只有机制更新/u);
       } finally { await page.close(); }
     });
 

@@ -1,7 +1,6 @@
-# Runtime byte hashes: 44 exact upstream files plus one documented 0.9.5 task-slot adaptation.
-# Upstream: https://github.com/DlSNlGHT/World.git
+# Immutable upstream byte hashes for DlSNlGHT/World 3.0.2.
 # Commit: 154de4b590378cd0bd851cfffcefd3d96741cf3f
-# Scope: every runtime file except this generated manifest and SOURCE_CMP_REPORT.txt. world-engine-evolution.js differs only by the optional Doctor provider at the existing extraInstructions assembly point; its upstream hash was 412c369b5d8ae5d16fb3a89cfad37a8e1333837ebb9b7f2a5e7e84cf37956ec3.
+# This manifest never describes Doctor-adapted bytes.
 80d46a401c7e5b066a64ef088ead7bc25a1b134155d2d4519b8c4caca7d9c531  ./.gitignore
 7f429204f1b63ee7aa6c37dc5c2ac5664fc94cd87f72c83205488df310e57e86  ./docs/engine-switch-animation-test.js
 d48e12ffeabb1497f78853b52efacf669158cd4b2e31ad34539ed2fb067e4d79  ./docs/manual-memory-link-test.js
@@ -36,7 +35,7 @@ e84b21648f149c1008abe8be3db244e35f4b9117b2b24ccd976836bbf33ac81c  ./memory-engin
 ba16d2ea8dea9088fe219ffbfa8320a99fdeb01caef7b8df453e4e997999cd74  ./world-engine-chatcache.js
 a2fa781cb8a58807685d42cce6ade14a0ddb19c6a12a2afd1d4e10ae2f3bb290  ./world-engine-core.js
 efc7e6d64dcd792847e8e2dbfae456b0b6f3a29fe6a08f151108f32187466eaf  ./world-engine-diag.js
-ef0aa0b05a153bb43b4dbd75b9076d473feb3d78f71bffa5a1136c7cb4c285da  ./world-engine-evolution.js
+412c369b5d8ae5d16fb3a89cfad37a8e1333837ebb9b7f2a5e7e84cf37956ec3  ./world-engine-evolution.js
 3055b1fb0c3970328f39dc1193c52ef698139bdf71fe8cb5ae17725e06c0ed6c  ./world-engine-inject-inspector.js
 92e57a34683d0191e0d5b588c3e84429763af20c115ec614e35da33752c78d94  ./world-engine-inject.js
 b92870f5699af0eb3f7222c852563edfee3441c9441a8f7cd736073cd9cb6c52  ./world-engine-ledger.js

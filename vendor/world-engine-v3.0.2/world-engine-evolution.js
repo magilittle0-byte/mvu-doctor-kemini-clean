@@ -1129,7 +1129,13 @@ ${JSON.stringify(sample || [], null, 2)}
       const nearEventRoll = rollNearEvent(state);
 
       // 第6步：喂给 API 做叙事更新
-      const extraInstructions = [regionalIncidentRoll.injectPrompt, distantEventRoll.injectPrompt, nearEventRoll.injectPrompt].filter(Boolean).join('\n\n');
+      let doctorActorInstruction = '';
+      try {
+        doctorActorInstruction = window.MVUDoctorProfileEngine?.buildWorldActorInstruction?.(state) || '';
+      } catch (error) {
+        console.warn('[世界引擎] Doctor人物行动提示读取失败（已隔离，继续原生推演）', error);
+      }
+      const extraInstructions = [regionalIncidentRoll.injectPrompt, distantEventRoll.injectPrompt, nearEventRoll.injectPrompt, doctorActorInstruction].filter(Boolean).join('\n\n');
       const update = await callEvolutionAPI(state, userMsg, aiMsg, extraInstructions, (opts && opts.dialogueText) || '');
 
       // 随机对象先识别并清洗临时标记，再进入既有实体 ID 分配与合并流程。

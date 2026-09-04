@@ -19,29 +19,30 @@ test('runtime loads only pinned reference engines and the new profile adapter', 
   assert.doesNotMatch(source, /legacy\/0\.7\.5|embeddedCore|advanceWorld|applyWorldProposal|auditVariables/);
 });
 
-test('native World bridge keeps native ownership and adds only the MVU filter, shared API lane, actor context, diagnosis/profile barrier, and worldbook initializer', () => {
+test('native World keeps ownership while Doctor uses the existing task slot and removes the legacy Memory command bridge', () => {
   const index = read('index.js');
   assert.match(index, /function filterMvuMechanismBlocks\(value\)/);
   assert.match(index, /function installWorldDialogueFilterBridge\(\)/);
   assert.match(index, /function installWorldApiSerialLane\(\)/);
-  assert.match(index, /function installWorldActorContextBridge\(\)/);
-  assert.match(index, /function buildWorldActorContextSection\(actorSeeds, enabled = true\)/);
+  assert.match(index, /function removeLegacyWorldActorContextBridge\(\)/);
+  assert.doesNotMatch(index, /function installWorldActorContextBridge\(\)/);
+  assert.doesNotMatch(index, /function buildWorldActorContextSection\(/);
   assert.match(index, /function publishWorldbookBridgeStatus\(status, detail = '', expectedChatId = ''\)/);
   assert.match(index, /window\.MVUDoctorWorldbookBridgeStatus = \{/);
   const boot = index.slice(index.indexOf('async function boot'), index.lastIndexOf('boot().catch'));
   assert.ok(boot.indexOf('migrateWorldSettings(') < boot.indexOf('installWorldDialogueFilterBridge()'));
   assert.ok(boot.indexOf('installWorldApiSerialLane()') < boot.indexOf('profile-engine.js'));
-  assert.ok(boot.indexOf('profile-engine.js') < boot.indexOf('installWorldActorContextBridge()'));
-  assert.ok(boot.indexOf('installWorldActorContextBridge()') < boot.indexOf('installWorldEvolutionDiagnosisBarrier()'));
-  assert.match(boot, /if \(!installWorldActorContextBridge\(\)\) throw new Error/);
+  assert.ok(boot.indexOf('profile-engine.js') < boot.indexOf('removeLegacyWorldActorContextBridge()'));
+  assert.ok(boot.indexOf('removeLegacyWorldActorContextBridge()') < boot.indexOf('installWorldEvolutionDiagnosisBarrier()'));
+  assert.match(boot, /if \(!removeLegacyWorldActorContextBridge\(\)\) throw new Error/);
   assert.match(boot, /if \(!installWorldEvolutionDiagnosisBarrier\(\)\) throw new Error/);
   assert.match(boot, /window\.MVUDoctorProfileEngine\.version !== VERSION/);
-  assert.match(boot, /typeof window\.MVUDoctorProfileEngine\.getWorldActorSeeds !== 'function'/);
-  assert.match(boot, /typeof window\.MVUDoctorProfileEngine\.worldActorContextEnabled !== 'function'/);
-  const actorBridge = index.slice(index.indexOf('function buildWorldActorContextSection'), index.indexOf('function publishWorldbookBridgeStatus'));
-  assert.match(actorBridge, /existing\?\.version === VERSION && memory\.buildWorldEngineContext === existing\.installed/);
-  assert.match(actorBridge, /getWorldActorSeeds\?\.\(args\[0\]\)/);
-  assert.match(actorBridge, /installed: memory\.buildWorldEngineContext/);
+  const legacyCleanup = index.slice(index.indexOf('function removeLegacyWorldActorContextBridge'), index.indexOf('function publishWorldbookBridgeStatus'));
+  assert.match(legacyCleanup, /memory\.buildWorldEngineContext = legacy\.original/);
+  assert.doesNotMatch(legacyCleanup, /memory\.buildWorldEngineContext = function/);
+  const evolution = read('vendor/world-engine-v3.0.2/world-engine-evolution.js');
+  assert.equal((evolution.match(/buildWorldActorInstruction/g) || []).length, 1);
+  assert.match(evolution, /extraInstructions = \[regionalIncidentRoll\.injectPrompt, distantEventRoll\.injectPrompt, nearEventRoll\.injectPrompt, doctorActorInstruction\]/);
   const migration = index.slice(index.indexOf('function migrateWorldSettings'), index.indexOf('async function initializeWorldbookSelectionOnce'));
   assert.match(migration, /forced08Signature/);
   assert.match(migration, /worldCore\?\.\[WORLD_DIALOGUE_FILTER_BRIDGE\]\?\.original \|\| worldCore\?\.filterDialogue/);
@@ -110,8 +111,7 @@ test('native World bridge keeps native ownership and adds only the MVU filter, s
   assert.match(manual, /runtime\.manualDiagnosisBinding = deepClone\(manualBinding\)/);
   assert.match(manual, /runtime\.manualDiagnosisBinding\?\.token === manualBinding\.token/);
   assert.match(profile, /waitForWorldDiagnosis,\s*\n/);
-  assert.match(profile, /worldActorContextEnabled,\s*\n/);
-  assert.match(profile, /getWorldActorSeeds,\s*\n/);
+  assert.match(profile, /buildWorldActorInstruction,\s*\n/);
 });
 
 test('native core filtering keeps user filters while stripping MVU blocks before and after backfill filtering', () => {
@@ -215,71 +215,34 @@ test('shared World API lane is FIFO, preserves arguments, releases after failure
   assert.equal(maxActive, 1);
 });
 
-test('native Memory context is preserved while bounded Doctor actor seeds use the existing World prompt slot', () => {
+test('legacy actor wrapper is removed without changing native Memory context', () => {
   const index = read('index.js');
-  const actorBridge = index.slice(
-    index.indexOf('function buildWorldActorContextSection'),
+  const cleanup = index.slice(
+    index.indexOf('function removeLegacyWorldActorContextBridge'),
     index.indexOf('function publishWorldbookBridgeStatus'),
   );
-  const calls = [];
-  const actorSeedCalls = [];
-  let actorContextEnabled = true;
-  let actorSeeds = [{
-    profileId: 'npc-1', name: '甲', currentState: { goal: '完成自己的调查' },
-    personality: { coreDesire: '保护同伴' },
-  }];
+  const native = () => '原生Memory人物与实体上下文';
+  const installed = () => '旧版Doctor命令污染';
   const sandbox = {
     console,
     window: {
       MEMORY_ENGINE: {
-        buildWorldEngineContext(...args) {
-          calls.push(structuredClone(args));
-          return '原生Memory人物与实体上下文';
-        },
-      },
-      MVUDoctorProfileEngine: {
-        worldActorContextEnabled: () => actorContextEnabled,
-        getWorldActorSeeds: (state) => {
-          actorSeedCalls.push(structuredClone(state));
-          return structuredClone(actorSeeds);
-        },
+        buildWorldEngineContext: installed,
       },
     },
   };
+  Object.defineProperty(sandbox.window.MEMORY_ENGINE, Symbol.for('mvu-doctor.native-world-actor-context'), {
+    value: { original: native, installed }, configurable: true,
+  });
   vm.runInNewContext(`
-    const VERSION = '0.9.4';
-    const WORLD_ACTOR_CONTEXT_BRIDGE = Symbol.for('mvu-doctor.native-world-actor-context');
-    ${actorBridge}
-    this.installWorldActorContextBridge = installWorldActorContextBridge;
+    const LEGACY_WORLD_ACTOR_CONTEXT_BRIDGE = Symbol.for('mvu-doctor.native-world-actor-context');
+    ${cleanup}
+    this.removeLegacyWorldActorContextBridge = removeLegacyWorldActorContextBridge;
   `, sandbox);
-  assert.equal(sandbox.installWorldActorContextBridge(), true);
-  const installed = sandbox.window.MEMORY_ENGINE.buildWorldEngineContext;
-  assert.equal(sandbox.installWorldActorContextBridge(), true, 'actor context bridge installation is idempotent');
-  assert.equal(sandbox.window.MEMORY_ENGINE.buildWorldEngineContext, installed);
-  const state = { round: 4 };
-  const output = sandbox.window.MEMORY_ENGINE.buildWorldEngineContext(state);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], [state]);
-  assert.deepEqual(actorSeedCalls[0], state);
-  assert.match(output, /^原生Memory人物与实体上下文/u);
-  assert.match(output, /非玩家行动主体/u);
-  assert.match(output, /完成自己的调查/u);
-  assert.match(output, /尝试不等于成功/u);
-  assert.match(output, /私密行动只进入blackbox/u);
-  assert.match(output, /不能因为本轮无变化而省略/u);
-  assert.match(output, /不得替\{\{user\}\}决定行动/u);
-
-  actorSeeds = [];
-  const fallback = sandbox.window.MEMORY_ENGINE.buildWorldEngineContext({ round: 5 });
-  assert.match(fallback, /^原生Memory人物与实体上下文/u);
-  assert.match(fallback, /没有可投影的完整非玩家档案/u);
-  assert.match(fallback, /势力、环境或社会过程/u);
-  actorContextEnabled = false;
-  assert.equal(
-    sandbox.window.MEMORY_ENGINE.buildWorldEngineContext({ round: 6 }),
-    '原生Memory人物与实体上下文',
-    'disabling the Doctor/profile owner must leave native context byte-identical',
-  );
+  assert.equal(sandbox.removeLegacyWorldActorContextBridge(), true);
+  assert.equal(sandbox.window.MEMORY_ENGINE.buildWorldEngineContext, native);
+  assert.equal(sandbox.window.MEMORY_ENGINE.buildWorldEngineContext(), '原生Memory人物与实体上下文');
+  assert.equal(sandbox.removeLegacyWorldActorContextBridge(), true, 'cleanup remains idempotent after the marker is gone');
 });
 
 test('native World retries a false prewarm once per chat and filters MVU mechanism blocks in memory', async () => {
@@ -346,7 +309,7 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
       });
     }
     vm.runInNewContext(`
-      const VERSION = '0.9.4';
+      const VERSION = '0.9.5';
       const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
       let worldbookInitialization = { chatId: '', promise: null, attempt: 0 };
       let worldbookAttemptSerial = 0;
@@ -394,10 +357,10 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
   const upgradedMarker = upgradedEvolution[Symbol.for('mvu-doctor.native-world-diagnosis-barrier')];
   assert.equal(upgradedMarker.version, undefined, 'the fixture must begin with the unversioned 0.9.3 receipt');
   assert.equal(upgraded.sandbox.installWorldEvolutionDiagnosisBarrier(), true);
-  assert.equal(upgradedMarker.version, '0.9.4');
+  assert.equal(upgradedMarker.version, '0.9.5');
   assert.equal(upgradedMarker.installed, upgradedEvolution.evolve);
   assert.equal(await upgradedEvolution.evolve({ round: 1 }, '用户行动', '最终正文', {}), 'native-evolved');
-  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.4 must unwrap rather than stack the legacy barrier');
+  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.5 must unwrap rather than stack the legacy barrier');
   assert.equal(upgraded.calls.originals.length, 1);
   assert.equal(upgraded.calls.waits[0].throughProfile, true);
 
@@ -639,7 +602,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.4');
+  assert.equal(manifest.version, '0.9.5');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -681,7 +644,7 @@ test('accepted-final orchestrator runs diagnosis then profile while native World
   assert.doesNotMatch(source, /WORLD_ENGINE_WORLDBOOK\.buildPromptSection\s*=/);
 });
 
-test('World actor selection uses host identity, current dialogue, and a reserved rotating background slot', () => {
+test('World actor instruction selects one primary actor, stays bounded, and uses native event continuity', () => {
   const source = read('profile-engine.js');
   const identity = source.slice(source.indexOf('function playerNames'), source.indexOf('const REQUIRED_TEXT'));
   const seeds = source.slice(source.indexOf('function getWorldActorSeeds'), source.indexOf('function normalizeEnvelope'));
@@ -690,8 +653,16 @@ test('World actor selection uses host identity, current dialogue, and a reserved
   assert.match(identity, /message\?\.name/);
   assert.doesNotMatch(identity, /default_persona|真名|姓名|名字|落款真名/u);
   assert.match(seeds, /recentContext\(target\.index, 2\)/);
-  assert.match(seeds, /reservedBackground/);
-  assert.match(seeds, /rotatedBackground\.slice\(reservedBackground \? 1 : 0\)/);
+  assert.match(seeds, /activeEventText/);
+  assert.match(seeds, /const primary = pool\[round % pool\.length\]/);
+  assert.match(seeds, /本轮主行动者是第一人/u);
+  assert.match(seeds, /持续事项不能只写 world_digest/u);
+  assert.match(seeds, /相关人物[\s\S]*blackbox\.secretActions/u);
+  assert.doesNotMatch(seeds, /NPC隐秘行动不得写入 blackbox/u);
+  assert.match(seeds, /fitWorldActorSeeds/);
+  assert.doesNotMatch(seeds, /\.slice\(0, MAX_WORLD_ACTOR_SEED_CHARS\)/);
+  assert.match(source, /const MAX_WORLD_ACTOR_SEEDS = 3/);
+  assert.match(source, /const MAX_WORLD_ACTOR_SEED_CHARS = 2200/);
 });
 
 test('host glue pins MVU reads while World keeps original scheduling and reroll ownership', () => {

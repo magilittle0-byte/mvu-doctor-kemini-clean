@@ -227,7 +227,7 @@ async function waitForIndexedDbValue(page, key, predicateSource) {
   }, { storageKey: key, source: predicateSource }, { timeout: 10000 });
 }
 
-test('Doctor actor seed traverses native Memory and World prompt, parse, merge, durable readback, and public projection', async () => {
+test('Doctor actor task enters only the native World extra-instruction slot; hidden NPC work follows native blackbox semantics', async () => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({
     executablePath: systemBrowser(),
@@ -270,7 +270,7 @@ test('Doctor actor seed traverses native Memory and World prompt, parse, merge, 
     influenceChain: [],
     blackbox: {
       secretActions: [{
-        action: 'SECRET_ACTION_SENTINEL：远岫另让可信雇工暗查缺页账签的纸张来源',
+        action: 'SECRET_ACTION_SENTINEL：远岫让可信雇工暗查缺页账签的纸张来源',
         witnesses: '仅远岫与该雇工',
       }],
       secretAssets: [{
@@ -480,7 +480,7 @@ test('Doctor actor seed traverses native Memory and World prompt, parse, merge, 
 
     const evidence = await page.evaluate(async () => {
       const state = window.WORLD_ENGINE_CORE.loadState();
-      const actorSeeds = window.MVUDoctorProfileEngine.getWorldActorSeeds(state);
+      const actorInstruction = window.MVUDoctorProfileEngine.buildWorldActorInstruction(state);
       const evolutionBridge = window.WORLD_ENGINE_EVOLUTION[
         Symbol.for('mvu-doctor.native-world-diagnosis-barrier')
       ];
@@ -509,7 +509,7 @@ test('Doctor actor seed traverses native Memory and World prompt, parse, merge, 
       });
       return {
         ok,
-        actorSeeds,
+        actorInstruction,
         worldReadback,
         worldDebug,
         nativeBackstageInjection,
@@ -527,23 +527,34 @@ test('Doctor actor seed traverses native Memory and World prompt, parse, merge, 
     });
 
     assert.equal(evidence.ok, true);
-    assert.equal(evidence.actorSeeds.length, 1);
-    assert.equal(evidence.actorSeeds[0].name, '远岫');
-    assert.equal(evidence.actorBridgeInstalled, true);
+    assert.match(evidence.actorInstruction, /【本轮非玩家主体推进】/u);
+    assert.match(evidence.actorInstruction, /profile-seed-chain-actor/u);
+    assert.match(evidence.actorInstruction, /远岫/u);
+    assert.match(evidence.actorInstruction, /相关人物/u);
+    assert.match(evidence.actorInstruction, /blackbox\.secretActions/u);
+    assert.doesNotMatch(evidence.actorInstruction, /NPC隐秘行动不得写入 blackbox/u);
+    assert.ok(evidence.actorInstruction.length <= 2200);
+    assert.equal(evidence.actorBridgeInstalled, false);
     assert.equal(evidence.memoryProjectionInstalled, true);
 
     const memorySegment = evidence.worldDebug.segments.find((segment) => segment.key === 'memory-engine');
+    const extraInstructionSegment = evidence.worldDebug.segments.find((segment) => segment.key === 'extra-instr');
     assert.ok(memorySegment, 'native World debug map must expose its real Memory prompt segment');
+    assert.ok(extraInstructionSegment, 'native World debug map must expose its late dynamic instruction segment');
     assert.match(memorySegment.content, /【记忆引擎提供的相关人物与实体信息】/u);
     assert.match(memorySegment.content, /MEMORY_NATIVE_SENTINEL/u);
-    assert.match(memorySegment.content, /非玩家行动主体（Doctor人物档案投影）/u);
-    assert.match(memorySegment.content, /profile-seed-chain-actor/u);
-    assert.match(memorySegment.content, /远岫/u);
+    assert.doesNotMatch(memorySegment.content, /【本轮非玩家主体推进】/u);
+    assert.doesNotMatch(memorySegment.content, /profile-seed-chain-actor/u);
+    assert.match(extraInstructionSegment.content, /【本轮非玩家主体推进】/u);
+    assert.match(extraInstructionSegment.content, /profile-seed-chain-actor/u);
+    assert.match(extraInstructionSegment.content, /远岫/u);
+    assert.match(extraInstructionSegment.content, /相关人物/u);
+    assert.match(extraInstructionSegment.content, /blackbox\.secretActions/u);
+    assert.doesNotMatch(extraInstructionSegment.content, /NPC隐秘行动不得写入 blackbox/u);
     assert.match(evidence.worldDebug.prompt, /WORLDBOOK_NATIVE_SENTINEL/u);
     assert.match(evidence.worldDebug.prompt, /MEMORY_NATIVE_SENTINEL/u);
-    assert.match(evidence.worldDebug.prompt, /非玩家行动主体（Doctor人物档案投影）/u);
-    assert.match(evidence.worldDebug.prompt, /主体的尝试不等于成功/u);
-    assert.match(evidence.worldDebug.prompt, /不能因为本轮无变化而省略/u);
+    assert.match(evidence.worldDebug.prompt, /【本轮非玩家主体推进】/u);
+    assert.match(evidence.worldDebug.prompt, /持续事项不能只写 world_digest/u);
 
     assert.equal(modelRequests.length, 2);
     assert.deepEqual(modelRequests.map((request) => request.kind), ['world', 'memory-link']);
@@ -555,12 +566,15 @@ test('Doctor actor seed traverses native Memory and World prompt, parse, merge, 
     assert.equal(evidence.worldReadback.round, 5);
     assert.equal(evidence.worldReadback.worldDigest, worldUpdate.world_digest);
     assert.doesNotMatch(JSON.stringify(evidence.worldReadback), /DECOY_WORLD_SENTINEL/u);
-    assert.equal(evidence.worldReadback.events[0].id, 'event_1');
-    assert.equal(evidence.worldReadback.events[0].name, '驿港备用货路复核');
+    const publicEvent = evidence.worldReadback.events.find((event) => event.name === '驿港备用货路复核');
+    assert.ok(publicEvent, 'public World event must survive the native parser and merge');
+    assert.match(String(publicEvent.id), /^event_\d+$/u);
     assert.equal(evidence.worldReadback.winds[0].id, 'wind_1');
     assert.match(JSON.stringify(evidence.worldReadback.blackbox), /SECRET_ACTION_SENTINEL/u);
     assert.match(JSON.stringify(evidence.worldReadback.blackbox), /SECRET_ASSET_SENTINEL/u);
 
+    // Upstream World exposes blackbox in its own buildContext; Doctor's public
+    // wrapper is the anti-omniscience boundary that removes it for narrative use.
     assert.match(evidence.nativeBackstageInjection, /SECRET_ACTION_SENTINEL/u);
     assert.match(evidence.nativeBackstageInjection, /SECRET_ASSET_SENTINEL/u);
     assert.match(evidence.publicNarrativeInjection, /PUBLIC_RESULT_SENTINEL/u);
@@ -602,6 +616,7 @@ test('Doctor actor seed traverses native Memory and World prompt, parse, merge, 
     assert.equal(durableReadback.world.round, 5);
     assert.equal(durableReadback.world.worldDigest, worldUpdate.world_digest);
     assert.match(JSON.stringify(durableReadback.world.blackbox), /SECRET_ACTION_SENTINEL/u);
+    assert.match(JSON.stringify(durableReadback.world.blackbox), /SECRET_ASSET_SENTINEL/u);
     assert.match(JSON.stringify(durableReadback.world.winds), /PUBLIC_RESULT_SENTINEL/u);
     assert.match(JSON.stringify(durableReadback.memory), /MEMORY_NATIVE_SENTINEL/u);
     assert.match(JSON.stringify(durableReadback.memory), /PUBLIC_RESULT_SENTINEL/u);

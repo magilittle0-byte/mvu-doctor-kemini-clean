@@ -1,4 +1,5 @@
-# DlSNlGHT/World v3.0.2 byte-for-byte copy verification
+# Historical import-time DlSNlGHT/World v3.0.2 byte-for-byte copy verification
+# This report predates the documented 0.9.5 task-slot adaptation and is not a claim that the current runtime still has 45 untouched files.
 upstream=https://github.com/DlSNlGHT/World.git
 commit=154de4b590378cd0bd851cfffcefd3d96741cf3f
 source_file_count=45
@@ -48,4 +49,4 @@ OK  ./world-engine-ui.js
 OK  ./world-engine-worldbook.js
 OK  ./world-engine.js
 OK  ./worldmap.svg
-result=PASS
+result=PASS_AT_IMPORT_BEFORE_0.9.5_ADAPTATION

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.4';
+  const ENGINE_VERSION = '0.9.5';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -12,11 +12,10 @@
   const GENERATION_TICKET_PREFIX = 'mvuDoctorReferenceGeneration:';
   const MAX_HISTORY = 24;
   const MAX_BRANCH_MESSAGES = 8;
-  const MAX_WORLD_ACTOR_SEEDS = 12;
-  const MAX_WORLD_ACTOR_SEED_CHARS = 16000;
-  const MAX_WORLD_ACTOR_LIST_ITEMS = 4;
-  const MAX_WORLD_ACTOR_TEXT_CHARS = 180;
-  const MAX_WORLD_RELATED_ACTOR_SEEDS = 4;
+  const MAX_WORLD_ACTOR_SEEDS = 3;
+  const MAX_WORLD_ACTOR_SEED_CHARS = 2200;
+  const MAX_WORLD_ACTOR_LIST_ITEMS = 2;
+  const MAX_WORLD_ACTOR_TEXT_CHARS = 80;
   // Directly retained from the mature 0.7.x completeness contract: a
   // placeholder does not become usable merely because punctuation or an
   // explanatory wrapper was appended to it.
@@ -494,37 +493,26 @@
 
   function projectWorldActorSeed(profile) {
     return {
-      profileId: worldActorSeedText(profile.profileId || stableId(profile.name), 120),
-      name: worldActorSeedText(profile.name, 120),
-      aliases: worldActorSeedList(profile.aliases, MAX_WORLD_ACTOR_LIST_ITEMS, 120),
+      profileId: worldActorSeedText(profile.profileId || stableId(profile.name), 80),
+      name: worldActorSeedText(profile.name, 80),
       identity: {
-        species: worldActorSeedText(profile.identity?.species),
-        gender: worldActorSeedText(profile.identity?.gender),
-        age: worldActorSeedText(profile.identity?.age),
-        occupation: worldActorSeedText(profile.identity?.occupation),
         affiliation: worldActorSeedText(profile.identity?.affiliation),
         socialPosition: worldActorSeedText(profile.identity?.socialPosition),
       },
       personality: {
-        temperament: worldActorSeedText(profile.personality?.temperament),
         coreDesire: worldActorSeedText(profile.personality?.coreDesire),
         values: worldActorSeedText(profile.personality?.values),
         thinking: worldActorSeedText(profile.personality?.thinking),
-        attachment: worldActorSeedText(profile.personality?.attachment),
         socialMotive: worldActorSeedText(profile.personality?.socialMotive),
-        interest: worldActorSeedText(profile.personality?.interest),
         conflict: worldActorSeedText(profile.personality?.conflict),
         stress: worldActorSeedText(profile.personality?.stress),
         moralBoundary: worldActorSeedText(profile.personality?.moralBoundary),
-        expression: worldActorSeedText(profile.personality?.expression),
         actionHabit: worldActorSeedText(profile.personality?.actionHabit),
         weakness: worldActorSeedText(profile.personality?.weakness),
-        humor: worldActorSeedText(profile.personality?.humor),
       },
       currentState: {
         location: worldActorSeedText(profile.currentState?.location),
         condition: worldActorSeedText(profile.currentState?.condition),
-        emotion: worldActorSeedText(profile.currentState?.emotion),
         goal: worldActorSeedText(profile.currentState?.goal),
       },
       relationships: worldActorSeedList(profile.relationships),
@@ -534,13 +522,8 @@
     };
   }
 
-  function worldActorContextEnabled() {
-    const currentSettings = settings();
-    return Boolean(currentSettings.enabled && currentSettings.profileEnabled);
-  }
-
   function getWorldActorSeeds(worldState = null) {
-    if (!worldActorContextEnabled()) return [];
+    if (!settings().enabled || !settings().profileEnabled) return [];
     const target = latestAssistant() || { index: (ctx()?.chat || []).length };
     const excluded = new Set(playerNames(target).map((name) => text(name).toLocaleLowerCase()).filter(Boolean));
     const currentDialogue = recentContext(target.index, 2)
@@ -552,47 +535,75 @@
       try { return JSON.stringify(worldState || {}).toLocaleLowerCase(); }
       catch { return ''; }
     })();
+    const activeEventText = (worldState?.events || [])
+      .filter((event) => !['已完成', '已消退', '已解除', '已终结'].includes(text(event?.stage)))
+      .map((event) => [event?.name, event?.desc, event?.evolveResult].map(text).join(' '))
+      .join('\n')
+      .toLocaleLowerCase();
     const candidates = Object.values(readStore().profiles || {})
       .filter((profile, index) => validateProfile(profile, index).length === 0)
       .filter((profile) => ![...profileNameSet(profile)].some((name) => excluded.has(name) || PLAYER_LABEL.test(name)))
       .map((profile) => ({
         profile,
         key: text(profile.profileId || stableId(profile.name)),
+        inActiveEvent: [...profileNameSet(profile)].some((name) => name.length >= 2 && activeEventText.includes(name)),
         related: [...profileNameSet(profile)].some((name) => name.length >= 2
           && (currentWorld.includes(name) || currentDialogue.includes(name))),
       }))
       .sort((left, right) => left.key.localeCompare(right.key, 'zh-CN'));
-
-    // Keep a small related set, then rotate the remaining stable list by the
-    // native World round.  This preserves scene continuity without letting
-    // user-adjacent actors permanently crowd every off-screen actor out.
-    const related = candidates.filter((candidate) => candidate.related).slice(0, MAX_WORLD_RELATED_ACTOR_SEEDS);
-    const relatedKeys = new Set(related.map((candidate) => candidate.key));
-    const background = candidates.filter((candidate) => !relatedKeys.has(candidate.key));
+    if (!candidates.length) return [];
     const round = Math.max(0, Number(worldState?.round) || 0);
-    const offset = background.length ? round % background.length : 0;
-    const rotatedBackground = [...background.slice(offset), ...background.slice(0, offset)];
-    const seeds = [];
-    const reservedBackground = rotatedBackground[0] || null;
-    const reservedSeed = reservedBackground ? projectWorldActorSeed(reservedBackground.profile) : null;
-    for (const candidate of related) {
-      const seed = projectWorldActorSeed(candidate.profile);
-      const next = reservedSeed ? [...seeds, seed, reservedSeed] : [...seeds, seed];
-      if (JSON.stringify(next).length > MAX_WORLD_ACTOR_SEED_CHARS) continue;
-      seeds.push(seed);
-      if (seeds.length >= MAX_WORLD_ACTOR_SEEDS) break;
-    }
-    if (reservedSeed && seeds.length < MAX_WORLD_ACTOR_SEEDS
-      && JSON.stringify([...seeds, reservedSeed]).length <= MAX_WORLD_ACTOR_SEED_CHARS) {
-      seeds.push(reservedSeed);
-    }
-    for (const candidate of rotatedBackground.slice(reservedBackground ? 1 : 0)) {
-      if (seeds.length >= MAX_WORLD_ACTOR_SEEDS) break;
-      const seed = projectWorldActorSeed(candidate.profile);
-      if (JSON.stringify([...seeds, seed]).length > MAX_WORLD_ACTOR_SEED_CHARS) continue;
-      seeds.push(seed);
-    }
+    const active = candidates.filter((candidate) => candidate.inActiveEvent);
+    const pool = active.length ? active : candidates;
+    const primary = pool[round % pool.length];
+    const companions = candidates
+      .filter((candidate) => candidate.key !== primary.key && candidate.related)
+      .slice(0, MAX_WORLD_ACTOR_SEEDS - 1);
+    const seeds = [primary, ...companions].map((candidate) => projectWorldActorSeed(candidate.profile));
     return seeds;
+  }
+
+  function fitWorldActorSeeds(actors, charBudget) {
+    let fitted = [];
+    const fields = [
+      ['currentState', 'goal'], ['currentState', 'location'], ['currentState', 'condition'],
+      ['personality', 'coreDesire'], ['personality', 'values'], ['personality', 'thinking'],
+      ['personality', 'socialMotive'], ['personality', 'conflict'], ['personality', 'actionHabit'],
+      ['personality', 'stress'], ['personality', 'weakness'], ['personality', 'moralBoundary'],
+      ['identity', 'affiliation'], ['identity', 'socialPosition'],
+      [null, 'relationships'], [null, 'knowledge'], [null, 'capabilities'], [null, 'resources'],
+    ];
+    for (const actor of actors) {
+      const minimal = { profileId: actor.profileId, name: actor.name };
+      if (JSON.stringify([...fitted, minimal]).length > charBudget) break;
+      fitted = [...fitted, minimal];
+      const actorIndex = fitted.length - 1;
+      for (const [group, key] of fields) {
+        const value = group ? actor?.[group]?.[key] : actor?.[key];
+        if ((Array.isArray(value) && value.length === 0) || (!Array.isArray(value) && !usable(value))) continue;
+        const candidate = deepClone(fitted);
+        if (group) {
+          candidate[actorIndex][group] ||= {};
+          candidate[actorIndex][group][key] = value;
+        } else candidate[actorIndex][key] = value;
+        if (JSON.stringify(candidate).length <= charBudget) fitted = candidate;
+      }
+    }
+    return fitted;
+  }
+
+  function buildWorldActorInstruction(worldState = null) {
+    if (!settings().enabled) return '';
+    const actors = getWorldActorSeeds(worldState);
+    const instruction = `【本轮非玩家主体推进】
+人物档案只是当前状态，不表示行动已经发生。先估计自上次世界更新以来经过的剧情时间；从现存非玩家主体中选择一名，依据其当前目标、有限知识、位置、能力、资源与约束，推导其本轮实际尝试、准备、观察或计划调整，并由世界规则裁决阻力、代价与结果。旧对话和人物背景只作因果依据，不得复制成新变化；行动不必与{{user}}有关，也不得替{{user}}行动。字段归属完全遵守上文World原生规则：主体或相关人物已实施、无目击无痕且需要跨轮保护知情边界的隐秘行动写入 blackbox.secretActions，普通内心想法、未实施念头和无后续价值的隐私不写；形成可观察后果或持续公开进程时才创建或更新 events、factions、winds 等对应字段。持续事项不能只写 world_digest，必须落入下一轮可读的原生状态字段。`;
+    if (!actors.length) {
+      return `${instruction}\n本轮没有可用Doctor人物档案；从当前World状态、已选世界书或近期对话中选择一个已经存在的非玩家人物、势力或环境过程作为主体，不得改用玩家旧经历凑数。`;
+    }
+    const actorHeader = '\n本轮主行动者是第一人，其余仅为必要关系资料：\n';
+    const fitted = fitWorldActorSeeds(actors, Math.max(2, MAX_WORLD_ACTOR_SEED_CHARS - instruction.length - actorHeader.length));
+    if (!fitted.length) return `${instruction}\n人物资料超过本轮预算；请按当前World状态选择一个已经存在的非玩家主体。`;
+    return `${instruction}${actorHeader}${JSON.stringify(fitted)}`;
   }
 
   function normalizeEnvelope(value) {
@@ -755,6 +766,267 @@
     const decoded = String(value || '').replace(/~1/gu, '/').replace(/~0/gu, '~');
     try { return decodeURIComponent(decoded); }
     catch { return decoded; }
+  }
+
+  function jsonPointerState(root, pointer) {
+    const raw = text(pointer);
+    if (!raw.startsWith('/')) return { exists: false, parentExists: false, value: undefined };
+    const segments = raw.split('/').slice(1).map(decodeJsonPointerSegment);
+    if (segments.length === 0) return { exists: true, parentExists: true, value: root, parent: undefined, key: '' };
+    let current = root;
+    for (let index = 0; index < segments.length - 1; index += 1) {
+      const key = segments[index];
+      if (current === null || typeof current !== 'object' || !Object.prototype.hasOwnProperty.call(current, key)) {
+        return { exists: false, parentExists: false, value: undefined, parent: undefined, key: segments.at(-1) };
+      }
+      current = current[key];
+    }
+    const key = segments.at(-1);
+    const parentExists = current !== null && typeof current === 'object';
+    if (!parentExists || !Object.prototype.hasOwnProperty.call(current, key)) {
+      return { exists: false, parentExists, value: undefined, parent: parentExists ? current : undefined, key };
+    }
+    return { exists: true, parentExists: true, value: current[key], parent: current, key };
+  }
+
+  function jsonValueEqual(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  function arrayInsertApplied(beforeArray, afterArray, key, value) {
+    if (!Array.isArray(beforeArray) || !Array.isArray(afterArray)
+      || afterArray.length !== beforeArray.length + 1) return false;
+    const index = key === '-' ? beforeArray.length : Number(key);
+    if (key !== '-' && (!/^\d+$/u.test(String(key)) || !Number.isInteger(index)
+      || index < 0 || index > beforeArray.length)) return false;
+    if (!jsonValueEqual(afterArray[index], value)) return false;
+    for (let cursor = 0; cursor < index; cursor += 1) {
+      if (!jsonValueEqual(afterArray[cursor], beforeArray[cursor])) return false;
+    }
+    for (let cursor = index; cursor < beforeArray.length; cursor += 1) {
+      if (!jsonValueEqual(afterArray[cursor + 1], beforeArray[cursor])) return false;
+    }
+    return true;
+  }
+
+  function officialDeltaExpected(beforeValue, delta) {
+    if (typeof delta !== 'number' || !Number.isFinite(delta)) return { supported: false };
+    const isValueWithDescription = Array.isArray(beforeValue)
+      && beforeValue.length === 2
+      && typeof beforeValue[1] === 'string'
+      && typeof beforeValue[0] !== 'object';
+    const baseValue = isValueWithDescription ? beforeValue[0] : beforeValue;
+    let expected;
+    if (baseValue instanceof Date && Number.isFinite(baseValue.getTime())) {
+      expected = new Date(baseValue.getTime() + delta).toISOString();
+    } else if (typeof baseValue === 'string') {
+      const parsedDate = new Date(baseValue);
+      if (!Number.isFinite(parsedDate.getTime()) || !Number.isNaN(Number(baseValue))) return { supported: false };
+      expected = new Date(parsedDate.getTime() + delta).toISOString();
+    } else if (typeof baseValue === 'number' && Number.isFinite(baseValue)) {
+      expected = parseFloat((baseValue + delta).toPrecision(12));
+    } else {
+      return { supported: false };
+    }
+    if (!isValueWithDescription) return { supported: true, value: expected };
+    const wrapped = structuredClone(beforeValue);
+    wrapped[0] = expected;
+    return { supported: true, value: wrapped };
+  }
+
+  function diagnosisPatchOperations(block) {
+    const patches = taggedTextBlocks(block, 'JSONPatch');
+    if (patches.length !== 1) throw new Error(`必须且只能有一个JSONPatch，实际${patches.length}个`);
+    const source = String(patches[0] || '')
+      .replace(/^\s*```(?:json)?\s*/iu, '')
+      .replace(/\s*```\s*$/u, '')
+      .trim();
+    const parsed = parseJsonCandidate(source);
+    if (!Array.isArray(parsed)) throw new Error('JSONPatch内容必须是数组');
+    if (parsed.some((operation) => !operation || typeof operation !== 'object' || Array.isArray(operation))) {
+      throw new Error('JSONPatch中的每一项都必须是操作对象');
+    }
+    return parsed;
+  }
+
+  function pointerParentPath(pointer) {
+    const raw = text(pointer);
+    const index = raw.lastIndexOf('/');
+    return index > 0 ? raw.slice(0, index) : '';
+  }
+
+  // Sequential receipt simulation is adapted directly from the mature
+  // simulateOps loop.  It never writes state; official Mvu.parseMessage remains
+  // the only parser/executor.  The local copy exists only because that API does
+  // not expose one receipt per operation.
+  function simulateDiagnosisOperation(root, operation, index, source) {
+    const op = text(operation?.op).toLocaleLowerCase('en-US');
+    const path = text(op === 'move' ? (operation?.to || operation?.path) : operation?.path);
+    const receipt = (outcome, detail = '', touches = [], nextRoot = root) => ({
+      root: nextRoot,
+      receipt: { source, index, op, path, outcome, ...(detail ? { detail } : {}) },
+      touches,
+    });
+    if (!['replace', 'delta', 'insert', 'remove', 'move'].includes(op)) {
+      return receipt('unapplied', '未知操作类型');
+    }
+
+    const candidate = deepClone(root);
+    if (op === 'move') {
+      const fromPath = text(operation?.from);
+      const sourceState = jsonPointerState(candidate, fromPath);
+      if (!sourceState.exists) return receipt('not_in_schema', 'move.from不存在');
+      const movedValue = deepClone(sourceState.value);
+      const sourceTouch = Array.isArray(sourceState.parent) ? pointerParentPath(fromPath) : fromPath;
+      if (Array.isArray(sourceState.parent)) sourceState.parent.splice(Number(sourceState.key), 1);
+      else delete sourceState.parent[sourceState.key];
+      const destination = jsonPointerState(candidate, path);
+      if (!destination.parentExists) return receipt('not_in_schema', 'move.to父路径不存在');
+      const destinationTouch = Array.isArray(destination.parent) ? pointerParentPath(path) : path;
+      if (Array.isArray(destination.parent)) {
+        const targetIndex = destination.key === '-' ? destination.parent.length : Number(destination.key);
+        if (destination.key !== '-' && (!/^\d+$/u.test(String(destination.key))
+          || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex > destination.parent.length)) {
+          return receipt('unapplied', 'move.to数组位置无效');
+        }
+        destination.parent.splice(targetIndex, 0, movedValue);
+      } else {
+        destination.parent[destination.key] = movedValue;
+      }
+      return receipt(jsonValueEqual(root, candidate) ? 'already_correct' : 'applied', '', [sourceTouch, destinationTouch], candidate);
+    }
+
+    const current = jsonPointerState(candidate, path);
+    if (op === 'replace') {
+      if (!current.exists) return receipt('not_in_schema', 'replace目标不存在');
+      if (jsonValueEqual(current.value, operation?.value)) return receipt('already_correct', '', [path]);
+      current.parent[current.key] = deepClone(operation?.value);
+      return receipt('applied', '', [path], candidate);
+    }
+    if (op === 'delta') {
+      if (!current.exists) return receipt('not_in_schema', 'delta目标不存在');
+      const expected = officialDeltaExpected(current.value, operation?.value);
+      if (!expected.supported) return receipt('unapplied', 'delta类型不符合官方MVU语义');
+      const outcome = jsonValueEqual(current.value, expected.value) ? 'already_correct' : 'applied';
+      current.parent[current.key] = deepClone(expected.value);
+      return receipt(outcome, '', [path], candidate);
+    }
+    if (op === 'insert') {
+      if (!current.parentExists) return receipt('not_in_schema', 'insert父路径不存在');
+      if (Array.isArray(current.parent)) {
+        const beforeArray = deepClone(current.parent);
+        const targetIndex = current.key === '-' ? current.parent.length : Number(current.key);
+        if (current.key !== '-' && (!/^\d+$/u.test(String(current.key))
+          || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex > current.parent.length)) {
+          return receipt('unapplied', 'insert数组位置无效');
+        }
+        current.parent.splice(targetIndex, 0, deepClone(operation?.value));
+        if (!arrayInsertApplied(beforeArray, current.parent, current.key, operation?.value)) {
+          return receipt('unapplied', 'insert数组位移核验失败');
+        }
+        return receipt('applied', '', [pointerParentPath(path)], candidate);
+      }
+      if (current.exists) {
+        return jsonValueEqual(current.value, operation?.value)
+          ? receipt('already_correct', '', [path])
+          : receipt('unapplied', 'insert对象键已存在');
+      }
+      current.parent[current.key] = deepClone(operation?.value);
+      return receipt('applied', '', [path], candidate);
+    }
+    if (!current.parentExists) return receipt('not_in_schema', 'remove父路径不存在');
+    if (!current.exists) return receipt('already_correct', '', [path]);
+    if (Array.isArray(current.parent)) {
+      current.parent.splice(Number(current.key), 1);
+      return receipt('applied', '', [pointerParentPath(path)], candidate);
+    }
+    delete current.parent[current.key];
+    return receipt('applied', '', [path], candidate);
+  }
+
+  function auditDiagnosisPatch(block, beforeData, afterData, source) {
+    let operations = [];
+    try { operations = diagnosisPatchOperations(block); }
+    catch (error) {
+      return [{ source, index: 0, op: '', path: '', outcome: 'unapplied', detail: `JSONPatch回执解析失败：${error.message || error}` }];
+    }
+    let expectedRoot = deepClone(statDataOf(beforeData) || {});
+    const simulated = operations.map((operation, index) => {
+      const result = simulateDiagnosisOperation(expectedRoot, operation, index, source);
+      expectedRoot = result.root;
+      return result;
+    });
+    const actualRoot = statDataOf(afterData) || {};
+    const mismatchedTouches = new Set();
+    for (const result of simulated) {
+      if (!['applied', 'already_correct'].includes(result.receipt.outcome)) continue;
+      for (const touchedPath of result.touches) {
+        const expected = touchedPath ? jsonPointerState(expectedRoot, touchedPath) : { exists: true, value: expectedRoot };
+        const actual = touchedPath ? jsonPointerState(actualRoot, touchedPath) : { exists: true, value: actualRoot };
+        if (expected.exists !== actual.exists || !jsonValueEqual(expected.value, actual.value)) mismatchedTouches.add(touchedPath);
+      }
+    }
+    return simulated.map((result) => {
+      const operationMismatch = ['applied', 'already_correct'].includes(result.receipt.outcome)
+        && result.touches.some((path) => mismatchedTouches.has(path));
+      return operationMismatch
+        ? { ...result.receipt, outcome: 'unapplied', detail: '官方MVU最终读回与顺序核验结果不一致' }
+        : result.receipt;
+    });
+  }
+
+  function auditDiagnosisPatchWithoutBaseline(block, currentData, source) {
+    let operations = [];
+    try { operations = diagnosisPatchOperations(block); }
+    catch (error) {
+      return [{ source, index: 0, op: '', path: '', outcome: 'unapplied', detail: `JSONPatch回执解析失败：${error.message || error}` }];
+    }
+    const currentRoot = statDataOf(currentData) || {};
+    return operations.map((operation, index) => {
+      const op = text(operation?.op).toLocaleLowerCase('en-US');
+      const path = text(op === 'move' ? (operation?.to || operation?.path) : operation?.path);
+      const current = jsonPointerState(currentRoot, path);
+      if (!['replace', 'delta', 'insert', 'remove', 'move'].includes(op)) {
+        return { source, index, op, path, outcome: 'unapplied', detail: '未知操作类型' };
+      }
+      if ((op === 'replace' || op === 'delta') && !current.exists) {
+        return { source, index, op, path, outcome: 'not_in_schema' };
+      }
+      if ((op === 'insert' || op === 'remove') && !current.exists && !current.parentExists) {
+        return { source, index, op, path, outcome: 'not_in_schema' };
+      }
+      if (op === 'replace' && JSON.stringify(current.value) === JSON.stringify(operation?.value)) {
+        return { source, index, op, path, outcome: 'already_correct', detail: '无前态，但当前最终值与replace目标一致' };
+      }
+      if (op === 'remove' && !current.exists && current.parentExists) {
+        return { source, index, op, path, outcome: 'already_correct', detail: '无前态，但目标已不存在' };
+      }
+      return { source, index, op, path, outcome: 'unverified', detail: '首个助手楼没有可读的更新前MVU，无法机械证明该操作已正确落地' };
+    });
+  }
+
+  function reconcileOriginalReceipts(originalReceipts, correctionReceipts) {
+    const correctedPaths = new Set((correctionReceipts || [])
+      .filter((receipt) => ['applied', 'already_correct'].includes(receipt.outcome))
+      .map((receipt) => receipt.path)
+      .filter(Boolean));
+    return (originalReceipts || []).map((receipt) => correctedPaths.has(receipt.path)
+      ? { ...receipt, outcome: 'superseded', detail: '同一路径已由本次纠正补丁取代并读回' }
+      : receipt);
+  }
+
+  function appliedDiagnosisBlock(block, receipts) {
+    const operations = diagnosisPatchOperations(block);
+    const acceptedIndexes = new Set((receipts || [])
+      .filter((receipt) => ['applied', 'already_correct'].includes(receipt.outcome))
+      .map((receipt) => Number(receipt.index)));
+    const accepted = operations.filter((_operation, index) => acceptedIndexes.has(index));
+    const analysis = taggedTextBlocks(block, 'Analysis')[0]?.trim()
+      || '变量医生只保留已由MVU读回确认的纠正操作。';
+    return [
+      '<UpdateVariable>', '<Analysis>', analysis.replace(/[<>]/gu, ''), '</Analysis>',
+      '<JSONPatch>', JSON.stringify(accepted, null, 2), '</JSONPatch>', '</UpdateVariable>',
+    ].join('\n');
   }
 
   function jsonPatchActorNames(content) {
@@ -1339,7 +1611,6 @@ ${bindingObligation}
     const postUpdateDigest = JSON.stringify(postUpdatePayload);
     const stat = deepClone(statDataOf(postUpdatePayload));
     const preUpdatePayload = await previousMvuPayload(target.index);
-    const preUpdateStat = deepClone(statDataOf(preUpdatePayload) ?? null);
     requireTaskOwner(owner, target, '变量诊断上下文完成');
     const statStr = stat ? JSON.stringify(stat, null, 2) : '';
     const aiIdx = target.index;
@@ -1353,57 +1624,12 @@ ${bindingObligation}
       wiBlock, statStr, latestBlock, latestReply, auto: true,
     });
     const hasOriginalUpdate = Boolean(latestBlock);
-    const evidenceAddendum = hasOriginalUpdate
-      ? '【Doctor闭环核对补充】下方 current post-update 只表示原更新实际落地后的观测结果，不保证语义正确。对于本次调用，必须先依据权威规则、触发用户输入和最终接受正文独立推导应有变化；原更新块和 current 值都只是待核对对象。若应有结果与 current 不同，必须输出叠加在 current 上的最小纠正补丁。'
-      : '【Doctor闭环核对补充】本楼没有完整 UpdateVariable 更新块。下方 current pre-update 是本轮变化尚未写入时的当前起点，不是本回合已经完成后的正确结果。必须依据权威规则、触发用户输入和最终接受正文独立推导本回合全部应有变化，并输出叠加在这个 current 起点上的完整本轮补丁。';
-    const systemWithEvidence = `${baseSystemPrompt}\n\n${evidenceAddendum}`;
     const systemPrompt = settings().globalPrompt
-      ? `${systemWithEvidence}\n\n【用户的全局自定义模型适配附加提示词】\n${settings().globalPrompt}`
-      : systemWithEvidence;
-    const baseTask = hasOriginalUpdate
+      ? `${baseSystemPrompt}\n\n【用户的全局自定义模型适配附加提示词】\n${settings().globalPrompt}`
+      : baseSystemPrompt;
+    const userMsg = hasOriginalUpdate
       ? '【自动诊断】最新一条 AI 回复里带有 <UpdateVariable> 更新。请按本卡 MVU 规则与当前状态核验它：有错就只输出一个修正后的 <UpdateVariable> 区块（仅含需改正的字段）；完全正确则在 <JSONPatch> 里输出空数组（[]）。'
       : '【自动诊断】最新一条 AI 回复的正文里【没有】变量更新区块。请充当变量更新引擎：通读这条回复，依本卡 MVU 规则与当前状态，推导出本回合应当发生的全部变量更新，输出一个 <UpdateVariable> 区块把状态更新到位；若这条回复确实不涉及任何变量变化，则在 <JSONPatch> 里输出空数组（[]）。';
-    let acceptedNarrative;
-    try {
-      acceptedNarrative = typeof so.stripMechanismBlocks === 'function'
-        ? String(so.stripMechanismBlocks(latestReply) || '').trim()
-        : latestReply;
-    } catch { acceptedNarrative = latestReply; }
-    if (!acceptedNarrative) acceptedNarrative = '本楼没有可独立读取的叙事正文，只有变量机制区块。';
-    const currentStateTag = hasOriginalUpdate
-      ? 'current_post_update_stat_data'
-      : 'current_pre_update_stat_data';
-    const auditInstruction = hasOriginalUpdate
-      ? '【核对顺序】先依据触发输入、最终正文和权威规则，独立列出本回合每一组明确应发生的变化；原更新块和当前值都只是待核对对象，不是正确答案。再把应有结果与更新前、更新后的状态逐项比较，连同配套字段一起检查。纠正补丁必须叠加在 current post-update 状态上，不得从前态重放整回合。只有全部变化组核对后确实没有差异，才输出空 JSONPatch。'
-      : '【核对顺序】本楼没有原更新块。先依据触发输入、最终正文和权威规则，独立列出本回合每一组明确应发生的变化；把 current pre-update 作为尚未应用本轮变化的起点，生成叠加在这个起点上的完整本轮补丁，连同配套字段一起更新。不得把 current 起点误当成本回合已经完成后的结果；只有正文确实没有任何应写入的变化，才输出空 JSONPatch。';
-    // Minimal transplant of legacy/0.7.5's mature four-source audit packet.
-    // Story Oracle still owns rules, transport, extraction and application;
-    // this adapter restores the pre/post/turn evidence that the post-state-only
-    // original cannot use to detect a correct delta applied to a wrong base.
-    const userMsg = `${baseTask}
-
-【本楼闭环核对材料】
-<pre_update_stat_data>
-${cropForModel(preUpdateStat ?? '宿主没有提供可读的更新前状态；请依据规则、触发输入和最终正文推导。', 30000)}
-</pre_update_stat_data>
-
-<${currentStateTag}>
-${cropForModel(stat ?? '当前状态不可用。', 30000)}
-</${currentStateTag}>
-
-<original_update_block>
-${cropForModel(latestBlock || '本楼没有完整UpdateVariable区块。', 16000)}
-</original_update_block>
-
-<triggering_user_input>
-${cropForModel(previousUser(target.index) || '宿主没有提供可读的触发用户输入。', 18000)}
-</triggering_user_input>
-
-<accepted_narrative>
-${cropForModel(acceptedNarrative, 40000)}
-</accepted_narrative>
-
-${auditInstruction}`;
     const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }];
     const request = { systemPrompt, userMsg };
     const diagnosisAttempts = [];
@@ -1463,16 +1689,38 @@ ${auditInstruction}`;
         code: 'story_oracle_unrecognized_diagnosis', raw: String(raw || '').slice(0, 16000),
       }));
     }
-    let result = { status: 'nochange' };
+    const originalOperations = latestBlock
+      ? (preUpdatePayload
+        ? auditDiagnosisPatch(latestBlock, preUpdatePayload, unchangedPayload, 'original')
+        : auditDiagnosisPatchWithoutBaseline(latestBlock, unchangedPayload, 'original'))
+      : [];
+    let correctionOperations = [];
+    let result = { status: 'nochange', stateChanged: false };
     if (patchBlock && !explicitEmpty) {
       const opts = { type: 'message', message_id: target.index };
       const oldData = unchangedPayload;
       const snapshot = deepClone(oldData);
-      const newData = await Mvu.parseMessage(patchBlock, oldData);
+      const candidateData = await Mvu.parseMessage(patchBlock, oldData);
       requireTaskOwner(owner, target, '变量补丁解析完成');
-      if (!newData) result = { status: 'failed' };
-      else if (JSON.stringify(newData) === JSON.stringify(oldData)) result = { status: 'nochange' };
+      if (!candidateData) result = { status: 'failed' };
       else {
+        correctionOperations = auditDiagnosisPatch(patchBlock, oldData, candidateData, 'correction');
+        const unsafeCandidate = correctionOperations.some((receipt) => ['not_in_schema', 'unapplied'].includes(receipt.outcome));
+        let newData = candidateData;
+        if (unsafeCandidate) {
+          let safeBlock = '';
+          try { safeBlock = appliedDiagnosisBlock(patchBlock, correctionOperations); }
+          catch { safeBlock = '<UpdateVariable><Analysis>没有可安全落地的操作。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>'; }
+          newData = diagnosisPatchOperations(safeBlock).length
+            ? await Mvu.parseMessage(safeBlock, oldData)
+            : deepClone(oldData);
+          requireTaskOwner(owner, target, '变量补丁剔除未落地操作后');
+          if (!newData) result = { status: 'failed' };
+          else correctionOperations = auditDiagnosisPatch(patchBlock, oldData, newData, 'correction');
+        }
+        if (result.status !== 'failed' && JSON.stringify(newData) === JSON.stringify(oldData)) {
+          result = { status: 'nochange', stateChanged: false };
+        } else if (result.status !== 'failed') {
         requireTaskOwner(owner, target, '变量补丁写入前');
         await Mvu.replaceMvuData(newData, opts);
         let readback;
@@ -1492,23 +1740,31 @@ ${auditInstruction}`;
           }
           throw error;
         }
-        result = { status: 'applied', snapshot, readback: deepClone(readback) };
+        correctionOperations = auditDiagnosisPatch(patchBlock, oldData, readback, 'correction');
+        result = { status: 'applied', stateChanged: true, snapshot, readback: deepClone(readback) };
+        }
       }
     }
     if (result.status === 'failed') throw enrichDiagnosisError(new Error('故事神谕返回了无法由MVU应用的变量补丁'));
-    if (result.status === 'applied' && aiIdx >= 0) {
+    const operationReceipts = [...reconcileOriginalReceipts(originalOperations, correctionOperations), ...correctionOperations];
+    const unresolved = operationReceipts.filter((receipt) => ['not_in_schema', 'unapplied', 'unverified'].includes(receipt.outcome));
+    if (unresolved.length) result.status = 'partial';
+    if (result.stateChanged && aiIdx >= 0) {
+      const writeBackBlock = result.status === 'partial'
+        ? appliedDiagnosisBlock(patchBlock, correctionOperations)
+        : patchBlock;
       let doctorWrittenTarget = null;
       if (!latestBlock) {
         try {
-          await so.writeUpdateBlockToMessage(aiIdx, patchBlock);
+          await so.writeUpdateBlockToMessage(aiIdx, writeBackBlock);
           const activeMessage = ctx()?.chat?.[aiIdx];
-          if (!messageText(activeMessage).includes(patchBlock)) throw new Error('变量已经写入MVU，但修复块没有落到当前活动swipe');
+          if (!messageText(activeMessage).includes(writeBackBlock)) throw new Error('变量已经写入MVU，但修复块没有落到当前活动swipe');
           doctorWrittenTarget = refreshAcceptedTarget(target);
           if (target.generationKey) doctorWrittenTarget.generationKey = target.generationKey;
           requireTaskOwner(owner, doctorWrittenTarget, '变量修复块写入正文后');
           if (typeof storyCtx.saveChat === 'function') await storyCtx.saveChat();
           requireTaskOwner(owner, doctorWrittenTarget, '变量修复正文保存后');
-          if (!messageText(ctx()?.chat?.[aiIdx]).includes(patchBlock)) throw new Error('保存后当前活动swipe没有读回变量修复块');
+          if (!messageText(ctx()?.chat?.[aiIdx]).includes(writeBackBlock)) throw new Error('保存后当前活动swipe没有读回变量修复块');
         } catch (error) {
           if (doctorWrittenTarget) error.doctorWrittenTarget = deepClone(doctorWrittenTarget);
           throw enrichDiagnosisError(error);
@@ -1525,9 +1781,15 @@ ${auditInstruction}`;
       ok: true,
       status: result.status,
       semanticProof: false,
-      verdict: result.status === 'applied'
-        ? '模型提出纠正，已由MVU应用并完成同楼读回'
-        : '模型未提出会改变当前状态的修复；这不等于脚本证明变量绝对正确',
+      applicationComplete: unresolved.length === 0,
+      canProceed: true,
+      operations: operationReceipts,
+      unresolved,
+      verdict: result.status === 'partial'
+        ? `${result.stateChanged ? '可落地修复已写入并读回' : '本次没有可安全落地的状态改动'}；仍有${unresolved.length}项操作不在当前schema、未落地或缺少前态证明，人物与World继续独立运行`
+        : (result.status === 'applied'
+          ? '模型提出纠正，已由MVU应用并完成同楼读回'
+          : '模型没有提出状态改动；原更新操作均已逐项核对，没有发现未落地路径，但这不等于脚本能证明所有剧情语义绝对正确'),
       raw: String(raw),
       patchBlock: String(patchBlock || ''),
       request,
@@ -1539,7 +1801,8 @@ ${auditInstruction}`;
   function diagnosisDisplayLabel(value) {
     const status = typeof value === 'string' ? value : value?.status;
     if (status === 'applied') return '已修复并读回';
-    if (status === 'nochange') return '模型未提出有效修复（不等于已证明正确）';
+    if (status === 'partial') return `部分修复：仍有${value?.unresolved?.length || 0}项未落地，可手动复检`;
+    if (status === 'nochange') return '未发现需落地的修复';
     return status || '已保留';
   }
 
@@ -2976,7 +3239,7 @@ ${auditInstruction}`;
         });
       }
       result.ok = true;
-      result.status = 'complete';
+      result.status = result.diagnosis?.status === 'partial' ? 'complete_with_warning' : 'complete';
       result.identity = target.identity;
       result.world = {
         status: 'native-independent',
@@ -2988,7 +3251,7 @@ ${auditInstruction}`;
       runtime.failedStep = '';
       await recordRunReport({ at: new Date().toISOString(), target: deepClone(target), result: deepClone(result), worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null });
       const diagnosisLabel = diagnosisDisplayLabel(result.diagnosis);
-      setPhase('done', `本楼变量与人物完成：变量${diagnosisLabel}；档案${result.profile?.count ?? 0}张。原版世界引擎独立运行，当前第${result.world.round}轮`, result);
+      setPhase('done', `${result.status === 'complete_with_warning' ? '本楼人物已完成，变量仍有警告' : '本楼变量与人物完成'}：变量${diagnosisLabel}；档案${result.profile?.count ?? 0}张。原版世界引擎独立运行，当前第${result.world.round}轮`, result);
       return result;
     } catch (error) {
       if (error?.doctorWrittenTarget && target?.generationKey && runtime.pipelineEpoch === owner) {
@@ -4188,7 +4451,9 @@ ${auditInstruction}`;
     const completeProfiles = profiles.filter((profile, index) => validateProfile(profile, index).length === 0);
     const invalidProfiles = profiles.filter((profile, index) => validateProfile(profile, index).length > 0);
     const persistenceFailure = runtime.reportPersistence?.ok === false || runtime.diagnosticPersistence?.ok === false;
-    const displayPhase = persistenceFailure ? 'report-incomplete' : runtime.phase;
+    const displayPhase = persistenceFailure
+      ? 'report-incomplete'
+      : (runtime.lastResult?.status === 'complete_with_warning' ? 'warning' : runtime.phase);
     const displayDetail = persistenceFailure
       ? `报告或诊断没有取得完整落盘回执：${runtime.reportPersistence?.error || runtime.diagnosticPersistence?.error || '持久化状态不完整'}`
       : runtime.detail;
@@ -4478,8 +4743,7 @@ ${auditInstruction}`;
       parseJsonResponse,
       installWorldPublicProjection,
       waitForWorldDiagnosis,
-      worldActorContextEnabled,
-      getWorldActorSeeds,
+      buildWorldActorInstruction,
     };
   }
 
