@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const VERSION = '0.9.3';
+  const VERSION = '0.9.4';
   const WORLD_VERSION = '3.0.2';
   const WORLD_GLOBALS = ['WORLD_ENGINE_STORE', 'WORLD_ENGINE_CORE', 'WORLD_ENGINE_API'];
   const WORLD_SETTINGS_KEY = 'world_engine_settings';
@@ -10,6 +10,7 @@
   const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
   const WORLD_DIALOGUE_FILTER_BRIDGE = Symbol.for('mvu-doctor.native-world-dialogue-filter');
   const WORLD_API_SERIAL_LANE = Symbol.for('mvu-doctor.shared-world-api-serial-lane');
+  const WORLD_ACTOR_CONTEXT_BRIDGE = Symbol.for('mvu-doctor.native-world-actor-context');
   const MVU_DIALOGUE_FILTERS = [
     '/<UpdateVariable>[\\s\\S]*?<\\/UpdateVariable>/gi',
     '/<UpdateVariable>[\\s\\S]*$/i',
@@ -65,6 +66,52 @@
     };
     Object.defineProperty(api, WORLD_API_SERIAL_LANE, {
       value: { original, sequence: () => sequence }, configurable: false,
+    });
+    return true;
+  }
+
+  function buildWorldActorContextSection(actorSeeds, enabled = true) {
+    if (!enabled || !Array.isArray(actorSeeds)) return '';
+    const profileContext = actorSeeds.length
+      ? `${JSON.stringify(actorSeeds)}`
+      : '本轮人物阶段没有可投影的完整非玩家档案。不要因此停止世界：只从当前世界状态、已选世界书和近期对话中已经存在的势力、环境或社会过程选择主体；不得凭空杜撰人物档案。';
+    return `========== 非玩家行动主体（Doctor人物档案投影） ==========
+以下档案只提供非玩家主体的有限视角、目标、能力与约束，不表示这些行动已经发生，也不得覆盖世界书、当前世界状态或本轮已接受正文。
+每轮先从这些人物、当前世界状态中的势力，或环境/社会过程里选择至少一个真实存在的非玩家主体；根据其自身目标、有限知识、资源、弱点、阻力与所需时间，形成一项具体的尝试、准备、观察或计划变化，再用World原生字段记录其结果。主体的尝试不等于成功，必须经过世界规则裁决。私密行动只进入blackbox；只有被观察、留痕或传播后的后果才能进入公开字段。当前状态中仍有效的secretActions与secretAssets必须在本轮blackbox继续返回；只在已经完成、曝光、失效或有事实更新时改变或移除，不能因为本轮无变化而省略。推进可以与{{user}}完全无关；不得替{{user}}决定行动、对白、感受、同意或结果。
+${profileContext}`;
+  }
+
+  function installWorldActorContextBridge() {
+    const memory = window.MEMORY_ENGINE;
+    if (!memory?.buildWorldEngineContext) return false;
+    const existing = memory[WORLD_ACTOR_CONTEXT_BRIDGE];
+    if (existing?.version === VERSION && memory.buildWorldEngineContext === existing.installed) return true;
+    const originalBuildWorldEngineContext = typeof existing?.original === 'function'
+      ? existing.original : memory.buildWorldEngineContext.bind(memory);
+    memory.buildWorldEngineContext = function(...args) {
+      const nativeContext = originalBuildWorldEngineContext(...args);
+      let actorSeeds = [];
+      let actorContextEnabled = false;
+      try {
+        const profileEngine = window.MVUDoctorProfileEngine;
+        actorContextEnabled = profileEngine?.worldActorContextEnabled?.() === true;
+        actorSeeds = profileEngine?.getWorldActorSeeds?.(args[0]) || [];
+      } catch (error) {
+        // Actor context is an optional mature World prompt extension.  A
+        // profile read fault must not replace or block native Memory context.
+        console.warn('[MVU Doctor] 非玩家行动主体读取失败；World保留原生Memory上下文继续', error);
+      }
+      const actorContext = buildWorldActorContextSection(actorSeeds, actorContextEnabled);
+      if (!actorContext) return nativeContext;
+      return [String(nativeContext || '').trim(), actorContext].filter(Boolean).join('\n\n');
+    };
+    Object.defineProperty(memory, WORLD_ACTOR_CONTEXT_BRIDGE, {
+      value: {
+        original: originalBuildWorldEngineContext,
+        installed: memory.buildWorldEngineContext,
+        version: VERSION,
+      },
+      configurable: true,
     });
     return true;
   }
@@ -364,9 +411,12 @@
   function installWorldEvolutionDiagnosisBarrier() {
     const evolution = window.WORLD_ENGINE_EVOLUTION;
     if (!evolution?.evolve) return false;
-    if (evolution[WORLD_EVOLUTION_BARRIER]) return true;
-    const original = evolution.evolve.bind(evolution);
-    evolution.evolve = async function(state, userMsg, aiMsg, opts) {
+    const existing = evolution[WORLD_EVOLUTION_BARRIER];
+    if (existing?.version === VERSION && evolution.evolve === existing.installed) return true;
+    if (existing && (typeof existing !== 'object' || typeof existing.original !== 'function')) return false;
+    const original = typeof existing?.original === 'function'
+      ? existing.original : evolution.evolve.bind(evolution);
+    const installed = async function(state, userMsg, aiMsg, opts) {
       const evolutionChatId = String(window.WORLD_ENGINE_WORLDBOOK?.getChatId?.() || '');
       const stillEvolutionChat = () => String(window.WORLD_ENGINE_WORLDBOOK?.getChatId?.() || '') === evolutionChatId;
       // The native settings UI remains user-owned and may be edited after
@@ -419,6 +469,7 @@
           const receipt = await window.MVUDoctorProfileEngine?.waitForWorldDiagnosis?.({
             aiMsg: safeAiMsg,
             dialogueText: safeOpts?.dialogueText,
+            throughProfile: true,
           });
           if (!stillEvolutionChat()) return false;
           if (receipt?.status === 'stale') return false;
@@ -433,10 +484,23 @@
       if (!stillEvolutionChat()) return false;
       return original(state, userMsg, safeAiMsg, safeOpts);
     };
-    Object.defineProperty(evolution, WORLD_EVOLUTION_BARRIER, {
-      value: { original }, configurable: false,
-    });
-    return true;
+    evolution.evolve = installed;
+    if (existing) {
+      try {
+        Object.assign(existing, { original, installed, version: VERSION });
+      } catch {
+        evolution.evolve = original;
+        return false;
+      }
+    } else {
+      Object.defineProperty(evolution, WORLD_EVOLUTION_BARRIER, {
+        value: { original, installed, version: VERSION }, configurable: true,
+      });
+    }
+    const receipt = evolution[WORLD_EVOLUTION_BARRIER];
+    return receipt?.version === VERSION
+      && receipt?.installed === installed
+      && evolution.evolve === installed;
   }
 
   function assertWorldContract() {
@@ -523,8 +587,14 @@
     seedStoryOracleSettings(ctx || context());
     await loadScript(`${root}/profile-engine.js`, 'mvu-ref-profile-entry');
     await waitFor(() => Boolean(window.MVUDoctorProfileEngine?.ready), '人物档案填表引擎');
+    if (window.MVUDoctorProfileEngine.version !== VERSION
+      || typeof window.MVUDoctorProfileEngine.getWorldActorSeeds !== 'function'
+      || typeof window.MVUDoctorProfileEngine.worldActorContextEnabled !== 'function') {
+      throw new Error(`人物档案引擎版本或行动主体接口不匹配：需要${VERSION}，实际${window.MVUDoctorProfileEngine.version || '未知'}`);
+    }
     window.MVUDoctorProfileEngine.installWorldPublicProjection?.();
-    installWorldEvolutionDiagnosisBarrier();
+    if (!installWorldActorContextBridge()) throw new Error('原版World缺少Memory人物上下文接缝，拒绝把行动主体适配伪装成就绪');
+    if (!installWorldEvolutionDiagnosisBarrier()) throw new Error('原版World推演屏障升级失败，拒绝把旧版等待语义伪装成就绪');
 
     exposeBootStatus('ready');
     console.info(`[MVU Doctor] ${VERSION} 成熟组件适配链已就绪`);

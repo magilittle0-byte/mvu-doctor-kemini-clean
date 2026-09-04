@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.3';
+  const ENGINE_VERSION = '0.9.4';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -12,6 +12,11 @@
   const GENERATION_TICKET_PREFIX = 'mvuDoctorReferenceGeneration:';
   const MAX_HISTORY = 24;
   const MAX_BRANCH_MESSAGES = 8;
+  const MAX_WORLD_ACTOR_SEEDS = 12;
+  const MAX_WORLD_ACTOR_SEED_CHARS = 16000;
+  const MAX_WORLD_ACTOR_LIST_ITEMS = 4;
+  const MAX_WORLD_ACTOR_TEXT_CHARS = 180;
+  const MAX_WORLD_RELATED_ACTOR_SEEDS = 4;
   // Directly retained from the mature 0.7.x completeness contract: a
   // placeholder does not become usable merely because punctuation or an
   // explanatory wrapper was appended to it.
@@ -433,11 +438,20 @@
 
   function playerNames(target) {
     const context = ctx();
+    const chat = context?.chat || [];
+    const lastRelevantIndex = Number.isInteger(Number(target?.index))
+      ? Math.min(Number(target.index), chat.length - 1) : chat.length - 1;
+    const historicalPersonaNames = chat.slice(0, lastRelevantIndex + 1)
+      .filter((message) => message?.is_user)
+      .map((message) => message?.name);
+    const personaId = text(context?.chatMetadata?.persona);
+    const mappedPersonaName = personaId ? context?.powerUserSettings?.personas?.[personaId] : '';
     const names = new Set([
       context?.name1,
       context?.user_name,
       context?.userName,
-      previousUser(target.index).match(/(?:真名|姓名|名字|落款真名)\s*[：:]\s*([^\s，。；;]+)/u)?.[1],
+      mappedPersonaName,
+      ...historicalPersonaNames,
     ].map(text).filter(Boolean));
     return [...names];
   }
@@ -467,6 +481,118 @@
       });
     }
     return errors;
+  }
+
+  function worldActorSeedText(value, limit = MAX_WORLD_ACTOR_TEXT_CHARS) {
+    return text(value).slice(0, limit);
+  }
+
+  function worldActorSeedList(value, limit = MAX_WORLD_ACTOR_LIST_ITEMS, textLimit = MAX_WORLD_ACTOR_TEXT_CHARS) {
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => worldActorSeedText(item, textLimit)).filter(Boolean).slice(0, limit);
+  }
+
+  function projectWorldActorSeed(profile) {
+    return {
+      profileId: worldActorSeedText(profile.profileId || stableId(profile.name), 120),
+      name: worldActorSeedText(profile.name, 120),
+      aliases: worldActorSeedList(profile.aliases, MAX_WORLD_ACTOR_LIST_ITEMS, 120),
+      identity: {
+        species: worldActorSeedText(profile.identity?.species),
+        gender: worldActorSeedText(profile.identity?.gender),
+        age: worldActorSeedText(profile.identity?.age),
+        occupation: worldActorSeedText(profile.identity?.occupation),
+        affiliation: worldActorSeedText(profile.identity?.affiliation),
+        socialPosition: worldActorSeedText(profile.identity?.socialPosition),
+      },
+      personality: {
+        temperament: worldActorSeedText(profile.personality?.temperament),
+        coreDesire: worldActorSeedText(profile.personality?.coreDesire),
+        values: worldActorSeedText(profile.personality?.values),
+        thinking: worldActorSeedText(profile.personality?.thinking),
+        attachment: worldActorSeedText(profile.personality?.attachment),
+        socialMotive: worldActorSeedText(profile.personality?.socialMotive),
+        interest: worldActorSeedText(profile.personality?.interest),
+        conflict: worldActorSeedText(profile.personality?.conflict),
+        stress: worldActorSeedText(profile.personality?.stress),
+        moralBoundary: worldActorSeedText(profile.personality?.moralBoundary),
+        expression: worldActorSeedText(profile.personality?.expression),
+        actionHabit: worldActorSeedText(profile.personality?.actionHabit),
+        weakness: worldActorSeedText(profile.personality?.weakness),
+        humor: worldActorSeedText(profile.personality?.humor),
+      },
+      currentState: {
+        location: worldActorSeedText(profile.currentState?.location),
+        condition: worldActorSeedText(profile.currentState?.condition),
+        emotion: worldActorSeedText(profile.currentState?.emotion),
+        goal: worldActorSeedText(profile.currentState?.goal),
+      },
+      relationships: worldActorSeedList(profile.relationships),
+      knowledge: worldActorSeedList(profile.knowledge),
+      capabilities: worldActorSeedList(profile.capabilities),
+      resources: worldActorSeedList(profile.resources),
+    };
+  }
+
+  function worldActorContextEnabled() {
+    const currentSettings = settings();
+    return Boolean(currentSettings.enabled && currentSettings.profileEnabled);
+  }
+
+  function getWorldActorSeeds(worldState = null) {
+    if (!worldActorContextEnabled()) return [];
+    const target = latestAssistant() || { index: (ctx()?.chat || []).length };
+    const excluded = new Set(playerNames(target).map((name) => text(name).toLocaleLowerCase()).filter(Boolean));
+    const currentDialogue = recentContext(target.index, 2)
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .map((message) => message.text)
+      .join('\n')
+      .toLocaleLowerCase();
+    const currentWorld = (() => {
+      try { return JSON.stringify(worldState || {}).toLocaleLowerCase(); }
+      catch { return ''; }
+    })();
+    const candidates = Object.values(readStore().profiles || {})
+      .filter((profile, index) => validateProfile(profile, index).length === 0)
+      .filter((profile) => ![...profileNameSet(profile)].some((name) => excluded.has(name) || PLAYER_LABEL.test(name)))
+      .map((profile) => ({
+        profile,
+        key: text(profile.profileId || stableId(profile.name)),
+        related: [...profileNameSet(profile)].some((name) => name.length >= 2
+          && (currentWorld.includes(name) || currentDialogue.includes(name))),
+      }))
+      .sort((left, right) => left.key.localeCompare(right.key, 'zh-CN'));
+
+    // Keep a small related set, then rotate the remaining stable list by the
+    // native World round.  This preserves scene continuity without letting
+    // user-adjacent actors permanently crowd every off-screen actor out.
+    const related = candidates.filter((candidate) => candidate.related).slice(0, MAX_WORLD_RELATED_ACTOR_SEEDS);
+    const relatedKeys = new Set(related.map((candidate) => candidate.key));
+    const background = candidates.filter((candidate) => !relatedKeys.has(candidate.key));
+    const round = Math.max(0, Number(worldState?.round) || 0);
+    const offset = background.length ? round % background.length : 0;
+    const rotatedBackground = [...background.slice(offset), ...background.slice(0, offset)];
+    const seeds = [];
+    const reservedBackground = rotatedBackground[0] || null;
+    const reservedSeed = reservedBackground ? projectWorldActorSeed(reservedBackground.profile) : null;
+    for (const candidate of related) {
+      const seed = projectWorldActorSeed(candidate.profile);
+      const next = reservedSeed ? [...seeds, seed, reservedSeed] : [...seeds, seed];
+      if (JSON.stringify(next).length > MAX_WORLD_ACTOR_SEED_CHARS) continue;
+      seeds.push(seed);
+      if (seeds.length >= MAX_WORLD_ACTOR_SEEDS) break;
+    }
+    if (reservedSeed && seeds.length < MAX_WORLD_ACTOR_SEEDS
+      && JSON.stringify([...seeds, reservedSeed]).length <= MAX_WORLD_ACTOR_SEED_CHARS) {
+      seeds.push(reservedSeed);
+    }
+    for (const candidate of rotatedBackground.slice(reservedBackground ? 1 : 0)) {
+      if (seeds.length >= MAX_WORLD_ACTOR_SEEDS) break;
+      const seed = projectWorldActorSeed(candidate.profile);
+      if (JSON.stringify([...seeds, seed]).length > MAX_WORLD_ACTOR_SEED_CHARS) continue;
+      seeds.push(seed);
+    }
+    return seeds;
   }
 
   function normalizeEnvelope(value) {
@@ -1613,9 +1739,28 @@ ${auditInstruction}`;
     return text(checkpoint.nextStep) !== 'diagnosis';
   }
 
+  function profileCheckpointReceipt(checkpoint) {
+    const status = text(checkpoint?.status);
+    if (status === 'complete') {
+      return text(checkpoint?.lastCompletedStep) === 'profile'
+        ? { ok: true, status: 'profile-complete' }
+        : { ok: false, status: 'profile-not-run' };
+    }
+    if (status === 'failed') {
+      return {
+        ok: false,
+        status: text(checkpoint?.nextStep) === 'diagnosis' ? 'diagnosis-failed' : 'profile-failed',
+      };
+    }
+    if (status === 'stale') return { ok: false, status: 'stale' };
+    if (status === 'cancelled') return { ok: false, status: 'cancelled' };
+    return null;
+  }
+
   async function waitForWorldDiagnosis(input = {}) {
+    const throughProfile = input?.throughProfile === true;
     const liveAtStart = latestAssistant();
-    if (!liveAtStart) return { ok: true, status: 'unbound' };
+    if (!liveAtStart) return { ok: !throughProfile, status: 'unbound' };
     const filteredDialogue = worldFilteredDialogue(input.aiMsg);
     if (!filteredDialogue || worldFilteredDialogue(liveAtStart.content) !== filteredDialogue) {
       return { ok: false, status: 'stale' };
@@ -1645,11 +1790,15 @@ ${auditInstruction}`;
         && runtime.pipelineBusy
         && worldGateScopeMatches(runtime.lastAccepted, expected)
         && text(runtime.lastAccepted?.generationKey) === checkpointGenerationKey);
+      const settledProfileCheckpoint = Boolean(throughProfile && checkpointMatches && checkpointGenerationKey
+        && worldGateScopeMatches(runtime.lastAccepted, expected)
+        && text(runtime.lastAccepted?.generationKey) === checkpointGenerationKey);
 
       if (!bindingGenerationKey) {
         if (activeMatches) bindingGenerationKey = activeGenerationKey;
         else if (livePipelineCheckpoint) bindingGenerationKey = checkpointGenerationKey;
-        else return { ok: true, status: 'unbound' };
+        else if (settledProfileCheckpoint) bindingGenerationKey = checkpointGenerationKey;
+        else return { ok: !throughProfile, status: 'unbound' };
       }
 
       // A same-floor reroll can produce identical visible text.  The durable
@@ -1664,15 +1813,31 @@ ${auditInstruction}`;
         && worldGateScopeMatches(runtime.manualDiagnosisBinding, expected)
         && text(runtime.manualDiagnosisBinding?.generationKey) === bindingGenerationKey);
       if (boundCheckpoint) {
-        if (diagnosisCheckpointSettled(checkpoint) && !manualDiagnosisOwns) {
+        const profileReceipt = throughProfile ? profileCheckpointReceipt(checkpoint) : null;
+        if (throughProfile && profileReceipt && !manualDiagnosisOwns) {
+          return profileReceipt;
+        }
+        if (!throughProfile && diagnosisCheckpointSettled(checkpoint) && !manualDiagnosisOwns) {
           return {
             ok: checkpoint.status !== 'failed',
             status: checkpoint.status === 'failed' ? 'diagnosis-failed' : 'diagnosis-complete',
           };
         }
-        if (!manualDiagnosisOwns && runtime.lastResult?.failedStep === 'diagnosis'
+        if (!throughProfile && !manualDiagnosisOwns && runtime.lastResult?.failedStep === 'diagnosis'
           && worldGateScopeMatches(runtime.lastAccepted, expected)) {
           return { ok: false, status: 'diagnosis-failed' };
+        }
+        if (throughProfile && !manualDiagnosisOwns
+          && ['failed', 'cancelled', 'discarded'].includes(text(runtime.phase))
+          && worldGateScopeMatches(runtime.lastAccepted, expected)) {
+          return {
+            ok: false,
+            status: runtime.phase === 'cancelled'
+              ? 'cancelled'
+              : (runtime.phase === 'discarded'
+                ? 'stale'
+                : (runtime.failedStep === 'diagnosis' ? 'diagnosis-failed' : 'profile-failed')),
+          };
         }
         // A durable "running" row is not proof that an in-memory diagnosis
         // still owns it.  If the pipeline died before it could persist its
@@ -1682,7 +1847,7 @@ ${auditInstruction}`;
         else {
           missingHandoffPolls += 1;
           if (missingHandoffPolls >= 20) {
-            return { ok: false, status: 'diagnosis-handoff-failed' };
+            return { ok: false, status: throughProfile ? 'profile-handoff-failed' : 'diagnosis-handoff-failed' };
           }
         }
       } else {
@@ -1690,9 +1855,19 @@ ${auditInstruction}`;
         // Seeing it without its exact checkpoint means persistence/readback
         // failed; fail open so native World cannot be held forever.
         if (activeMatches && active?.status === 'processing') {
-          return { ok: false, status: 'diagnosis-handoff-failed' };
+          return { ok: false, status: throughProfile ? 'profile-handoff-failed' : 'diagnosis-handoff-failed' };
         }
         if (['failed', 'cancelled', 'discarded'].includes(text(runtime.phase))) {
+          if (throughProfile) {
+            return {
+              ok: false,
+              status: runtime.phase === 'cancelled'
+                ? 'cancelled'
+                : (runtime.phase === 'discarded'
+                  ? 'stale'
+                  : (runtime.failedStep === 'diagnosis' ? 'diagnosis-failed' : 'profile-failed')),
+            };
+          }
           return { ok: false, status: 'diagnosis-failed' };
         }
         if (!activeMatches) return { ok: false, status: 'stale' };
@@ -1701,7 +1876,7 @@ ${auditInstruction}`;
         // timeout.  The real diagnosis may run without an arbitrary deadline
         // once its exact durable checkpoint exists.
         if (missingHandoffPolls >= 20) {
-          return { ok: false, status: 'diagnosis-handoff-missing' };
+          return { ok: false, status: throughProfile ? 'profile-handoff-missing' : 'diagnosis-handoff-missing' };
         }
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -4303,6 +4478,8 @@ ${auditInstruction}`;
       parseJsonResponse,
       installWorldPublicProjection,
       waitForWorldDiagnosis,
+      worldActorContextEnabled,
+      getWorldActorSeeds,
     };
   }
 

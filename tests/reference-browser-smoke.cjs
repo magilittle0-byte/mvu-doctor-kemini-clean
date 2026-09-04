@@ -559,7 +559,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.3 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.4 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -867,6 +867,7 @@ test('0.9.3 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           stages: window.__stages,
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+          actorSeeds: window.MVUDoctorProfileEngine.getWorldActorSeeds(),
           profileWrites: window.__profileStoreWrites(),
           modelCalls: window.__modelCalls,
           manualWorldCalls: window.__worldCalls,
@@ -880,6 +881,14 @@ test('0.9.3 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.equal(evidence.runtime.lastResult.profile.count, 1);
         assert.equal(evidence.runtime.lastResult.profile.modelCalls, 2);
         assert.equal(Object.keys(evidence.profiles).length, 1);
+        assert.equal(evidence.actorSeeds.length, 1);
+        assert.equal(evidence.actorSeeds[0].name, completeProfile.name);
+        assert.equal(evidence.actorSeeds[0].personality.temperament, completeProfile.personality.temperament);
+        assert.equal(evidence.actorSeeds[0].personality.socialMotive, completeProfile.personality.socialMotive);
+        assert.equal(evidence.actorSeeds[0].currentState.emotion, completeProfile.currentState.emotion);
+        assert.equal(Object.hasOwn(evidence.actorSeeds[0], 'history'), false);
+        assert.equal(Object.hasOwn(evidence.actorSeeds[0], 'evidence'), false);
+        assert.equal(Object.hasOwn(evidence.actorSeeds[0], 'inferences'), false);
         assert.equal(evidence.profileWrites.length, 1);
         assert.deepEqual(evidence.manualWorldCalls, []);
         assert.equal(evidence.worldAbortCalls, 0);
@@ -888,19 +897,125 @@ test('0.9.3 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.equal(evidence.worldSettings.engineEnabled, true);
         assert.equal(evidence.worldSettings.syncToChat, true);
         assert.equal(evidence.worldSettings.injectionEnabled, true);
+        const withoutPlayer = await page.evaluate(() => {
+          const store = window.MVUDoctorProfileEngine.getStore();
+          const playerProfile = structuredClone(Object.values(store.profiles)[0]);
+          playerProfile.profileId = 'synthetic-player-profile';
+          playerProfile.name = '旧人格名';
+          playerProfile.aliases = ['玩家'];
+          window.__context.chat.find((message) => message.is_user).name = '旧人格名';
+          store.profiles[playerProfile.profileId] = playerProfile;
+          window.WORLD_ENGINE_STORE.setItem(
+            'mvuDoctorReferenceProfileStore:chat-a',
+            JSON.stringify(store),
+          );
+          return window.MVUDoctorProfileEngine.getWorldActorSeeds();
+        });
+        assert.equal(withoutPlayer.length, 1, 'player profile must never enter World actor seeds');
+        assert.notEqual(withoutPlayer[0].name, '旧人格名');
+        const authoritativeIdentity = await page.evaluate(() => {
+          const store = window.MVUDoctorProfileEngine.getStore();
+          const template = structuredClone(Object.values(store.profiles)[0]);
+          const add = (profileId, name) => {
+            const profile = structuredClone(template);
+            profile.profileId = profileId;
+            profile.name = name;
+            profile.aliases = [];
+            store.profiles[profileId] = profile;
+          };
+          add('locked-persona-profile', '锁定人格名');
+          add('default-persona-profile', '默认但未激活人格');
+          add('mentioned-npc-profile', '被询问角色');
+          window.__context.chatMetadata.persona = 'locked-persona-id';
+          window.__context.powerUserSettings = {
+            default_persona: 'default-persona-id',
+            personas: {
+              'locked-persona-id': '锁定人格名',
+              'default-persona-id': '默认但未激活人格',
+            },
+          };
+          window.__context.chat.find((message) => message.is_user).mes = '请问姓名：被询问角色。';
+          window.WORLD_ENGINE_STORE.setItem(
+            'mvuDoctorReferenceProfileStore:chat-a',
+            JSON.stringify(store),
+          );
+          return window.MVUDoctorProfileEngine.getWorldActorSeeds({ round: 0 }).map((seed) => seed.name);
+        });
+        assert.doesNotMatch(authoritativeIdentity.join('|'), /锁定人格名/u, 'the chat-locked persona is the player');
+        assert.match(authoritativeIdentity.join('|'), /默认但未激活人格/u, 'an inactive default persona must not be guessed as the player');
+        assert.match(authoritativeIdentity.join('|'), /被询问角色/u, 'ordinary text asking an NPC name must not turn that NPC into the player');
+        const actorFairness = await page.evaluate(() => {
+          const source = structuredClone(Object.values(window.MVUDoctorProfileEngine.getStore().profiles)[0]);
+          const inflate = (profileId, name) => {
+            const profile = structuredClone(source);
+            const visit = (value, key = '') => {
+              if (Array.isArray(value)) return value.map((item) => `${item}${'详'.repeat(500)}`);
+              if (value && typeof value === 'object') {
+                for (const [childKey, child] of Object.entries(value)) value[childKey] = visit(child, childKey);
+                return value;
+              }
+              if (typeof value === 'string' && !['profileId', 'name'].includes(key)) return `${value}${'详'.repeat(500)}`;
+              return value;
+            };
+            visit(profile);
+            profile.profileId = profileId;
+            profile.name = name;
+            profile.aliases = [];
+            return profile;
+          };
+          const store = window.MVUDoctorProfileEngine.getStore();
+          store.profiles = {
+            relatedA: inflate('related-a', '关联甲'),
+            relatedB: inflate('related-b', '关联乙'),
+            relatedC: inflate('related-c', '关联丙'),
+            relatedD: inflate('related-d', '关联丁'),
+            backgroundA: inflate('background-a', '后台甲'),
+            backgroundB: inflate('background-b', '后台乙'),
+          };
+          window.__context.chatMetadata.persona = '';
+          window.__context.powerUserSettings = { default_persona: '', personas: {} };
+          window.__context.chat.find((message) => message.is_user).name = '测试玩家';
+          window.__context.chat.find((message) => message.is_user).mes = '关联甲、关联乙、关联丙和关联丁都在当前输入中。';
+          window.WORLD_ENGINE_STORE.setItem(
+            'mvuDoctorReferenceProfileStore:chat-a',
+            JSON.stringify(store),
+          );
+          return [0, 1].map((round) => window.MVUDoctorProfileEngine
+            .getWorldActorSeeds({ round })
+            .map((seed) => seed.name));
+        });
+        assert.match(actorFairness[0].join('|'), /关联/u, 'the current user input must participate in related-actor selection');
+        assert.match(actorFairness[0].join('|'), /后台甲/u, 'round zero must reserve real budget for an off-screen actor');
+        assert.match(actorFairness[1].join('|'), /后台乙/u, 'native World rounds must rotate the reserved off-screen actor');
+        const disabledSeeds = await page.evaluate(() => {
+          window.__context.extensionSettings['mvu-doctor-kemini-clean'] = {
+            mvuDoctorReferenceSettings: { enabled: true, profileEnabled: false },
+          };
+          return {
+            enabled: window.MVUDoctorProfileEngine.worldActorContextEnabled(),
+            seeds: window.MVUDoctorProfileEngine.getWorldActorSeeds({ round: 9 }),
+          };
+        });
+        assert.equal(disabledSeeds.enabled, false);
+        assert.deepEqual(disabledSeeds.seeds, [], 'disabling the Doctor profile stage must stop exporting old profile data');
       } finally { await page.close(); }
     });
 
-    await t.test('public diagnosis barrier releases at the profile checkpoint without waiting for profile fill', async () => {
+    await t.test('default diagnosis wait stays compatible while the native World wait continues through profile commit', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, { slowProfile: true });
         await runAcceptedReply(page);
         await page.evaluate(() => {
           window.__diagnosisBarrierReceipt = null;
+          window.__profileBarrierReceipt = null;
           window.__diagnosisBarrierPromise = window.MVUDoctorProfileEngine.waitForWorldDiagnosis({
             aiMsg: window.__context.chat.at(-1).mes,
           }).then((receipt) => { window.__diagnosisBarrierReceipt = receipt; return receipt; });
+          window.__profileBarrierPromise = window.MVUDoctorProfileEngine.waitForWorldDiagnosis({
+            aiMsg: window.__context.chat.at(-1).mes,
+            throughProfile: true,
+          }).then((receipt) => { window.__profileBarrierReceipt = receipt; return receipt; });
         });
         await page.waitForFunction(() => window.__diagnosisBarrierReceipt
           && window.__stages.includes('profile')
@@ -908,6 +1023,7 @@ test('0.9.3 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         const evidence = await page.evaluate(() => ({
           publicApi: typeof window.MVUDoctorProfileEngine.waitForWorldDiagnosis,
           receipt: window.__diagnosisBarrierReceipt,
+          profileReceipt: window.__profileBarrierReceipt,
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
           profilePending: window.__profilePending(),
@@ -918,9 +1034,20 @@ test('0.9.3 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.equal(evidence.checkpoint.nextStep, 'profile');
         assert.equal(evidence.runtime.pipelineBusy, true, 'profile is still unresolved when the barrier releases');
         assert.equal(evidence.profilePending, true, 'the profile model promise remains unresolved');
+        assert.equal(evidence.profileReceipt, null, 'World must not start from an empty actor set while this profile is still pending');
         assert.notEqual(evidence.runtime.phase, 'done');
         await page.evaluate((reply) => window.__resolveProfile(reply), profileEnvelope());
         await waitForSettled(page, 'done');
+        await page.waitForFunction(() => Boolean(window.__profileBarrierReceipt));
+        const settled = await page.evaluate(() => ({
+          receipt: window.__profileBarrierReceipt,
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+          profiles: window.MVUDoctorProfileEngine.getStore().profiles,
+        }));
+        assert.deepEqual(settled.receipt, { ok: true, status: 'profile-complete' });
+        assert.equal(settled.checkpoint.status, 'complete');
+        assert.equal(settled.checkpoint.nextStep, '');
+        assert.equal(Object.keys(settled.profiles).length, 1);
       } finally { await page.close(); }
     });
 
