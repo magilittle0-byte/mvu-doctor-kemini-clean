@@ -309,7 +309,7 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
       });
     }
     vm.runInNewContext(`
-      const VERSION = '0.9.5';
+      const VERSION = '0.9.6';
       const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
       let worldbookInitialization = { chatId: '', promise: null, attempt: 0 };
       let worldbookAttemptSerial = 0;
@@ -357,10 +357,10 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
   const upgradedMarker = upgradedEvolution[Symbol.for('mvu-doctor.native-world-diagnosis-barrier')];
   assert.equal(upgradedMarker.version, undefined, 'the fixture must begin with the unversioned 0.9.3 receipt');
   assert.equal(upgraded.sandbox.installWorldEvolutionDiagnosisBarrier(), true);
-  assert.equal(upgradedMarker.version, '0.9.5');
+  assert.equal(upgradedMarker.version, '0.9.6');
   assert.equal(upgradedMarker.installed, upgradedEvolution.evolve);
   assert.equal(await upgradedEvolution.evolve({ round: 1 }, '用户行动', '最终正文', {}), 'native-evolved');
-  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.5 must unwrap rather than stack the legacy barrier');
+  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.6 must unwrap rather than stack the legacy barrier');
   assert.equal(upgraded.calls.originals.length, 1);
   assert.equal(upgraded.calls.waits[0].throughProfile, true);
 
@@ -602,7 +602,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.5');
+  assert.equal(manifest.version, '0.9.6');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -655,8 +655,8 @@ test('World actor instruction selects one primary actor, stays bounded, and uses
   assert.match(seeds, /recentContext\(target\.index, 2\)/);
   assert.match(seeds, /activeEventText/);
   assert.match(seeds, /const primary = pool\[round % pool\.length\]/);
-  assert.match(seeds, /本轮主行动者是第一人/u);
-  assert.match(seeds, /持续事项不能只写 world_digest/u);
+  assert.match(seeds, /第一人优先/u);
+  assert.match(seeds, /不得只更新world_digest、influenceChain或reputation/u);
   assert.match(seeds, /相关人物[\s\S]*blackbox\.secretActions/u);
   assert.doesNotMatch(seeds, /NPC隐秘行动不得写入 blackbox/u);
   assert.match(seeds, /fitWorldActorSeeds/);

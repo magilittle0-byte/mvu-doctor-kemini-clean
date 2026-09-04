@@ -532,6 +532,10 @@ test('Doctor actor task enters only the native World extra-instruction slot; hid
     assert.match(evidence.actorInstruction, /远岫/u);
     assert.match(evidence.actorInstruction, /相关人物/u);
     assert.match(evidence.actorInstruction, /blackbox\.secretActions/u);
+    assert.match(evidence.actorInstruction, /本轮必须推进一个非玩家主体/u);
+    assert.match(evidence.actorInstruction, /筹划、试探、调查起步或矛盾初现/u);
+    assert.match(evidence.actorInstruction, /不得只更新world_digest、influenceChain或reputation/u);
+    assert.match(evidence.actorInstruction, /若其唯一合理动作只是等待\{\{user\}\}/u);
     assert.doesNotMatch(evidence.actorInstruction, /NPC隐秘行动不得写入 blackbox/u);
     assert.ok(evidence.actorInstruction.length <= 2200);
     assert.equal(evidence.actorBridgeInstalled, false);
@@ -554,7 +558,7 @@ test('Doctor actor task enters only the native World extra-instruction slot; hid
     assert.match(evidence.worldDebug.prompt, /WORLDBOOK_NATIVE_SENTINEL/u);
     assert.match(evidence.worldDebug.prompt, /MEMORY_NATIVE_SENTINEL/u);
     assert.match(evidence.worldDebug.prompt, /【本轮非玩家主体推进】/u);
-    assert.match(evidence.worldDebug.prompt, /持续事项不能只写 world_digest/u);
+    assert.match(evidence.worldDebug.prompt, /不得只更新world_digest、influenceChain或reputation/u);
 
     assert.equal(modelRequests.length, 2);
     assert.deepEqual(modelRequests.map((request) => request.kind), ['world', 'memory-link']);

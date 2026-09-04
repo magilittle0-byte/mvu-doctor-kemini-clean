@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.5';
+  const ENGINE_VERSION = '0.9.6';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -596,11 +596,17 @@
     if (!settings().enabled) return '';
     const actors = getWorldActorSeeds(worldState);
     const instruction = `【本轮非玩家主体推进】
-人物档案只是当前状态，不表示行动已经发生。先估计自上次世界更新以来经过的剧情时间；从现存非玩家主体中选择一名，依据其当前目标、有限知识、位置、能力、资源与约束，推导其本轮实际尝试、准备、观察或计划调整，并由世界规则裁决阻力、代价与结果。旧对话和人物背景只作因果依据，不得复制成新变化；行动不必与{{user}}有关，也不得替{{user}}行动。字段归属完全遵守上文World原生规则：主体或相关人物已实施、无目击无痕且需要跨轮保护知情边界的隐秘行动写入 blackbox.secretActions，普通内心想法、未实施念头和无后续价值的隐私不写；形成可观察后果或持续公开进程时才创建或更新 events、factions、winds 等对应字段。持续事项不能只写 world_digest，必须落入下一轮可读的原生状态字段。`;
+【Doctor人物行动强制指令：本轮必须推进一个非玩家主体】
+人物档案只是候选主体的当前状态，不表示行动已经发生。先估计自上次世界更新以来经过的剧情时间，再完成一次与该时间尺度匹配的非玩家世界行动。
+本轮行动必须满足：
+1. 优先使用脚本轮换的第一候选；若其唯一合理动作只是等待{{user}}、重复本轮正文或重复已经完成的行为，改从当前World状态、已选世界书或近期对话中选择一个已经存在的非玩家人物、势力、组织或环境过程。
+2. 依据主体的目标、有限知识、位置、能力、资源与约束，写清其已经实施的尝试，再由世界规则裁决阻力、代价和结果。行动不必与{{user}}有关，不得替{{user}}行动，也不得把玩家建档、MVU修复、正文或人物背景换句话复述成世界推进。
+3. 必须把这次已实施动作落入至少一个能跨轮追踪的World原生状态字段，不得只更新world_digest、influenceChain或reputation。筹划、试探、调查起步或矛盾初现只要已经出现具体迹象并可继续发展，就按原生规则创建或更新events；势力、风声或大势确有实质变化时更新对应字段。
+4. 主体或相关人物已实施、无目击无痕且需要跨轮保护知情边界的隐秘行动写入blackbox.secretActions；普通内心想法、未实施念头和无后续价值的隐私不写。`;
     if (!actors.length) {
-      return `${instruction}\n本轮没有可用Doctor人物档案；从当前World状态、已选世界书或近期对话中选择一个已经存在的非玩家人物、势力或环境过程作为主体，不得改用玩家旧经历凑数。`;
+      return `${instruction}\n本轮没有可用Doctor人物档案；直接使用第1条的World、世界书或近期对话回退主体，不得改用玩家旧经历凑数。`;
     }
-    const actorHeader = '\n本轮主行动者是第一人，其余仅为必要关系资料：\n';
+    const actorHeader = '\n脚本轮换的非玩家候选（第一人优先；仅在第1条条件成立时回退）：\n';
     const fitted = fitWorldActorSeeds(actors, Math.max(2, MAX_WORLD_ACTOR_SEED_CHARS - instruction.length - actorHeader.length));
     if (!fitted.length) return `${instruction}\n人物资料超过本轮预算；请按当前World状态选择一个已经存在的非玩家主体。`;
     return `${instruction}${actorHeader}${JSON.stringify(fitted)}`;

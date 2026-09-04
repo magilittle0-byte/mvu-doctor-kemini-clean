@@ -559,7 +559,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.5 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.6 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -886,6 +886,10 @@ test('0.9.5 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.match(evidence.actorInstruction, new RegExp(completeProfile.personality.coreDesire, 'u'));
         assert.match(evidence.actorInstruction, new RegExp(completeProfile.personality.socialMotive, 'u'));
         assert.match(evidence.actorInstruction, new RegExp(completeProfile.currentState.goal, 'u'));
+        assert.match(evidence.actorInstruction, /本轮必须推进一个非玩家主体/u);
+        assert.match(evidence.actorInstruction, /脚本轮换的非玩家候选/u);
+        assert.match(evidence.actorInstruction, /若其唯一合理动作只是等待\{\{user\}\}/u);
+        assert.match(evidence.actorInstruction, /不得只更新world_digest、influenceChain或reputation/u);
         assert.doesNotMatch(evidence.actorInstruction, new RegExp(completeProfile.personality.temperament, 'u'));
         assert.doesNotMatch(evidence.actorInstruction, new RegExp(completeProfile.currentState.emotion, 'u'));
         assert.doesNotMatch(evidence.actorInstruction, new RegExp(completeProfile.history, 'u'));
@@ -992,7 +996,7 @@ test('0.9.5 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           };
         });
         assert.match(actorSelection.active, /后台甲/u, 'an existing native event selects its non-player actor first');
-        assert.match(actorSelection.rotating[0], /本轮主行动者是第一人/u);
+        assert.match(actorSelection.rotating[0], /第一人优先/u);
         assert.notEqual(actorSelection.rotating[0], actorSelection.rotating[1], 'round number rotates the native actor choice when no event owns the turn');
         assert.ok(actorSelection.rotating.every((instruction) => instruction.length <= 2200));
         const disabledInstruction = await page.evaluate(() => {

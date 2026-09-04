@@ -11,6 +11,6 @@
 - World 与 Memory 使用独立迁移键。Memory 在改变旧 World 签名前先写 `mvu_doctor_native_memory_owner_v1=pending` 保存来源证明，接口暂不可用时下次继续；只有恢复后读回 `true/auto`，或确认当前值不是精确 `false/manual`，才写 `done`。用户偏差不被覆盖。
 - 世界书预热和首次 `evolve` 的二次重试都按 chatId single-flight；等待、已就绪、缺失或错误状态显示在 World 页并进入完整报告。手动 MVU 复检以 `manualDiagnosisBinding` 绑定同一 generationKey，并使用单调 token 保证旧复检的 `finally` 不能清掉更新的绑定。
 
-第三方文件保留其原作者信息和原许可证状态；具体来源、哈希、复用等级和不得不新写的原因见 `docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md` 至 `docs/0.9.5-WORLD-NATIVE-TASK-SLOT-AND-MVU-RECEIPT-SOURCE-MAP.md`。
+第三方文件保留其原作者信息和原许可证状态；具体来源、哈希、复用等级和不得不新写的原因见 `docs/0.8.0-REFERENCE-TRANSPLANT-SOURCE-MAP.md` 至 `docs/0.9.6-WORLD-ACTOR-TASK-SEMANTIC-ROOT-FIX.md`。
 
 用户的私有 Izumi 预设、角色卡、跑团记录、首回合文本、API 配置和凭据不属于本仓库，也不得进入 Git 历史或测试报告。
