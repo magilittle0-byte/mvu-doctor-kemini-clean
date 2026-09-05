@@ -694,7 +694,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.9');
+  assert.equal(manifest.version, '0.9.10');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');

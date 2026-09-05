@@ -686,7 +686,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.9 mature World adapter and Doctor browser smoke', { timeout: 300000 }, async (t) => {
+test('0.9.10 mature World adapter and Doctor browser smoke', { timeout: 300000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -2664,6 +2664,46 @@ test('0.9.9 mature World adapter and Doctor browser smoke', { timeout: 300000 },
         assert.match(request.systemMessage, /^diagnose the accepted final/u);
         assert.match(request.userMessage, /<accepted_narrative>[\s\S]*本楼没有可独立读取的叙事正文，只有变量机制区块/u);
         assert.equal((request.userMessage.match(/只有机制更新/gu) || []).length, 1, 'the mechanism block appears only in original_update_block, not duplicated as narrative');
+      } finally { await page.close(); }
+    });
+
+    await t.test('host API error replies never become diagnosis or profile input, including manual retry', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page, '[API 错误]\n连接目标服务失败，请重试。\n<StatusPlaceHolderImpl/>');
+        await waitForSettled(page, 'failed');
+        const evidence = await page.evaluate(async () => {
+          const engine = window.MVUDoctorProfileEngine;
+          const manual = [];
+          for (const action of [engine.runDiagnosis, engine.runProfile]) {
+            try { await action(); manual.push('unexpected-success'); }
+            catch (error) { manual.push(error.code); }
+          }
+          return {
+            result: engine.getRuntime().lastResult,
+            busy: engine.getRuntime().pipelineBusy,
+            stages: window.__stages,
+            writes: window.__mvuWrites.length,
+            profiles: Object.keys(engine.getStore().profiles || {}).length,
+            manual,
+            ticket: engine.getRuntime().acceptedGeneration,
+            markers: ['[API错误]\n请求失败', '[API Error]\nRequest failed', '角色说：“[API 错误]只是屏幕提示。”', '请求失败的旅人回到了营地。']
+              .map(engine.isHostErrorReply),
+          };
+        });
+        assert.equal(evidence.result.failedStep, 'generation');
+        assert.equal(evidence.result.errorCode, 'host_generation_error_reply');
+        assert.equal(evidence.busy, false);
+        assert.equal(evidence.ticket, null);
+        assert.deepEqual(evidence.stages, []);
+        assert.equal(evidence.writes, 0);
+        assert.equal(evidence.profiles, 0);
+        assert.deepEqual(evidence.manual, ['host_generation_error_reply', 'host_generation_error_reply']);
+        assert.deepEqual(evidence.markers, [true, true, false, false]);
+        await runNextAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        assert.deepEqual(await page.evaluate(() => window.__stages), ['diagnosis', 'profile']);
       } finally { await page.close(); }
     });
 

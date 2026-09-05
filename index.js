@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const VERSION = '0.9.9';
+  const VERSION = '0.9.10';
   const WORLD_VERSION = '3.0.2';
   const WORLD_GLOBALS = ['WORLD_ENGINE_STORE', 'WORLD_ENGINE_CORE', 'WORLD_ENGINE_API'];
   const WORLD_SETTINGS_KEY = 'world_engine_settings';
@@ -424,6 +424,10 @@
       // assistant row made solely of an MVU block must still pass the identity
       // gate instead of masquerading as the no-assistant path.
       const hasAssistantInput = Boolean(String(aiMsg || '').trim());
+      if (window.MVUDoctorProfileEngine?.isHostErrorReply?.(aiMsg)) {
+        window.__WE_SetExternalStatus?.('正文API请求失败；未生成剧情，本轮不推进世界', true);
+        return false;
+      }
       try {
         let ready = await ensureWorldbookSelectionForCurrentChat(2);
         const worldbook = window.WORLD_ENGINE_WORLDBOOK;

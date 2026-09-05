@@ -485,6 +485,11 @@ test('Doctor actor task enters only the native World extra-instruction slot; hid
         Symbol.for('mvu-doctor.native-world-diagnosis-barrier')
       ];
       if (!evolutionBridge?.original) throw new Error('native evolution adapter receipt is unavailable');
+      const beforeErrorReply = JSON.stringify(window.WORLD_ENGINE_CORE.loadState());
+      const errorReplyResult = await window.WORLD_ENGINE_EVOLUTION.evolve(
+        state, '继续处理驿港事务。', '[API 错误]\n连接目标服务失败，请重试。', { mode: 'forward' },
+      );
+      const unchangedAfterErrorReply = beforeErrorReply === JSON.stringify(window.WORLD_ENGINE_CORE.loadState());
       const ok = await evolutionBridge.original(
         state,
         '继续处理驿港事务。',
@@ -509,6 +514,8 @@ test('Doctor actor task enters only the native World extra-instruction slot; hid
       });
       return {
         ok,
+        errorReplyResult,
+        unchangedAfterErrorReply,
         actorInstruction,
         worldReadback,
         worldDebug,
@@ -527,6 +534,8 @@ test('Doctor actor task enters only the native World extra-instruction slot; hid
     });
 
     assert.equal(evidence.ok, true);
+    assert.equal(evidence.errorReplyResult, false);
+    assert.equal(evidence.unchangedAfterErrorReply, true);
     assert.match(evidence.actorInstruction, /【本轮非玩家主体推进】/u);
     assert.match(evidence.actorInstruction, /profile-seed-chain-actor/u);
     assert.match(evidence.actorInstruction, /远岫/u);

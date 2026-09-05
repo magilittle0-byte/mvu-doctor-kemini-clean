@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.9';
+  const ENGINE_VERSION = '0.9.10';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -1533,9 +1533,21 @@ ${bindingObligation}
   // response without an UpdateVariable block as `nochange`, which would turn
   // that transport fault into a false success.  Recognize only the relay's
   // explicit error envelope; ordinary prose remains an invalid diagnosis.
+  function isHostErrorReply(value) {
+    return /^\[(?:(?:api|http|request)\s*)?(?:error|failed|failure|错误|失败)\](?:\s|$)/iu.test(String(value || '').trim());
+  }
+
+  function requireGeneratedReply(target) {
+    if (isHostErrorReply(target?.content)) {
+      throw Object.assign(new Error('正文API返回连接或请求错误，没有生成剧情；请重新生成正文，医生不会据错误提示修改变量、补档或推进世界'), {
+        code: 'host_generation_error_reply',
+      });
+    }
+  }
+
   function storyTransportErrorResponse(value) {
     const response = String(value || '').trim();
-    const errorEnvelope = /^\[(?:(?:api|http|request)\s*)?(?:error|failed|failure|错误|失败)\](?:\s|$)/iu.test(response);
+    const errorEnvelope = isHostErrorReply(response);
     const englishStatus = /\b(?:request|api|http)\b[^\r\n]{0,80}\b(?:failed|failure|error|status)\b[^\r\n]{0,40}\b[45]\d{2}\b/iu.test(response);
     const localizedStatus = /(?:请求|接口|api|http)[^\r\n]{0,80}(?:失败|错误|状态码|错误码|status|code)[^\r\n]{0,40}\b[45]\d{2}\b/iu.test(response);
     return errorEnvelope || englishStatus || localizedStatus;
@@ -4254,6 +4266,7 @@ ${auditInstruction}`;
       world: { status: 'native-independent', round: Number(window.WORLD_ENGINE_CORE?.loadState?.()?.round || 0) },
     };
     try {
+      requireGeneratedReply(initialTarget);
       if (startAt === 'profile') {
         result.diagnosis = await verifiedDiagnosisReceiptForTarget(priorCheckpoint, initialTarget);
         requirePipelineOwner(owner, target, '人物续跑变量收据验证后');
@@ -4569,6 +4582,13 @@ ${auditInstruction}`;
       render();
       return;
     }
+    try { requireGeneratedReply(fresh); }
+    catch (error) {
+      runtime.failedStep = '';
+      runtime.lastResult = { ok: false, status: 'failed', failedStep: 'generation', errorCode: error.code, error: error.message, identity: fresh.identity };
+      interruptGenerationTicket(ticket, error.message);
+      return;
+    }
     fresh.generationKey = ticket.generationKey;
     const integrityLatch = loadMutationIntegrityLatch(fresh.chatId);
     if (integrityLatch.compromised) {
@@ -4810,6 +4830,7 @@ ${auditInstruction}`;
   }
 
   async function runManualProfileRefill(rawTarget) {
+    requireGeneratedReply(rawTarget);
     const target = attachKnownGeneration(rawTarget);
     if (!target?.generationKey) throw new Error('本楼还没有变量诊断收据；请先点击“手动复检MVU”');
     const initialCheckpoint = loadPipelineCheckpoint(target.chatId);
@@ -4889,6 +4910,7 @@ ${auditInstruction}`;
   async function runManualDiagnosisAndResume(rawTarget) {
     let target = rawTarget;
     if (!target) throw new Error('当前没有可复检的最终AI回复');
+    requireGeneratedReply(target);
     const integrityLatch = loadMutationIntegrityLatch(target.chatId);
     if (integrityLatch.compromised && integrityLatch.errorCode !== DIAGNOSIS_ROLLBACK_FAILED) {
       throw new Error('人物档案原子回滚没有可靠读回；变量复检不能修复人物存储，请先导出完整报告');
@@ -6720,6 +6742,7 @@ ${auditInstruction}`;
     window.MVUDoctorProfileEngine = {
       ready: true,
       version: ENGINE_VERSION,
+      isHostErrorReply,
       runCurrent: () => runtime.failedStep
         ? runAcceptedPipeline(retryTargetForFailedStep(), 'manual', runtime.lastAccepted?.generationType || 'normal', runtime.failedStep)
         : Promise.resolve({ ok: false, status: 'nothing-to-retry' }),
