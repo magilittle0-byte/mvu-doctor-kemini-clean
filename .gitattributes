@@ -1,3 +1,6 @@
 # Frozen source snapshots must retain their exact committed bytes on Windows.
 vendor/** -text
 legacy/** -text
+# Candidate runtime bytes must survive Windows installation unchanged.
+modular/** text eol=lf
+manifest.json text eol=lf

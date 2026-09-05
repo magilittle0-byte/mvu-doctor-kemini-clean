@@ -690,9 +690,9 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
   assert.equal(pendingMemory.values.get('mvu_doctor_native_memory_owner_v1'), 'done');
 });
 
-test('manifest and package expose the same reference-baseline version', () => {
-  const manifest = JSON.parse(read('manifest.json'));
-  const pkg = JSON.parse(read('package.json'));
+test('archived manifest and package preserve the unchanged reference-baseline version', () => {
+  const manifest = JSON.parse(read('legacy/0.9.11/manifest.json'));
+  const pkg = JSON.parse(read('legacy/0.9.11/package.json'));
   assert.equal(manifest.version, '0.9.11');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');

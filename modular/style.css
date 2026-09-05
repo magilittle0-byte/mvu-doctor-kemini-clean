@@ -1,0 +1,14 @@
+#mvu-modular-panel { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--SmartThemeBorderColor, #657080); border-radius: 9px; }
+#mvu-modular-panel > summary { cursor: pointer; font-weight: 600; }
+#mvu-modular-panel [data-status] { float: right; font-size: .9em; font-weight: 400; }
+#mvu-modular-panel[data-state="failed"] { border-color: #e27575; }
+#mvu-modular-panel[data-state="failed"] [data-status] { color: #ef9090; }
+.mvu-modular-body { display: grid; gap: 9px; margin-top: 12px; }
+.mvu-modular-body p { margin: 0; line-height: 1.5; }
+.mvu-modular-muted, .mvu-modular-body small { opacity: .7; font-size: .85em; }
+.mvu-modular-body label { display: block; margin: 10px 0; }
+.mvu-modular-body textarea { display: block; width: 100%; }
+.mvu-modular-body input[type="number"] { width: 65px; }
+.mvu-modular-actions { display: flex; gap: 8px; }
+.mvu-modular-body button { border: 1px solid var(--SmartThemeBorderColor, #657080); border-radius: 5px; padding: 6px 10px; cursor: pointer; color: inherit; background: var(--SmartThemeBlurTintColor, #30343b); }
+.mvu-modular-body button:disabled { opacity: .45; cursor: default; }
