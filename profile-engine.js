@@ -1,13 +1,15 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.8';
+  const ENGINE_VERSION = '0.9.9';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
   const REPORT_STORAGE_PREFIX = 'mvuDoctorReferenceReport:';
   const DIAGNOSTIC_STORAGE_PREFIX = 'mvuDoctorReferenceDiagnostics:';
   const DIAGNOSTIC_INTEGRITY_STORAGE_PREFIX = 'mvuDoctorReferenceDiagnosticIntegrity:';
+  const MUTATION_INTEGRITY_STORAGE_PREFIX = 'mvuDoctorReferenceMutationIntegrity:';
+  const DIAGNOSIS_RECEIPT_STORAGE_PREFIX = 'mvuDoctorReferenceDiagnosisReceipt:';
   const PIPELINE_STORAGE_PREFIX = 'mvuDoctorReferencePipeline:';
   const GENERATION_TICKET_PREFIX = 'mvuDoctorReferenceGeneration:';
   const MAX_HISTORY = 24;
@@ -29,6 +31,13 @@
   const WORLD_MEMORY_PUBLIC_PROJECTION_BRIDGE = Symbol.for('mvu-doctor.reference.world-memory-public-projection-bridge');
   const STALE_TASK = 'stale_accepted_target';
   const PROFILE_BRANCH_ROLLBACK_FAILED = 'profile_branch_rollback_failed';
+  const DIAGNOSIS_ROLLBACK_FAILED = 'stale_diagnosis_rollback_failed';
+  const DIAGNOSIS_EVIDENCE_VERIFY_FAILED = 'diagnosis_evidence_verification_failed';
+  // A persistence failure must still block writes for the lifetime of this
+  // page.  Durable copies are attempted independently below; this map is not
+  // treated as a substitute for either persistent backend.
+  const volatileMutationIntegrityLatches = new Map();
+  let mutationIntegrityTail = Promise.resolve();
 
   // Direct transplant from Life State Engine ver5.35, content lines 295-374.
   // Keep this parser sequence unchanged: fence -> punctuation -> balanced candidates -> trailing commas.
@@ -243,13 +252,17 @@
   let storeCommitTail = Promise.resolve();
 
   async function commitStoreNow(next, expectedChatId = chatId(), expectedRevision = null, assertCurrent = null) {
-    if (typeof assertCurrent === 'function') assertCurrent();
+    requireMutationIntegrityClean(expectedChatId, '人物档案事务开始');
+    if (typeof assertCurrent === 'function') await assertCurrent();
     if (!expectedChatId || expectedChatId === 'default') throw new Error('当前聊天尚未取得稳定ID，拒绝写入人物档案');
     if (chatId() !== expectedChatId) throw Object.assign(new Error('任务目标聊天已变化，拒绝跨聊天提交'), { code: STALE_TASK });
     const store = doctorPersistenceStore();
     if (store !== window.WORLD_ENGINE_STORE) throw new Error('世界引擎 IndexedDB 不可用，人物档案原子提交已停止');
     const key = profileStorageKey(expectedChatId);
-    const previous = readStoreForChat(expectedChatId);
+    const previousRaw = store.getItem(key);
+    const previous = parseProfileStoreRaw(previousRaw, expectedChatId)
+      || legacyMetadataStore(expectedChatId)
+      || emptyStore(expectedChatId);
     const snapshot = deepClone(next);
     snapshot.chatId = expectedChatId;
     snapshot.updatedAt = new Date().toISOString();
@@ -258,10 +271,13 @@
       throw Object.assign(new Error('人物档案基线版本已变化，旧任务不得覆盖新提交'), { code: STALE_TASK });
     }
     try {
-      if (typeof assertCurrent === 'function') assertCurrent();
+      requireMutationIntegrityClean(expectedChatId, '人物档案持久化前');
+      if (typeof assertCurrent === 'function') await assertCurrent();
+      requireMutationIntegrityClean(expectedChatId, '人物档案持久化线性化点');
       const persistence = await durableWorldStoreBatch(store, [[key, snapshotRaw]]);
       if (!persistence.durable) throw new Error('人物档案提交没有取得 IndexedDB 事务完成回执');
-      if (typeof assertCurrent === 'function') assertCurrent();
+      requireMutationIntegrityClean(expectedChatId, '人物档案持久化后');
+      if (typeof assertCurrent === 'function') await assertCurrent();
       if (chatId() !== expectedChatId) throw Object.assign(new Error('保存期间聊天已切换，拒绝确认旧任务'), { code: STALE_TASK });
       const readback = parseProfileStoreRaw(store.getItem(key), expectedChatId);
       if (!readback || readback.chatId !== snapshot.chatId || storeDigest(readback) !== storeDigest(snapshot)) {
@@ -269,24 +285,46 @@
       }
       return { store: deepClone(readback), persistence: persistence.backend };
     } catch (error) {
-      const current = parseProfileStoreRaw(store.getItem(key), expectedChatId);
-      if (current && storeDigest(current) === storeDigest(snapshot)) {
+      const previousDigest = storeDigest(previous);
+      const snapshotDigest = storeDigest(snapshot);
+      let current = null;
+      let currentRaw = null;
+      let currentReadError = '';
+      try { currentRaw = store.getItem(key); }
+      catch (readError) { currentReadError = readError?.message || String(readError); }
+      // Exact raw equality proves that the failing asynchronous evidence check
+      // happened before any store mutation, including no-key and legacy cases.
+      if (!currentReadError && currentRaw === previousRaw) throw error;
+      if (!currentReadError) {
+        try { current = parseProfileStoreRaw(currentRaw, expectedChatId); }
+        catch (readError) { currentReadError = readError?.message || String(readError); }
+      }
+      if (!currentReadError && current && storeDigest(current) === previousDigest) throw error;
+      if (!currentReadError && current && storeDigest(current) === snapshotDigest) {
+        let rollbackError = null;
         try {
           const rollback = await durableWorldStoreBatch(store, [[key, JSON.stringify(previous)]]);
           if (!rollback.durable) throw new Error('旧分支回滚没有取得 IndexedDB 事务完成回执');
+        } catch (caught) { rollbackError = caught; }
+        try {
           const restored = parseProfileStoreRaw(store.getItem(key), expectedChatId);
-          if (!restored || storeDigest(restored) !== storeDigest(previous)) throw new Error('旧分支回滚后的读回不一致');
+          if (!rollbackError && restored && storeDigest(restored) === previousDigest) throw error;
+          if (!rollbackError) rollbackError = new Error('旧分支回滚后的读回不一致');
+        } catch (readbackError) {
+          if (readbackError === error) throw error;
+          rollbackError ||= readbackError;
         }
-        catch (rollbackError) {
-          const rollbackMessage = rollbackError?.message || String(rollbackError);
-          throw Object.assign(new Error(`人物档案旧分支未能在 IndexedDB 中原子回滚：${rollbackMessage}`), {
-            code: PROFILE_BRANCH_ROLLBACK_FAILED,
-            rollbackError: rollbackMessage,
-            originalError: error?.message || String(error),
-          });
-        }
+        currentReadError = rollbackError?.message || String(rollbackError || '旧分支回滚状态未知');
       }
-      throw error;
+      const uncertainty = currentReadError || '人物档案当前值既不是提交前快照，也不是本次候选快照';
+      const failure = Object.assign(new Error(`人物档案旧分支未能在 IndexedDB 中原子回滚：${uncertainty}`), {
+        code: PROFILE_BRANCH_ROLLBACK_FAILED,
+        rollbackError: uncertainty,
+        originalError: error?.message || String(error),
+      });
+      try { await persistMutationIntegrityLatch(expectedChatId, failure.code, failure.message); }
+      catch (latchError) { failure.integrityLatchError = latchError?.message || String(latchError); }
+      throw failure;
     }
   }
 
@@ -296,6 +334,53 @@
     storeCommitTail = new Promise((resolve) => { release = resolve; });
     await previousCommit;
     try { return await commitStoreNow(next, expectedChatId, expectedRevision, assertCurrent); }
+    finally { release(); }
+  }
+
+  async function rollbackCommittedProfileStoreNow(target, transaction, originalError) {
+    if (!transaction?.before || !transaction?.after) return false;
+    const store = doctorPersistenceStore();
+    const key = profileStorageKey(target.chatId);
+    const before = deepClone(transaction.before);
+    const after = deepClone(transaction.after);
+    let rollbackError = null;
+    try {
+      if (chatId() !== target.chatId) throw new Error('聊天已切换，无法定位人物档案事务');
+      if (store !== window.WORLD_ENGINE_STORE) throw new Error('世界引擎IndexedDB不可用');
+      const current = parseProfileStoreRaw(store.getItem(key), target.chatId);
+      if (current && storeDigest(current) === storeDigest(before)) return true;
+      if (!current || storeDigest(current) !== storeDigest(after)) {
+        throw new Error('人物档案已被另一写者改变，拒绝覆盖第三个版本');
+      }
+      const receipt = await durableWorldStoreBatch(store, [[key, JSON.stringify(before)]]);
+      if (!receipt.durable) throw new Error('人物档案补偿没有取得IndexedDB事务回执');
+      const restored = parseProfileStoreRaw(store.getItem(key), target.chatId);
+      if (!restored || storeDigest(restored) !== storeDigest(before)) {
+        throw new Error('人物档案补偿写后读回不一致');
+      }
+      return true;
+    } catch (error) { rollbackError = error; }
+    const failure = Object.assign(new Error(`人物档案提交后证据失效，且旧分支未能原子恢复：${rollbackError?.message || rollbackError}`), {
+      code: PROFILE_BRANCH_ROLLBACK_FAILED,
+      rollbackError: rollbackError?.message || String(rollbackError),
+      originalError: originalError?.message || String(originalError),
+    });
+    try {
+      await persistMutationIntegrityLatch(target.chatId, failure.code, failure.message, {
+        kind: 'profile', chatId: target.chatId, messageId: target.index,
+        swipeId: target.swipeId, generationKey: text(target.generationKey), before, after,
+      });
+    } catch (latchError) { failure.integrityLatchError = latchError?.message || String(latchError); }
+    throw failure;
+  }
+
+  async function rollbackCommittedProfileStore(target, transaction, originalError) {
+    if (!transaction?.before || !transaction?.after) return false;
+    const previousCommit = storeCommitTail;
+    let release;
+    storeCommitTail = new Promise((resolve) => { release = resolve; });
+    await previousCommit;
+    try { return await rollbackCommittedProfileStoreNow(target, transaction, originalError); }
     finally { release(); }
   }
 
@@ -390,6 +475,14 @@
       && contentFingerprint(messageText(message)) === target.fingerprint;
   }
 
+  function historicalTargetStillMatches(target) {
+    if (!target || chatId() !== target.chatId) return false;
+    const message = ctx()?.chat?.[target.index];
+    return Boolean(message && !message.is_user && !message.is_system
+      && (Number(message.swipe_id) || 0) === Number(target.swipeId)
+      && contentFingerprint(messageText(message)) === target.fingerprint);
+  }
+
   function requireCurrentTarget(target, stage) {
     if (targetIsCurrent(target)) return;
     throw Object.assign(new Error(`${stage}时最终正文已变化，本次旧任务已丢弃`), { code: STALE_TASK });
@@ -424,6 +517,17 @@
       if (chat[cursor]?.is_user) return messageText(chat[cursor]);
     }
     return '';
+  }
+
+  function previousUserEvidence(index) {
+    const chat = ctx()?.chat || [];
+    for (let cursor = Number(index) - 1; cursor >= 0; cursor -= 1) {
+      const message = chat[cursor];
+      if (!message?.is_user) continue;
+      const content = messageText(message);
+      return { index: cursor, fingerprint: contentFingerprint(content), content };
+    }
+    return { index: -1, fingerprint: contentFingerprint(''), content: '' };
   }
 
   function recentContext(index, limit = 6) {
@@ -524,6 +628,10 @@
 
   function getWorldActorSeeds(worldState = null) {
     if (!settings().enabled || !settings().profileEnabled) return [];
+    // Native World remains free to advance, but an uncertain Doctor profile
+    // transaction must never become an actor seed.  World then falls back to
+    // its own state, selected worldbook and recent dialogue.
+    if (loadMutationIntegrityLatch(chatId()).compromised) return [];
     const target = latestAssistant() || { index: (ctx()?.chat || []).length };
     const excluded = new Set(playerNames(target).map((name) => text(name).toLocaleLowerCase()).filter(Boolean));
     const currentDialogue = recentContext(target.index, 2)
@@ -1245,6 +1353,7 @@ ${bindingObligation}
       callDirect, resolveEndpointUrl, callProfile, writeUpdateBlockToMessage,
       refreshMessageBar, notifyAutoDiagnose, cancelPostReply, getFixCfg, setFixCfg,
       awaitMvuIdle, mvuIsBusy,
+      postReplyState: () => ({ busy: postReplyBusy, cancelled: postReplyCancelled, hasAbortController: Boolean(postReplyAbortCtl) }),
       resetCancelled: () => { postReplyCancelled = false; }
     })`);
     return cachedStoryInternals;
@@ -1267,17 +1376,129 @@ ${bindingObligation}
     return Object.keys(value).length > 0;
   }
 
-  async function mvuPayloadAt(messageId) {
+  async function abortable(promise, signal, label) {
+    if (!signal) return promise;
+    if (signal.aborted) {
+      const error = new Error(`${label}已取消`);
+      error.name = 'AbortError';
+      throw error;
+    }
+    let abortHandler;
+    try {
+      return await Promise.race([
+        Promise.resolve(promise),
+        new Promise((resolve, reject) => {
+          abortHandler = () => {
+            const error = new Error(`${label}已取消`);
+            error.name = 'AbortError';
+            reject(error);
+          };
+          signal.addEventListener('abort', abortHandler, { once: true });
+        }),
+      ]);
+    } finally {
+      if (abortHandler) signal.removeEventListener('abort', abortHandler);
+    }
+  }
+
+  async function mvuPayloadAt(messageId, signal = null) {
     const numericId = Number(messageId);
     if (!Number.isInteger(numericId) || numericId < 0) throw new Error('缺少可固定的MVU消息楼层');
-    const Mvu = await storyInternals().getMvu();
+    const Mvu = await abortable(storyInternals().getMvu(), signal, '读取MVU框架');
     if (!Mvu || typeof Mvu.getMvuData !== 'function') throw new Error('故事神谕没有找到MVU变量框架');
-    return Promise.resolve(Mvu.getMvuData({ type: 'message', message_id: numericId }));
+    return abortable(Mvu.getMvuData({ type: 'message', message_id: numericId }), signal, `读取第${numericId}楼MVU`);
   }
 
   async function currentMvuState(messageId) {
     try { return deepClone(statDataOf(await mvuPayloadAt(messageId)) ?? null); }
     catch { return null; }
+  }
+
+  // Direct transplant of the mature previousMvuData scan used by the earlier
+  // evidence-complete Doctor: the pre-update baseline is the nearest earlier
+  // assistant floor with usable stat_data, never an assumed messageId - 1 row.
+  async function previousMvuEvidence(messageId, strict = false, signal = null) {
+    const chat = ctx()?.chat || [];
+    for (let cursor = Number(messageId) - 1; cursor >= 0; cursor -= 1) {
+      const message = chat[cursor];
+      if (!message || message.is_user || message.is_system) continue;
+      try {
+        const payload = await mvuPayloadAt(cursor, signal);
+        if (hasUsableStatData(payload)) {
+          const slot = activeSwipeSlot(message);
+          return {
+            index: cursor,
+            swipeId: slot.swipeId,
+            fingerprint: contentFingerprint(messageText(message)),
+            payload,
+            payloadDigest: JSON.stringify(payload),
+            payloadFingerprint: contentFingerprint(JSON.stringify(payload)),
+          };
+        }
+      } catch (error) {
+        if (strict) throw Object.assign(new Error(`无法验证第${cursor}楼MVU证据：${error?.message || error}`), {
+          code: DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+        });
+        // Non-diagnostic discovery may skip an older floor without MVU data.
+      }
+    }
+    return null;
+  }
+
+  function userEvidenceMatches(actual, expected) {
+    return Boolean(actual && expected
+      && Number(actual.index) === Number(expected.index)
+      && text(actual.fingerprint) === text(expected.fingerprint));
+  }
+
+  function previousMvuEvidenceMatches(actual, expected) {
+    return !actual && !expected || Boolean(actual && expected
+      && Number(actual.index) === Number(expected.index)
+      && Number(actual.swipeId || 0) === Number(expected.swipeId || 0)
+      && text(actual.fingerprint) === text(expected.contentFingerprint || expected.fingerprint)
+      && text(actual.payloadFingerprint) === text(
+        expected.payloadFingerprint || contentFingerprint(expected.payloadDigest),
+      ));
+  }
+
+  async function requireDiagnosisEvidenceCurrent(target, owner, preEvidence, userEvidence, stage) {
+    requireTaskOwner(owner, target, stage);
+    requireMutationIntegrityClean(target.chatId, stage, target, true);
+    const userBefore = previousUserEvidence(target.index);
+    if (!userEvidenceMatches(userBefore, userEvidence)) {
+      throw Object.assign(new Error(`${stage}时触发用户输入已变化，本次旧诊断已丢弃`), { code: STALE_TASK });
+    }
+    const freshPre = await previousMvuEvidence(target.index, true);
+    const userAfter = previousUserEvidence(target.index);
+    if (!userEvidenceMatches(userAfter, userEvidence)) {
+      throw Object.assign(new Error(`${stage}读取MVU期间触发用户输入已变化，本次旧诊断已丢弃`), { code: STALE_TASK });
+    }
+    if (!previousMvuEvidenceMatches(freshPre, preEvidence)) {
+      throw Object.assign(new Error(`${stage}时更新前MVU证据已变化，本次旧诊断已丢弃`), { code: STALE_TASK });
+    }
+    requireMutationIntegrityClean(target.chatId, stage, target, true);
+    requireTaskOwner(owner, target, stage);
+  }
+
+  function compactDiagnosisEvidenceReceipt(preEvidence, userEvidence, targetPayload, target) {
+    return {
+      triggeringUser: {
+        index: Number(userEvidence?.index ?? -1),
+        fingerprint: text(userEvidence?.fingerprint),
+      },
+      previousMvu: preEvidence ? {
+        index: Number(preEvidence.index),
+        swipeId: Number(preEvidence.swipeId) || 0,
+        contentFingerprint: text(preEvidence.fingerprint),
+        payloadFingerprint: text(preEvidence.payloadFingerprint || contentFingerprint(preEvidence.payloadDigest)),
+      } : null,
+      targetMvu: targetPayload ? {
+        index: Number(target?.index ?? -1),
+        swipeId: Number(target?.swipeId) || 0,
+        contentFingerprint: text(target?.fingerprint),
+        payloadFingerprint: contentFingerprint(JSON.stringify(targetPayload)),
+      } : null,
+    };
   }
 
   function disableNativeStoryPostReply() {
@@ -1287,6 +1508,22 @@ ${bindingObligation}
     } catch { /* original UI may not have chat metadata yet */ }
     const story = ctx()?.extensionSettings?.storyOracle;
     if (story) story.autoDiagnoseEnabled = false;
+    // Flipping settings cannot stop a plan that Story Oracle already captured.
+    // Cancel its native lane now; runStoryDiagnosis waits for that lane to
+    // actually leave before it resets cancellation and starts Doctor's call.
+    try { so.cancelPostReply?.(); } catch { /* wait path will still inspect the lane */ }
+  }
+
+  async function awaitNativeStoryPostReplyStopped(target, owner) {
+    const so = storyInternals();
+    let observedBusy = false;
+    for (;;) {
+      requireTaskOwner(owner, target, '等待故事神谕原生回复后任务退出');
+      const state = so.postReplyState?.() || { busy: false };
+      if (!state.busy) return observedBusy;
+      observedBusy = true;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
 
   // Story Oracle's backend-forward transport normally throws request faults,
@@ -1310,10 +1547,33 @@ ${bindingObligation}
   // below are Doctor adaptations rather than the original runAutoDiagnose /
   // autoApplyFix functions running unchanged.
   async function runStoryDiagnosis(target, owner = null) {
-    if (!settings().diagnoseEnabled) return { ok: true, status: 'disabled', raw: '', patchBlock: '' };
     requireTaskOwner(owner, target, '变量诊断开始');
+    if (!settings().diagnoseEnabled) {
+      const targetPayload = await mvuPayloadAt(target.index);
+      if (!hasUsableStatData(targetPayload)) throw new Error('变量诊断虽已关闭，但人物档案仍没有可绑定的目标楼MVU快照');
+      const preEvidence = await previousMvuEvidence(target.index, true);
+      const userEvidence = previousUserEvidence(target.index);
+      await requireDiagnosisEvidenceCurrent(target, owner, preEvidence, userEvidence, '关闭变量诊断时绑定人物证据');
+      const finalPayload = await mvuPayloadAt(target.index);
+      requireTaskOwner(owner, target, '关闭变量诊断时目标MVU读回');
+      if (JSON.stringify(finalPayload) !== JSON.stringify(targetPayload)) {
+        throw Object.assign(new Error('关闭变量诊断时目标楼MVU发生变化，旧人物证据已丢弃'), { code: STALE_TASK });
+      }
+      return {
+        ok: true, status: 'disabled', raw: '', patchBlock: '', officialResult: 'disabled',
+        applicationComplete: true, canProceed: true,
+        evidenceReceipt: compactDiagnosisEvidenceReceipt(preEvidence, userEvidence, finalPayload, target),
+      };
+    }
     const so = storyInternals();
     disableNativeStoryPostReply();
+    const nativeWasInFlight = await awaitNativeStoryPostReplyStopped(target, owner);
+    requireTaskOwner(owner, target, '故事神谕原生回复后任务退出后');
+    if (nativeWasInFlight) {
+      throw Object.assign(new Error('本楼已有故事神谕原生回复后任务先行接管；已等待其退出并拒绝再发第二次诊断，请手动复检当前最终状态'), {
+        code: 'native_story_post_reply_preempted',
+      });
+    }
     so.resetCancelled();
     const storyCtx = so.getCtx();
     const storySettings = so.getSettings();
@@ -1339,6 +1599,10 @@ ${bindingObligation}
     }
     const postUpdateDigest = JSON.stringify(postUpdatePayload);
     const stat = deepClone(statDataOf(postUpdatePayload));
+    const preUpdateEvidence = await previousMvuEvidence(target.index, true);
+    const preUpdatePayload = preUpdateEvidence?.payload ?? null;
+    const preUpdateStat = deepClone(statDataOf(preUpdatePayload) ?? null);
+    const triggeringUserEvidence = previousUserEvidence(target.index);
     requireTaskOwner(owner, target, '变量诊断上下文完成');
     const statStr = stat ? JSON.stringify(stat, null, 2) : '';
     const aiIdx = target.index;
@@ -1352,12 +1616,51 @@ ${bindingObligation}
       wiBlock, statStr, latestBlock, latestReply, auto: true,
     });
     const hasOriginalUpdate = Boolean(latestBlock);
+    const evidenceAddendum = hasOriginalUpdate
+      ? `【Doctor闭环核对补充】current post-update 只是原更新落地后的观测结果，不是正确答案。必须先依据权威规则、触发输入和最终接受正文独立推导应有变化，再逐路径核对原更新与 current；纠正补丁只叠加在 current 上，不得重放整回合。领取资格、可领取、承诺、意图、尝试和待确认都不等于已经获得、持有、消耗或完成。除非精确路径的权威规则明确要求，禁止改变现有容器类型（对象、数组、字符串、数值）。`
+      : `【Doctor闭环核对补充】本楼没有完整 UpdateVariable。current pre-update 是本轮尚未写入变化时的起点，不是本回合完成后的结果。必须依据权威规则、触发输入和最终接受正文独立推导全部应有变化。领取资格、可领取、承诺、意图、尝试和待确认都不等于已经获得、持有、消耗或完成。除非精确路径的权威规则明确要求，禁止改变现有容器类型（对象、数组、字符串、数值）。`;
+    const systemWithEvidence = `${baseSystemPrompt}\n\n${evidenceAddendum}`;
     const systemPrompt = settings().globalPrompt
-      ? `${baseSystemPrompt}\n\n【用户的全局自定义模型适配附加提示词】\n${settings().globalPrompt}`
-      : baseSystemPrompt;
-    const userMsg = hasOriginalUpdate
+      ? `${systemWithEvidence}\n\n【用户的全局自定义模型适配附加提示词】\n${settings().globalPrompt}`
+      : systemWithEvidence;
+    const baseTask = hasOriginalUpdate
       ? '【自动诊断】最新一条 AI 回复里带有 <UpdateVariable> 更新。请按本卡 MVU 规则与当前状态核验它：有错就只输出一个修正后的 <UpdateVariable> 区块（仅含需改正的字段）；完全正确则在 <JSONPatch> 里输出空数组（[]）。'
       : '【自动诊断】最新一条 AI 回复的正文里【没有】变量更新区块。请充当变量更新引擎：通读这条回复，依本卡 MVU 规则与当前状态，推导出本回合应当发生的全部变量更新，输出一个 <UpdateVariable> 区块把状态更新到位；若这条回复确实不涉及任何变量变化，则在 <JSONPatch> 里输出空数组（[]）。';
+    let acceptedNarrative;
+    try {
+      acceptedNarrative = typeof so.stripMechanismBlocks === 'function'
+        ? String(so.stripMechanismBlocks(latestReply) || '').trim()
+        : latestReply;
+    } catch { acceptedNarrative = latestReply; }
+    if (!acceptedNarrative) acceptedNarrative = '本楼没有可独立读取的叙事正文，只有变量机制区块。';
+    const currentStateTag = hasOriginalUpdate ? 'current_post_update_stat_data' : 'current_pre_update_stat_data';
+    const auditInstruction = hasOriginalUpdate
+      ? '【核对顺序】先从触发输入、最终正文和权威规则列出本回合每组明确变化，再逐项比较更新前状态、原更新和更新后状态；每组都检查相关配套字段。不得把 current 中已经存在的值当作剧情已完成的证据。只有逐组核对后确实无差异，才输出空 JSONPatch。'
+      : '【核对顺序】先从触发输入、最终正文和权威规则列出本回合每组明确变化，以 current pre-update 为起点生成完整本轮补丁，并同步相关配套字段。只有正文确实没有任何应写入变化，才输出空 JSONPatch。';
+    const userMsg = `${baseTask}
+
+【本楼闭环核对材料】
+<pre_update_stat_data>
+${cropForModel(preUpdateStat ?? '宿主没有提供可读的更新前状态；请依据规则、触发输入和最终正文推导。', 30000)}
+</pre_update_stat_data>
+
+<${currentStateTag}>
+${cropForModel(stat ?? '当前状态不可用。', 30000)}
+</${currentStateTag}>
+
+<original_update_block>
+${cropForModel(latestBlock || '本楼没有完整UpdateVariable区块。', 16000)}
+</original_update_block>
+
+<triggering_user_input>
+${cropForModel(triggeringUserEvidence.content || '宿主没有提供可读的触发用户输入。', 18000)}
+</triggering_user_input>
+
+<accepted_narrative>
+${cropForModel(acceptedNarrative, 40000)}
+</accepted_narrative>
+
+${auditInstruction}`;
     const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }];
     const request = { systemPrompt, userMsg };
     const diagnosisAttempts = [];
@@ -1373,6 +1676,18 @@ ${bindingObligation}
     let raw = '';
     try {
       for (let attempt = 1; attempt <= 2; attempt += 1) {
+        await requireDiagnosisEvidenceCurrent(
+          target, owner, preUpdateEvidence, triggeringUserEvidence,
+          `变量诊断第${attempt}次模型请求前`,
+        );
+        const attemptBaseline = await mvuPayloadAt(target.index, call.signal);
+        await requireDiagnosisEvidenceCurrent(
+          target, owner, preUpdateEvidence, triggeringUserEvidence,
+          `变量诊断第${attempt}次模型请求基线读回`,
+        );
+        if (JSON.stringify(attemptBaseline) !== postUpdateDigest) {
+          throw Object.assign(new Error('变量诊断请求前固定楼层MVU基线已变化，本次旧请求已废弃'), { code: STALE_TASK });
+        }
         if (storySettings.mode === 'direct') {
           const body = { model: storySettings.model, messages, max_tokens: maxTokens };
           if (storySettings.sendTemperature) body.temperature = storySettings.temperature;
@@ -1398,7 +1713,9 @@ ${bindingObligation}
       so.dismissToast(toast);
     }
     requireTaskOwner(owner, target, '变量诊断模型返回');
+    await requireDiagnosisEvidenceCurrent(target, owner, preUpdateEvidence, triggeringUserEvidence, '变量诊断模型返回');
     const unchangedPayload = await mvuPayloadAt(target.index);
+    await requireDiagnosisEvidenceCurrent(target, owner, preUpdateEvidence, triggeringUserEvidence, '变量诊断基线读回');
     if (JSON.stringify(unchangedPayload) !== postUpdateDigest) {
       throw enrichDiagnosisError(Object.assign(new Error('模型诊断期间固定楼层MVU基线已变化，本次旧诊断已废弃'), { code: STALE_TASK }));
     }
@@ -1409,9 +1726,38 @@ ${bindingObligation}
       }));
     }
 
+    const rawDiagnosis = String(raw || '');
+    const updateVariableOpenCount = (rawDiagnosis.match(/<UpdateVariable\b[^>]*>/giu) || []).length;
+    const updateVariableCloseCount = (rawDiagnosis.match(/<\/UpdateVariable>/giu) || []).length;
+    if (updateVariableOpenCount > 1 || updateVariableCloseCount > 1
+      || updateVariableOpenCount !== updateVariableCloseCount) {
+      throw enrichDiagnosisError(Object.assign(new Error('故事神谕模型返回了多个或残缺的UpdateVariable，无法确定唯一修复指令'), {
+        code: 'story_oracle_ambiguous_update_envelope', raw: String(raw || '').slice(0, 16000),
+      }));
+    }
     const patchBlock = so.extractUpdateBlock(raw);
-    const explicitEmpty = /<JSONPatch\b[^>]*>\s*(?:```(?:json)?\s*)?\[\s*\](?:\s*```)?\s*<\/JSONPatch>/iu
-      .test(String(patchBlock || raw || ''));
+    const selectedPatchSource = patchBlock || String(raw || '').trim();
+    const jsonPatchOpenCount = (rawDiagnosis.match(/<JSONPatch\b[^>]*>/giu) || []).length;
+    const jsonPatchCloseCount = (rawDiagnosis.match(/<\/JSONPatch>/giu) || []).length;
+    if (jsonPatchOpenCount !== 1 || jsonPatchCloseCount !== 1) {
+      throw enrichDiagnosisError(Object.assign(new Error('故事神谕模型返回了多个、缺失或残缺的JSONPatch，无法确定唯一修复指令'), {
+        code: 'story_oracle_ambiguous_jsonpatch', raw: String(raw || '').slice(0, 16000),
+      }));
+    }
+    const jsonPatchBodies = taggedTextBlocks(selectedPatchSource, 'JSONPatch');
+    const normalizedJsonPatchBodies = jsonPatchBodies.map((body) => String(body || '')
+      .replace(/^\s*```(?:json)?\s*/iu, '')
+      .replace(/\s*```\s*$/u, '')
+      .trim());
+    const bareJsonPatchOnly = Boolean(!patchBlock && /^\s*<JSONPatch\b[^>]*>[\s\S]*<\/JSONPatch>\s*$/iu.test(selectedPatchSource));
+    const explicitEmpty = normalizedJsonPatchBodies.length === 1
+      && /^\[\s*\]$/u.test(normalizedJsonPatchBodies[0])
+      && (Boolean(patchBlock) || bareJsonPatchOnly);
+    if (jsonPatchBodies.length !== 1) {
+      throw enrichDiagnosisError(Object.assign(new Error('故事神谕模型在同一个UpdateVariable中返回了多个JSONPatch，无法确定唯一修复指令'), {
+        code: 'story_oracle_ambiguous_jsonpatch', raw: String(raw || '').slice(0, 16000),
+      }));
+    }
     if (!patchBlock && !explicitEmpty) {
       throw enrichDiagnosisError(Object.assign(new Error('故事神谕模型返回既没有UpdateVariable补丁，也没有明确的空JSONPatch；本轮不能冒充变量正确'), {
         code: 'story_oracle_unrecognized_diagnosis', raw: String(raw || '').slice(0, 16000),
@@ -1427,6 +1773,7 @@ ${bindingObligation}
       stateChanged: false,
       officialResult: explicitEmpty ? 'explicit-empty' : 'no-patch',
     };
+    let appliedTransaction = null;
     if (patchBlock) {
       const opts = { type: 'message', message_id: target.index };
       const oldData = unchangedPayload;
@@ -1434,17 +1781,33 @@ ${bindingObligation}
       let candidateData;
       try { candidateData = await Mvu.parseMessage(patchBlock, oldData); }
       catch (error) { throw enrichDiagnosisError(error); }
+      await requireDiagnosisEvidenceCurrent(target, owner, preUpdateEvidence, triggeringUserEvidence, '变量补丁解析完成');
       requireTaskOwner(owner, target, '变量补丁解析完成');
       if (!candidateData) result = { status: 'failed' };
-      else if (JSON.stringify(candidateData) === JSON.stringify(oldData)) {
-          result = { status: 'nochange', stateChanged: false, officialResult: 'parsed-equivalent' };
+      else if (explicitEmpty) {
+        result = { status: 'nochange', stateChanged: false, officialResult: 'explicit-empty' };
+      } else if (JSON.stringify(candidateData) === JSON.stringify(oldData)) {
+          result = {
+              status: 'unverified',
+              stateChanged: false,
+              officialResult: 'parsed-equivalent',
+              applicationComplete: false,
+            };
         } else if (result.status !== 'failed') {
-        requireTaskOwner(owner, target, '变量补丁写入前');
-        await Mvu.replaceMvuData(candidateData, opts);
         let readback;
         try {
+          requireTaskOwner(owner, target, '变量补丁写入前');
+          await requireDiagnosisEvidenceCurrent(target, owner, preUpdateEvidence, triggeringUserEvidence, '变量补丁写入前');
+          const preWritePayload = await Promise.resolve(Mvu.getMvuData(opts));
+          requireTaskOwner(owner, target, '变量补丁写入前最终基线读取');
+          if (JSON.stringify(preWritePayload) !== JSON.stringify(oldData)) {
+            throw Object.assign(new Error('变量补丁解析后固定楼层MVU基线又发生变化，本次旧补丁已丢弃'), { code: STALE_TASK });
+          }
+          await Mvu.replaceMvuData(candidateData, opts);
+          await requireDiagnosisEvidenceCurrent(target, owner, preUpdateEvidence, triggeringUserEvidence, '变量补丁写入完成');
           requireTaskOwner(owner, target, '变量补丁写入完成');
           readback = await Promise.resolve(Mvu.getMvuData(opts));
+          await requireDiagnosisEvidenceCurrent(target, owner, preUpdateEvidence, triggeringUserEvidence, '变量补丁写后读回');
           if (JSON.stringify(readback) !== JSON.stringify(candidateData)) {
             throw enrichDiagnosisError(Object.assign(new Error('MVU固定楼层写后读回与预期不一致，本轮不能宣称修复成功'), {
               code: 'host_mvu_readback_mismatch', raw: String(raw || '').slice(0, 16000),
@@ -1452,9 +1815,32 @@ ${bindingObligation}
           }
         } catch (error) {
           let current = null;
-          try { current = await Promise.resolve(Mvu.getMvuData(opts)); } catch { current = null; }
+          let rollbackFailure = '';
+          try { current = await Promise.resolve(Mvu.getMvuData(opts)); }
+          catch (readError) { rollbackFailure = `MVU补偿前无法读取当前值：${readError?.message || readError}`; }
           if (JSON.stringify(current) === JSON.stringify(candidateData)) {
-            try { await Promise.resolve(Mvu.replaceMvuData(snapshot, opts)); } catch { /* best-effort rollback */ }
+            try {
+              await Promise.resolve(Mvu.replaceMvuData(snapshot, opts));
+              const restored = await Promise.resolve(Mvu.getMvuData(opts));
+              if (JSON.stringify(restored) !== JSON.stringify(snapshot)) rollbackFailure = 'MVU补偿写后读回不一致';
+            } catch (rollbackError) { rollbackFailure = `MVU补偿失败：${rollbackError?.message || rollbackError}`; }
+          } else if (!rollbackFailure && JSON.stringify(current) !== JSON.stringify(snapshot)) {
+            rollbackFailure = '固定楼层MVU已被另一写者改变，拒绝覆盖';
+          }
+          if (rollbackFailure) {
+            error.rollbackError = rollbackFailure;
+            error.code = DIAGNOSIS_ROLLBACK_FAILED;
+            error.message = `${error.message || error}；旧诊断副作用未能完整补偿：${rollbackFailure}`;
+            try {
+              await persistMutationIntegrityLatch(target.chatId, error.code, error.message, {
+                kind: 'diagnosis', chatId: target.chatId, messageId: target.index,
+                swipeId: target.swipeId, generationKey: text(target.generationKey),
+                mvuSnapshot: deepClone(snapshot), mvuCandidate: deepClone(candidateData),
+                originalContent: latestReply, candidateContent: latestReply,
+                patchBlock: String(patchBlock || ''),
+              });
+            }
+            catch (latchError) { error.integrityLatchError = latchError?.message || String(latchError); }
           }
           throw error;
         }
@@ -1465,12 +1851,67 @@ ${bindingObligation}
           readback: deepClone(readback),
           officialResult: 'readback-confirmed',
         };
+        appliedTransaction = { opts, snapshot, candidateData };
         }
     }
     if (result.status === 'failed') throw enrichDiagnosisError(new Error('故事神谕返回了无法由MVU应用的变量补丁'));
+    let finalTarget = target;
+    let doctorWrittenTarget = null;
+    const compensateFailedDiagnosis = async (error) => {
+      if (!appliedTransaction) return error;
+      const failures = [];
+      if (chatId() !== target.chatId) failures.push('聊天已切换，无法安全定位原楼层MVU');
+      else {
+        try {
+          const current = await Promise.resolve(Mvu.getMvuData(appliedTransaction.opts));
+          if (JSON.stringify(current) === JSON.stringify(appliedTransaction.candidateData)) {
+            await Promise.resolve(Mvu.replaceMvuData(appliedTransaction.snapshot, appliedTransaction.opts));
+            const restored = await Promise.resolve(Mvu.getMvuData(appliedTransaction.opts));
+            if (JSON.stringify(restored) !== JSON.stringify(appliedTransaction.snapshot)) failures.push('MVU补偿写后读回不一致');
+          } else if (JSON.stringify(current) !== JSON.stringify(appliedTransaction.snapshot)) {
+            failures.push('固定楼层MVU已被另一写者改变，拒绝覆盖');
+          }
+        } catch (rollbackError) { failures.push(`MVU补偿失败：${rollbackError?.message || rollbackError}`); }
+      }
+      if (doctorWrittenTarget) {
+        try {
+          const activeMessage = chatId() === target.chatId ? ctx()?.chat?.[aiIdx] : null;
+          const slot = activeSwipeSlot(activeMessage);
+          if (activeMessage && slot.swipeId === doctorWrittenTarget.swipeId
+            && contentFingerprint(messageText(activeMessage)) === doctorWrittenTarget.fingerprint) {
+            activeMessage.mes = latestReply;
+            if (Array.isArray(activeMessage.swipes) && typeof activeMessage.swipes[slot.swipeId] === 'string') {
+              activeMessage.swipes[slot.swipeId] = latestReply;
+            }
+            if (typeof storyCtx.saveChat === 'function') await storyCtx.saveChat();
+          } else if (messageText(activeMessage) !== latestReply) {
+            failures.push('正文已被另一写者改变，拒绝覆盖');
+          }
+        } catch (rollbackError) { failures.push(`正文补偿失败：${rollbackError?.message || rollbackError}`); }
+      }
+      if (failures.length) {
+        error.rollbackError = failures.join('；');
+        error.code = DIAGNOSIS_ROLLBACK_FAILED;
+        error.message = `${error.message}；旧诊断副作用未能完整补偿：${error.rollbackError}`;
+        try {
+          await persistMutationIntegrityLatch(target.chatId, error.code, error.message, {
+            kind: 'diagnosis', chatId: target.chatId, messageId: target.index,
+            swipeId: target.swipeId, generationKey: text(target.generationKey),
+            mvuSnapshot: deepClone(appliedTransaction.snapshot),
+            mvuCandidate: deepClone(appliedTransaction.candidateData),
+            originalContent: latestReply,
+            candidateContent: doctorWrittenTarget?.content || latestReply,
+            patchBlock: String(patchBlock || ''),
+          });
+        }
+        catch (latchError) { error.integrityLatchError = latchError?.message || String(latchError); }
+        if (doctorWrittenTarget) error.doctorWrittenTarget = deepClone(doctorWrittenTarget);
+      }
+      else error.diagnosisCompensated = true;
+      return error;
+    };
     if (result.stateChanged && aiIdx >= 0) {
       const writeBackBlock = patchBlock;
-      let doctorWrittenTarget = null;
       if (!latestBlock) {
         try {
           await so.writeUpdateBlockToMessage(aiIdx, writeBackBlock);
@@ -1479,26 +1920,53 @@ ${bindingObligation}
           doctorWrittenTarget = refreshAcceptedTarget(target);
           if (target.generationKey) doctorWrittenTarget.generationKey = target.generationKey;
           requireTaskOwner(owner, doctorWrittenTarget, '变量修复块写入正文后');
+          await requireDiagnosisEvidenceCurrent(doctorWrittenTarget, owner, preUpdateEvidence, triggeringUserEvidence, '变量修复块写入正文后');
           if (typeof storyCtx.saveChat === 'function') await storyCtx.saveChat();
           requireTaskOwner(owner, doctorWrittenTarget, '变量修复正文保存后');
+          await requireDiagnosisEvidenceCurrent(doctorWrittenTarget, owner, preUpdateEvidence, triggeringUserEvidence, '变量修复正文保存后');
           if (!messageText(ctx()?.chat?.[aiIdx]).includes(writeBackBlock)) throw new Error('保存后当前活动swipe没有读回变量修复块');
+          finalTarget = doctorWrittenTarget;
         } catch (error) {
-          if (doctorWrittenTarget) error.doctorWrittenTarget = deepClone(doctorWrittenTarget);
-          throw enrichDiagnosisError(error);
+          if (!doctorWrittenTarget) {
+            try {
+              const activeMessage = ctx()?.chat?.[aiIdx];
+              if (messageText(activeMessage).includes(writeBackBlock)) {
+                doctorWrittenTarget = refreshAcceptedTarget(target);
+                if (target.generationKey) doctorWrittenTarget.generationKey = target.generationKey;
+              }
+            } catch { /* compensation will still restore the MVU transaction */ }
+          }
+          const compensated = await compensateFailedDiagnosis(error);
+          if (doctorWrittenTarget && compensated.code !== STALE_TASK) compensated.doctorWrittenTarget ||= deepClone(doctorWrittenTarget);
+          throw enrichDiagnosisError(compensated);
         }
       }
       else so.refreshMessageBar(aiIdx);
-      refreshAcceptedTarget(target);
+      if (latestBlock) finalTarget = refreshAcceptedTarget(target);
     }
     // The original notifier describes nochange as proven clean.  Doctor has
     // stronger evidence semantics: nochange only means the model proposed no
     // state-changing repair, so the honest Doctor report/UI owns that outcome.
+    let verifiedFinalPayload = unchangedPayload;
+    try {
+      await requireDiagnosisEvidenceCurrent(finalTarget, owner, preUpdateEvidence, triggeringUserEvidence, '变量诊断提交前');
+      const expectedFinalPayload = appliedTransaction?.candidateData ?? unchangedPayload;
+      verifiedFinalPayload = await Promise.resolve(Mvu.getMvuData({ type: 'message', message_id: finalTarget.index }));
+      await requireDiagnosisEvidenceCurrent(finalTarget, owner, preUpdateEvidence, triggeringUserEvidence, '变量诊断最终MVU读回后');
+      verifiedFinalPayload = await Promise.resolve(Mvu.getMvuData({ type: 'message', message_id: finalTarget.index }));
+      requireTaskOwner(owner, finalTarget, '变量诊断最终MVU读回');
+      if (JSON.stringify(verifiedFinalPayload) !== JSON.stringify(expectedFinalPayload)) {
+        throw Object.assign(new Error('变量诊断完成前固定楼层MVU又被改变，旧结论不能提交'), { code: STALE_TASK });
+      }
+    } catch (error) {
+      throw enrichDiagnosisError(await compensateFailedDiagnosis(error));
+    }
     if (result.status === 'applied') so.notifyAutoDiagnose(result, patchBlock);
-    return {
+    const diagnosisResult = {
       ok: true,
       status: result.status,
       semanticProof: false,
-      applicationComplete: true,
+      applicationComplete: result.applicationComplete !== false,
       canProceed: true,
       verificationMode: 'story-oracle-official-mvu',
       officialResult: result.officialResult,
@@ -1506,18 +1974,26 @@ ${bindingObligation}
       unresolved: [],
       verdict: result.status === 'applied'
         ? '模型提出纠正；候选只由官方MVU解析，已写入固定楼层并完成同楼读回'
-        : '模型没有提出会改变当前状态的修复；本轮零写入。这是Story Oracle诊断结论，不是脚本对剧情语义的独立证明',
+        : result.status === 'unverified'
+          ? '模型返回了非空修复，但官方MVU解析后状态没有变化；可能是补丁本来已满足，也可能是操作被忽略，已保留为可手动复检的警告'
+          : '模型明确返回空补丁；本轮零写入。这是Story Oracle诊断结论，不是脚本对剧情语义的独立证明',
       raw: String(raw),
       patchBlock: String(patchBlock || ''),
       request,
       diagnosisAttempts: deepClone(diagnosisAttempts),
-      mvu: await currentMvuState(target.index),
+      evidenceReceipt: compactDiagnosisEvidenceReceipt(preUpdateEvidence, triggeringUserEvidence, verifiedFinalPayload, finalTarget),
+      mvu: deepClone(statDataOf(verifiedFinalPayload) ?? null),
     };
+    Object.defineProperty(diagnosisResult, 'rollbackDiagnosis', {
+      value: (error) => compensateFailedDiagnosis(error), enumerable: false,
+    });
+    return diagnosisResult;
   }
 
   function diagnosisDisplayLabel(value) {
     const status = typeof value === 'string' ? value : value?.status;
     if (status === 'applied') return '已修复并读回';
+    if (status === 'unverified') return '修复未产生变化，可手动复检';
     if (status === 'partial') return `部分修复：仍有${value?.unresolved?.length || 0}项未落地，可手动复检`;
     if (status === 'nochange') return '未发现需落地的修复';
     return status || '已保留';
@@ -1723,7 +2199,7 @@ ${bindingObligation}
     const status = text(checkpoint?.status);
     if (status === 'complete') {
       return text(checkpoint?.lastCompletedStep) === 'profile'
-        ? { ok: true, status: 'profile-complete' }
+        ? { ok: true, status: settings().enabled && settings().profileEnabled ? 'profile-complete' : 'profile-disabled' }
         : { ok: false, status: 'profile-not-run' };
     }
     if (status === 'failed') {
@@ -1741,6 +2217,9 @@ ${bindingObligation}
     const throughProfile = input?.throughProfile === true;
     const liveAtStart = latestAssistant();
     if (!liveAtStart) return { ok: !throughProfile, status: 'unbound' };
+    if (loadMutationIntegrityLatch(liveAtStart.chatId).compromised) {
+      return { ok: false, status: 'mutation-integrity-failed' };
+    }
     const filteredDialogue = worldFilteredDialogue(input.aiMsg);
     if (!filteredDialogue || worldFilteredDialogue(liveAtStart.content) !== filteredDialogue) {
       return { ok: false, status: 'stale' };
@@ -1756,6 +2235,9 @@ ${bindingObligation}
     for (;;) {
       const live = latestAssistant();
       if (!worldGateTargetMatches(live, expected)) return { ok: false, status: 'stale' };
+      if (loadMutationIntegrityLatch(expected.chatId).compromised) {
+        return { ok: false, status: 'mutation-integrity-failed' };
+      }
 
       const active = runtime.acceptedGeneration;
       const activeReceiptIndex = ticketInteger(active?.targetMessageId ?? active?.receivedMessageId);
@@ -1792,22 +2274,59 @@ ${bindingObligation}
       const manualDiagnosisOwns = Boolean(runtime.pipelineBusy
         && worldGateScopeMatches(runtime.manualDiagnosisBinding, expected)
         && text(runtime.manualDiagnosisBinding?.generationKey) === bindingGenerationKey);
+      const manualProfileOwns = Boolean(throughProfile && runtime.pipelineBusy
+        && worldGateScopeMatches(runtime.manualProfileBinding, expected)
+        && text(runtime.manualProfileBinding?.generationKey) === bindingGenerationKey);
       if (boundCheckpoint) {
         const profileReceipt = throughProfile ? profileCheckpointReceipt(checkpoint) : null;
-        if (throughProfile && profileReceipt && !manualDiagnosisOwns) {
+        if (throughProfile && profileReceipt && !manualDiagnosisOwns && !manualProfileOwns) {
+          if (!profileReceipt.ok) return profileReceipt;
+          const boundTarget = { ...live, generationKey: bindingGenerationKey };
+          let verifiedDiagnosis;
+          try { verifiedDiagnosis = await verifiedDiagnosisReceiptForTarget(checkpoint, boundTarget); }
+          catch { return { ok: false, status: 'diagnosis-verification-failed' }; }
+          const liveAfterVerify = latestAssistant();
+          const checkpointAfterVerify = loadPipelineCheckpoint(expected.chatId);
+          if (!verifiedDiagnosis || !worldGateTargetMatches(liveAfterVerify, expected)
+            || !worldGateTargetMatches(checkpointAfterVerify?.target, expected)
+            || text(checkpointAfterVerify?.target?.generationKey) !== bindingGenerationKey) {
+            return { ok: false, status: 'stale' };
+          }
+          if (settings().enabled && settings().profileEnabled) {
+            let storedProfiles;
+            try { storedProfiles = readStoreForChat(expected.chatId); }
+            catch { return { ok: false, status: 'profile-verification-failed' }; }
+            if (!profileReceiptFor(storedProfiles, boundTarget, verifiedDiagnosis)) {
+              return { ok: false, status: 'profile-verification-failed' };
+            }
+          }
           return profileReceipt;
         }
         if (!throughProfile && diagnosisCheckpointSettled(checkpoint) && !manualDiagnosisOwns) {
+          if (checkpoint.status === 'failed') return { ok: false, status: 'diagnosis-failed' };
+          if (checkpoint.status === 'stale') return { ok: false, status: 'stale' };
+          if (checkpoint.status === 'cancelled') return { ok: false, status: 'cancelled' };
+          const boundTarget = { ...live, generationKey: bindingGenerationKey };
+          let verifiedDiagnosis;
+          try { verifiedDiagnosis = await verifiedDiagnosisReceiptForTarget(checkpoint, boundTarget); }
+          catch { return { ok: false, status: 'diagnosis-verification-failed' }; }
+          const liveAfterVerify = latestAssistant();
+          const checkpointAfterVerify = loadPipelineCheckpoint(expected.chatId);
+          if (!verifiedDiagnosis || !worldGateTargetMatches(liveAfterVerify, expected)
+            || !worldGateTargetMatches(checkpointAfterVerify?.target, expected)
+            || text(checkpointAfterVerify?.target?.generationKey) !== bindingGenerationKey) {
+            return { ok: false, status: 'stale' };
+          }
           return {
-            ok: checkpoint.status !== 'failed',
-            status: checkpoint.status === 'failed' ? 'diagnosis-failed' : 'diagnosis-complete',
+            ok: true,
+            status: 'diagnosis-complete',
           };
         }
         if (!throughProfile && !manualDiagnosisOwns && runtime.lastResult?.failedStep === 'diagnosis'
           && worldGateScopeMatches(runtime.lastAccepted, expected)) {
           return { ok: false, status: 'diagnosis-failed' };
         }
-        if (throughProfile && !manualDiagnosisOwns
+        if (throughProfile && !manualDiagnosisOwns && !manualProfileOwns
           && ['failed', 'cancelled', 'discarded'].includes(text(runtime.phase))
           && worldGateScopeMatches(runtime.lastAccepted, expected)) {
           return {
@@ -1823,7 +2342,7 @@ ${bindingObligation}
         // still owns it.  If the pipeline died before it could persist its
         // terminal state, give the existing handoff a short chance to appear,
         // then release native World instead of waiting on an orphan forever.
-        if (livePipelineCheckpoint || manualDiagnosisOwns) missingHandoffPolls = 0;
+        if (livePipelineCheckpoint || manualDiagnosisOwns || manualProfileOwns) missingHandoffPolls = 0;
         else {
           missingHandoffPolls += 1;
           if (missingHandoffPolls >= 20) {
@@ -1888,6 +2407,8 @@ ${bindingObligation}
     generationTicketPersistence: { ok: true, status: '', error: '' },
     manualDiagnosisBinding: null,
     manualDiagnosisSerial: 0,
+    manualProfileBinding: null,
+    manualProfileSerial: 0,
     exportBusy: false,
     exportSerial: 0,
   };
@@ -1907,6 +2428,303 @@ ${bindingObligation}
 
   function diagnosticIntegrityStorageKey(currentChatId = chatId()) {
     return `${DIAGNOSTIC_INTEGRITY_STORAGE_PREFIX}${encodeURIComponent(currentChatId)}`;
+  }
+
+  function mutationIntegrityStorageKey(currentChatId = chatId()) {
+    return `${MUTATION_INTEGRITY_STORAGE_PREFIX}${encodeURIComponent(currentChatId)}`;
+  }
+
+  function cleanMutationIntegrityLatch(value = {}) {
+    return {
+      ...value, compromised: false, incidentId: '', errorCode: '', error: '', at: text(value?.at),
+    };
+  }
+
+  function parseMutationIntegrityLatchRaw(raw, source) {
+    if (raw === null || raw === undefined || raw === '') return null;
+    try {
+      const value = JSON.parse(raw);
+      return value?.compromised === true
+        ? {
+          ...value, compromised: true,
+          incidentId: text(value.incidentId || `legacy:${contentFingerprint(JSON.stringify({
+            chatId: value.chatId, errorCode: value.errorCode, error: value.error,
+            at: value.at, recovery: value.recovery || null,
+          }))}`),
+          errorCode: text(value.errorCode),
+          error: text(value.error), at: text(value.at), source,
+        }
+        : cleanMutationIntegrityLatch({ ...value, source });
+    } catch (error) {
+      return {
+        compromised: true, incidentId: `corrupt:${source}`,
+        errorCode: 'mutation_integrity_latch_corrupt',
+        error: `${source}事务完整性锁损坏：${error?.message || error}`, at: '', source,
+      };
+    }
+  }
+
+  function loadMutationIntegrityLatch(currentChatId = chatId()) {
+    if (!currentChatId) return cleanMutationIntegrityLatch();
+    const key = mutationIntegrityStorageKey(currentChatId);
+    const observations = [];
+    const readErrors = [];
+    try { observations.push(parseMutationIntegrityLatchRaw(localStorage.getItem(key), 'localStorage')); }
+    catch (error) { readErrors.push(`localStorage读取失败：${error?.message || error}`); }
+    let worldStore = null;
+    try {
+      worldStore = doctorPersistenceStore();
+      if (worldStore !== localStorage) {
+        observations.push(parseMutationIntegrityLatchRaw(worldStore.getItem(key), 'WORLD_ENGINE_STORE'));
+      }
+    } catch (error) { readErrors.push(`WORLD_ENGINE_STORE读取失败：${error?.message || error}`); }
+    const volatile = volatileMutationIntegrityLatches.get(currentChatId);
+    if (volatile?.compromised) observations.push({ ...deepClone(volatile), source: 'memory' });
+    const compromised = observations.filter((value) => value?.compromised);
+    const incidentIds = [...new Set(compromised.map((value) => text(value.incidentId)).filter(Boolean))];
+    if (incidentIds.length > 1) {
+      return {
+        compromised: true, incidentId: '', errorCode: 'mutation_integrity_latch_conflict',
+        error: '事务完整性锁的持久副本属于不同事故；拒绝自动清除或继续写入',
+        at: '', source: 'conflict', incidents: incidentIds,
+      };
+    }
+    if (compromised.length && readErrors.length) {
+      return {
+        ...deepClone(compromised[0]), errorCode: 'mutation_integrity_latch_read_failed',
+        error: `${text(compromised[0].error)}；另有副本无法读取：${readErrors.join('；')}`,
+        source: 'readback', recoveryBlockedByReadError: true,
+      };
+    }
+    if (compromised.length) {
+      return [...compromised].sort((a, b) => text(b.at).localeCompare(text(a.at)))[0];
+    }
+    if (readErrors.length) {
+      return {
+        compromised: true, errorCode: 'mutation_integrity_latch_read_failed',
+        error: `无法排除旧事务完整性事故：${readErrors.join('；')}`, at: '', source: 'readback',
+      };
+    }
+    return observations.filter(Boolean)[0] || cleanMutationIntegrityLatch();
+  }
+
+  function requireMutationIntegrityClean(currentChatId, stage, target = null, allowDiagnosisRecovery = false) {
+    const latch = loadMutationIntegrityLatch(currentChatId);
+    const recovery = latch?.recovery;
+    const binding = runtime.manualDiagnosisBinding;
+    const recoveryOwns = Boolean(allowDiagnosisRecovery
+      && latch.errorCode === DIAGNOSIS_ROLLBACK_FAILED
+      && latch.incidentId
+      && target
+      && binding?.recoveryIncidentId === latch.incidentId
+      && binding?.recoveryToken
+      && recovery?.normalizedAt
+      && recovery?.recoveryToken === binding.recoveryToken
+      && recovery?.chatId === target.chatId
+      && Number(recovery?.messageId) === Number(target.index)
+      && Number(recovery?.swipeId || 0) === Number(target.swipeId || 0)
+      && text(recovery?.generationKey) === text(target.generationKey)
+      && worldGateScopeMatches(binding, target)
+      && text(binding.generationKey) === text(target.generationKey));
+    if (latch.compromised && !recoveryOwns) {
+      throw Object.assign(new Error(`${stage}时检测到未恢复的事务完整性事故：${latch.error}`), {
+        code: text(latch.errorCode || 'mutation_integrity_failed'), rollbackError: text(latch.error),
+      });
+    }
+    return latch;
+  }
+
+  async function withMutationIntegrityLock(action) {
+    const previous = mutationIntegrityTail;
+    let release;
+    mutationIntegrityTail = new Promise((resolve) => { release = resolve; });
+    await previous.catch(() => undefined);
+    try { return await action(); }
+    finally { release(); }
+  }
+
+  async function persistMutationIntegrityLatchNow(currentChatId, errorCode, error, recovery = null, incidentId = '') {
+    if (!currentChatId) throw new Error('事务完整性锁缺少聊天身份');
+    const key = mutationIntegrityStorageKey(currentChatId);
+    const requestedIncidentId = text(incidentId) || `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const candidate = {
+      schema: 2, chatId: currentChatId, compromised: true,
+      incidentId: requestedIncidentId,
+      errorCode: text(errorCode), error: text(error), at: new Date().toISOString(),
+      recovery: recovery ? deepClone(recovery) : null,
+    };
+    const existing = loadMutationIntegrityLatch(currentChatId);
+    const record = existing.compromised && existing.incidentId !== requestedIncidentId
+      ? {
+        schema: 2, chatId: currentChatId, compromised: true,
+        incidentId: `conflict:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+        errorCode: 'mutation_integrity_latch_conflict',
+        error: '旧事务事故尚未恢复时又发生了另一笔原子补偿事故；已合并保留，禁止自动清锁',
+        at: new Date().toISOString(), recovery: null,
+        incidents: [deepClone(existing), deepClone(candidate)],
+      }
+      : candidate;
+    const value = JSON.stringify(record);
+    volatileMutationIntegrityLatches.set(currentChatId, deepClone(record));
+    const successes = [];
+    const failures = [];
+    try {
+      localStorage.setItem(key, value);
+      if (localStorage.getItem(key) !== value) throw new Error('写后读回不一致');
+      successes.push('localStorage');
+    } catch (caught) { failures.push(`localStorage：${caught?.message || caught}`); }
+    try {
+      const store = doctorPersistenceStore();
+      if (store === window.WORLD_ENGINE_STORE) {
+        const receipt = await durableWorldStoreBatch(store, [[key, value]]);
+        if (!receipt.durable) throw new Error('没有取得IndexedDB事务回执');
+        successes.push('WORLD_ENGINE_STORE');
+      } else if (store !== localStorage) {
+        setStoredValueChecked(store, key, value);
+        failures.push('WORLD_ENGINE_STORE：仅有易失存储，不能作为跨刷新事故锁');
+      }
+    } catch (caught) { failures.push(`WORLD_ENGINE_STORE：${caught?.message || caught}`); }
+    if (!successes.length) {
+      throw new Error(`事务完整性锁未能持久化；当前页面仍保持阻断：${failures.join('；')}`);
+    }
+    return { ...deepClone(record), persistence: successes, persistenceErrors: failures };
+  }
+
+  async function persistMutationIntegrityLatch(currentChatId, errorCode, error, recovery = null, incidentId = '') {
+    return withMutationIntegrityLock(() => persistMutationIntegrityLatchNow(
+      currentChatId, errorCode, error, recovery, incidentId,
+    ));
+  }
+
+  async function updateMutationIntegrityLatch(
+    currentChatId, expectedIncidentId, errorCode, error, recovery = null,
+  ) {
+    return withMutationIntegrityLock(async () => {
+      const current = loadMutationIntegrityLatch(currentChatId);
+      if (!current.compromised || !expectedIncidentId || current.incidentId !== expectedIncidentId) {
+        throw new Error('事务完整性事故在恢复期间已被另一事故替代；拒绝用旧恢复状态覆盖');
+      }
+      return persistMutationIntegrityLatchNow(
+        currentChatId, errorCode, error, recovery, expectedIncidentId,
+      );
+    });
+  }
+
+  async function clearRecoverableDiagnosisIntegrityLatchNow(
+    currentChatId = chatId(), expectedIncidentId = '', expectedRecoveryToken = '', assertCurrent = null,
+  ) {
+    if (typeof assertCurrent === 'function') await assertCurrent('变量事故清锁开始');
+    const latch = loadMutationIntegrityLatch(currentChatId);
+    if (!latch.compromised) return true;
+    if (latch.errorCode !== DIAGNOSIS_ROLLBACK_FAILED
+      || !expectedIncidentId || latch.incidentId !== expectedIncidentId) return false;
+    if (expectedRecoveryToken && latch.recovery?.recoveryToken !== expectedRecoveryToken) return false;
+    const key = mutationIntegrityStorageKey(currentChatId);
+    const clearToken = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const pendingRecord = {
+      schema: 2, chatId: currentChatId, compromised: true,
+      incidentId: latch.incidentId,
+      errorCode: DIAGNOSIS_ROLLBACK_FAILED,
+      error: text(latch.error || '变量事务完整性仍在等待双副本清锁'),
+      at: new Date().toISOString(), clearPending: true, clearToken,
+      recovery: latch.recovery ? deepClone(latch.recovery) : null,
+    };
+    const pendingValue = JSON.stringify(pendingRecord);
+    const clearedValue = JSON.stringify({
+      schema: 2, chatId: currentChatId, compromised: false,
+      incidentId: '',
+      errorCode: '', error: '', at: new Date().toISOString(),
+      clearedFrom: DIAGNOSIS_ROLLBACK_FAILED, clearedIncidentId: latch.incidentId, clearToken,
+    });
+    // Phase 1 first establishes the same fail-closed pending tombstone in both
+    // durable copies.  Therefore a partial phase-2 clear always leaves at least
+    // one persistent compromised copy for the next reload to observe.
+    const pendingFailures = [];
+    try {
+      localStorage.setItem(key, pendingValue);
+      if (localStorage.getItem(key) !== pendingValue) throw new Error('清锁预备凭据写后读回不一致');
+    } catch (error) { pendingFailures.push(`localStorage：${error?.message || error}`); }
+    try {
+      const store = doctorPersistenceStore();
+      if (store !== window.WORLD_ENGINE_STORE) throw new Error('世界引擎IndexedDB不可用');
+      const receipt = await durableWorldStoreBatch(store, [[key, pendingValue]]);
+      if (!receipt.durable) throw new Error('清锁预备没有取得IndexedDB事务回执');
+    } catch (error) { pendingFailures.push(`WORLD_ENGINE_STORE：${error?.message || error}`); }
+    if (pendingFailures.length) {
+      volatileMutationIntegrityLatches.set(currentChatId, deepClone(pendingRecord));
+      throw new Error(`事务完整性锁未能建立双副本清锁预备状态：${pendingFailures.join('；')}`);
+    }
+
+    const pendingReadback = loadMutationIntegrityLatch(currentChatId);
+    if (!pendingReadback.compromised || pendingReadback.incidentId !== expectedIncidentId
+      || pendingReadback.clearPending !== true || pendingReadback.clearToken !== clearToken) {
+      if (pendingReadback.compromised) volatileMutationIntegrityLatches.set(currentChatId, deepClone(pendingReadback));
+      throw new Error('事务完整性锁在清除前已被另一事故替代；拒绝覆盖新事故');
+    }
+    if (typeof assertCurrent === 'function') await assertCurrent('变量事故清锁预备完成');
+
+    const storeBeforeClear = doctorPersistenceStore();
+    const localBeforeClear = localStorage.getItem(key);
+    const worldBeforeClear = storeBeforeClear === window.WORLD_ENGINE_STORE
+      ? storeBeforeClear.getItem(key) : null;
+    if (localBeforeClear !== pendingValue || worldBeforeClear !== pendingValue) {
+      const live = loadMutationIntegrityLatch(currentChatId);
+      if (live.compromised) volatileMutationIntegrityLatches.set(currentChatId, deepClone(live));
+      throw new Error('事务完整性锁在最终清除线性化点前已被替代；拒绝覆盖新事故');
+    }
+
+    const clearFailures = [];
+    try {
+      localStorage.setItem(key, clearedValue);
+      if (localStorage.getItem(key) !== clearedValue) throw new Error('清锁凭据写后读回不一致');
+    } catch (error) { clearFailures.push(`localStorage：${error?.message || error}`); }
+    try {
+      const store = doctorPersistenceStore();
+      if (localStorage.getItem(key) !== clearedValue || store.getItem(key) !== pendingValue) {
+        throw new Error('第二副本清除前事故锁已被另一写者改变');
+      }
+      const receipt = await durableWorldStoreBatch(store, [[key, clearedValue]]);
+      if (!receipt.durable) throw new Error('清锁没有取得IndexedDB事务回执');
+    } catch (error) { clearFailures.push(`WORLD_ENGINE_STORE：${error?.message || error}`); }
+    try {
+      if (typeof assertCurrent === 'function') await assertCurrent('变量事故双副本清锁完成');
+    } catch (error) { clearFailures.push(`证据复核：${error?.message || error}`); }
+    if (clearFailures.length) {
+      const restoreFailures = [];
+      try {
+        const localCurrent = localStorage.getItem(key);
+        if (localCurrent === clearedValue) {
+          localStorage.setItem(key, pendingValue);
+          if (localStorage.getItem(key) !== pendingValue) throw new Error('恢复清锁预备凭据读回不一致');
+        } else if (localCurrent !== pendingValue) {
+          restoreFailures.push('localStorage：检测到新事故，已保留而未覆盖');
+        }
+      } catch (error) { restoreFailures.push(`localStorage：${error?.message || error}`); }
+      try {
+        const store = doctorPersistenceStore();
+        if (store !== window.WORLD_ENGINE_STORE) throw new Error('世界引擎IndexedDB不可用');
+        const worldCurrent = store.getItem(key);
+        if (worldCurrent === clearedValue) {
+          const receipt = await durableWorldStoreBatch(store, [[key, pendingValue]]);
+          if (!receipt.durable) throw new Error('恢复清锁预备状态没有IndexedDB回执');
+        } else if (worldCurrent !== pendingValue) {
+          restoreFailures.push('WORLD_ENGINE_STORE：检测到新事故，已保留而未覆盖');
+        }
+      } catch (error) { restoreFailures.push(`WORLD_ENGINE_STORE：${error?.message || error}`); }
+      const live = loadMutationIntegrityLatch(currentChatId);
+      volatileMutationIntegrityLatches.set(currentChatId, deepClone(live.compromised ? live : pendingRecord));
+      throw new Error(`事务完整性锁清除未完成：${clearFailures.join('；')}${restoreFailures.length ? `；预备状态恢复异常：${restoreFailures.join('；')}` : ''}`);
+    }
+    volatileMutationIntegrityLatches.delete(currentChatId);
+    return true;
+  }
+
+  async function clearRecoverableDiagnosisIntegrityLatch(
+    currentChatId = chatId(), expectedIncidentId = '', expectedRecoveryToken = '', assertCurrent = null,
+  ) {
+    return withMutationIntegrityLock(() => clearRecoverableDiagnosisIntegrityLatchNow(
+      currentChatId, expectedIncidentId, expectedRecoveryToken, assertCurrent,
+    ));
   }
 
   function reportStorageBaseKey(currentChatId = chatId()) {
@@ -2205,19 +3023,271 @@ ${bindingObligation}
       ...deepClone(checkpoint), chatId: currentChatId, updatedAt: new Date().toISOString(),
     }, currentApiSecretValues());
     const key = pipelineStorageKey(currentChatId);
-    localStorage.setItem(key, JSON.stringify(safe));
-    const readback = JSON.parse(localStorage.getItem(key) || 'null');
-    if (!readback || readback?.target?.identity !== safe?.target?.identity
-      || readback?.status !== safe?.status || readback?.nextStep !== safe?.nextStep) {
+    const raw = JSON.stringify(safe);
+    localStorage.setItem(key, raw);
+    const readbackRaw = localStorage.getItem(key);
+    if (readbackRaw !== raw) {
       throw new Error('流水线检查点保存后读回不一致');
     }
-    return readback;
+    return JSON.parse(readbackRaw);
   }
 
   function loadPipelineCheckpoint(currentChatId = chatId()) {
     if (!currentChatId) return null;
     try { return JSON.parse(localStorage.getItem(pipelineStorageKey(currentChatId)) || 'null'); }
-    catch { return null; }
+    catch (error) {
+      return {
+        corrupt: true, chatId: currentChatId, status: 'corrupt', nextStep: '',
+        errorCode: 'pipeline_checkpoint_corrupt',
+        error: `流水线检查点损坏：${error?.message || error}`,
+      };
+    }
+  }
+
+  function compactDiagnosisReceipt(value) {
+    if (!value || typeof value !== 'object' || !text(value.status)) return null;
+    const userEvidence = value.evidenceReceipt?.triggeringUser;
+    const preEvidence = value.evidenceReceipt?.previousMvu;
+    const targetEvidence = value.evidenceReceipt?.targetMvu;
+    return {
+      status: text(value.status),
+      officialResult: text(value.officialResult),
+      applicationComplete: value.applicationComplete !== false,
+      semanticProof: value.semanticProof === true,
+      canProceed: value.canProceed !== false,
+      evidenceReceipt: {
+        triggeringUser: {
+          index: Number(userEvidence?.index ?? -1),
+          fingerprint: text(userEvidence?.fingerprint),
+        },
+        previousMvu: preEvidence ? {
+          index: Number(preEvidence.index),
+          swipeId: Number(preEvidence.swipeId) || 0,
+          contentFingerprint: text(preEvidence.contentFingerprint),
+          payloadFingerprint: text(preEvidence.payloadFingerprint),
+        } : null,
+        targetMvu: targetEvidence ? {
+          index: Number(targetEvidence.index),
+          swipeId: Number(targetEvidence.swipeId) || 0,
+          contentFingerprint: text(targetEvidence.contentFingerprint),
+          payloadFingerprint: text(targetEvidence.payloadFingerprint),
+        } : null,
+      },
+    };
+  }
+
+  function diagnosisReceiptTargetKey(target) {
+    const currentChatId = text(target?.chatId);
+    const identity = text(target?.identity);
+    return currentChatId && identity
+      ? `${DIAGNOSIS_RECEIPT_STORAGE_PREFIX}${encodeURIComponent(currentChatId)}:target:${encodeURIComponent(identity)}`
+      : '';
+  }
+
+  function diagnosisReceiptGenerationKey(target) {
+    const currentChatId = text(target?.chatId);
+    const generationKey = text(target?.generationKey);
+    return currentChatId && generationKey
+      ? `${DIAGNOSIS_RECEIPT_STORAGE_PREFIX}${encodeURIComponent(currentChatId)}:generation:${encodeURIComponent(generationKey)}`
+      : '';
+  }
+
+  function diagnosisSidecarTargetMatches(row, target, requireGeneration = false) {
+    const saved = row?.target;
+    return Boolean(saved && target
+      && saved.chatId === target.chatId
+      && Number(saved.index) === Number(target.index)
+      && Number(saved.swipeId || 0) === Number(target.swipeId || 0)
+      && text(saved.identity) === text(target.identity)
+      && text(saved.fingerprint) === text(target.fingerprint)
+      && text(saved.generationKey)
+      && (!requireGeneration || text(saved.generationKey) === text(target.generationKey)));
+  }
+
+  function loadDiagnosisReceiptSidecar(target) {
+    if (!target?.chatId || !target?.identity) return null;
+    const store = doctorPersistenceStore();
+    if (store !== window.WORLD_ENGINE_STORE) return null;
+    const directKey = diagnosisReceiptGenerationKey(target) || diagnosisReceiptTargetKey(target);
+    if (!directKey) return null;
+    const raw = store.getItem(directKey);
+    if (raw === null || raw === undefined || raw === '') return null;
+    let row;
+    try { row = JSON.parse(raw); }
+    catch (error) {
+      throw Object.assign(new Error(`变量诊断持久收据损坏：${error?.message || error}`), {
+        code: DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+      });
+    }
+    const requireGeneration = Boolean(text(target.generationKey));
+    if (!diagnosisSidecarTargetMatches(row, target, requireGeneration)) return null;
+    row.status = text(row.status || 'complete');
+    if (row.status !== 'complete') return { ...deepClone(row), receipt: null };
+    const receipt = compactDiagnosisReceipt(row.receipt);
+    if (!receipt) {
+      throw Object.assign(new Error('变量诊断持久收据缺少可验证的证据摘要'), {
+        code: DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+      });
+    }
+    return { ...deepClone(row), receipt };
+  }
+
+  async function persistDiagnosisSidecarRecord(
+    target, status, receipt = null, reason = '', assertCurrent = null, allowCompromised = false,
+  ) {
+    if (!target?.generationKey) throw new Error('变量诊断耐久记录缺少生成事务身份');
+    if (status === 'complete' && !receipt) throw new Error('变量诊断完成记录缺少证据摘要');
+    if (typeof assertCurrent === 'function') await assertCurrent(`变量诊断${status}记录写入前`);
+    if (!allowCompromised) requireMutationIntegrityClean(target.chatId, `变量诊断${status}记录写入前`, target, true);
+    const store = doctorPersistenceStore();
+    if (store !== window.WORLD_ENGINE_STORE) throw new Error('世界引擎IndexedDB不可用，变量诊断状态不能跨刷新保存');
+    const row = {
+      schema: 2, status: text(status), reason: text(reason),
+      savedAt: new Date().toISOString(),
+      attemptId: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      target: {
+        chatId: target.chatId, index: Number(target.index), swipeId: Number(target.swipeId || 0),
+        identity: text(target.identity), fingerprint: text(target.fingerprint),
+        generationKey: text(target.generationKey),
+      },
+      receipt: receipt ? deepClone(receipt) : null,
+    };
+    const raw = JSON.stringify(row);
+    const keys = [diagnosisReceiptGenerationKey(target), diagnosisReceiptTargetKey(target)];
+    if (typeof assertCurrent === 'function') await assertCurrent(`变量诊断${status}记录线性化点`);
+    const persistence = await durableWorldStoreBatch(store, keys.map((key) => [key, raw]));
+    if (!persistence.durable) throw new Error('变量诊断状态没有取得IndexedDB事务回执');
+    if (typeof assertCurrent === 'function') await assertCurrent(`变量诊断${status}记录写入后`);
+    if (!allowCompromised) requireMutationIntegrityClean(target.chatId, `变量诊断${status}记录写入后`, target, true);
+    for (const key of keys) {
+      const readback = store.getItem(key);
+      if (readback !== raw) throw new Error('变量诊断耐久记录写后读回不一致');
+    }
+    return { ...deepClone(row), persistence: persistence.backend };
+  }
+
+  async function persistDiagnosisAttemptMarker(target, assertCurrent = null) {
+    return persistDiagnosisSidecarRecord(
+      target, 'attempted', null, '模型诊断已经开始；没有完成收据时禁止刷新后自动重放', assertCurrent,
+    );
+  }
+
+  async function persistDiagnosisSidecarTombstone(target, status = 'cancelled', reason = '') {
+    return persistDiagnosisSidecarRecord(target, status, null, reason, null, true);
+  }
+
+  async function persistDiagnosisReceiptSidecar(target, value, assertCurrent = null) {
+    const receipt = compactDiagnosisReceipt(value);
+    if (!receipt) throw new Error('变量诊断完成收据缺少证据摘要');
+    return persistDiagnosisSidecarRecord(
+      target, 'complete', receipt, '变量诊断完成并取得当前证据收据', assertCurrent,
+    );
+  }
+
+  async function persistDiagnosisCompletion(checkpoint, target, diagnosisReceipt, assertCurrent = null) {
+    const errors = [];
+    const failures = [];
+    let sidecar = null;
+    let localCheckpoint = null;
+    try { sidecar = await persistDiagnosisReceiptSidecar(target, diagnosisReceipt, assertCurrent); }
+    catch (error) { failures.push(error); errors.push(`IndexedDB收据：${error?.message || error}`); }
+    try {
+      if (typeof assertCurrent === 'function') await assertCurrent('变量诊断本地检查点写入前');
+      localCheckpoint = persistPipelineCheckpoint(checkpoint);
+      if (typeof assertCurrent === 'function') await assertCurrent('变量诊断本地检查点写入后');
+    } catch (error) { failures.push(error); errors.push(`本地检查点：${error?.message || error}`); }
+    const staleFailure = failures.find((error) => error?.code === STALE_TASK);
+    if (staleFailure) {
+      staleFailure.diagnosisReceipt ||= compactDiagnosisReceipt(diagnosisReceipt);
+      if (typeof diagnosisReceipt?.rollbackDiagnosis === 'function') {
+        throw await diagnosisReceipt.rollbackDiagnosis(staleFailure);
+      }
+      throw staleFailure;
+    }
+    // The model-attempt marker is durable in this same store.  Allowing a
+    // local-only completion would make the next reload see the older
+    // `attempted` marker and contradict the visible success.  Therefore a
+    // durable completion sidecar is the single required handoff receipt;
+    // localStorage remains only a recoverable mirror.
+    if (!sidecar) {
+      const failure = Object.assign(new Error(`变量诊断虽已完成，但IndexedDB完成收据无法持久化：${errors.join('；')}`), {
+        code: failures.find((error) => error?.code === STALE_TASK)?.code || 'diagnosis_receipt_persistence_failed',
+        diagnosisReceipt: compactDiagnosisReceipt(diagnosisReceipt),
+      });
+      if (typeof diagnosisReceipt?.rollbackDiagnosis === 'function') {
+        throw await diagnosisReceipt.rollbackDiagnosis(failure);
+      }
+      throw failure;
+    }
+    return { sidecar, localCheckpoint, errors };
+  }
+
+  function diagnosisReceiptForTarget(checkpoint, target) {
+    if (!target) return null;
+    const checkpointKey = text(checkpoint?.target?.generationKey);
+    const targetKey = text(target?.generationKey);
+    if (checkpoint?.target?.identity === target.identity
+      && checkpointKey && checkpointKey === targetKey) {
+      const receipt = compactDiagnosisReceipt(checkpoint.diagnosisReceipt);
+      if (receipt) return { ...receipt, recoveredFromCheckpoint: true };
+    }
+    const sidecar = loadDiagnosisReceiptSidecar(target);
+    return sidecar?.receipt ? {
+      ...sidecar.receipt,
+      recoveredFromSidecar: true,
+      sidecarGenerationKey: sidecar.target.generationKey,
+      sidecarSavedAt: sidecar.savedAt,
+    } : null;
+  }
+
+  async function diagnosisReceiptEvidenceIsCurrent(receipt, target, signal = null, allowHistorical = false) {
+    const evidence = receipt?.evidenceReceipt;
+    const targetMatches = () => allowHistorical
+      ? historicalTargetStillMatches(target)
+      : targetIsCurrent(target);
+    if (!evidence || !target || !targetMatches()) return false;
+    const expectedUser = evidence.triggeringUser;
+    const freshUser = previousUserEvidence(target.index);
+    if (!expectedUser || !userEvidenceMatches(freshUser, expectedUser)) return false;
+    const expectedPre = evidence.previousMvu;
+    const freshPre = await previousMvuEvidence(target.index, true, signal);
+    const finalUser = previousUserEvidence(target.index);
+    if (!targetMatches() || !userEvidenceMatches(finalUser, expectedUser)) return false;
+    if (!previousMvuEvidenceMatches(freshPre, expectedPre)) return false;
+    const expectedTarget = evidence.targetMvu;
+    if (!expectedTarget || Number(expectedTarget.index) !== Number(target.index)
+      || Number(expectedTarget.swipeId || 0) !== Number(target.swipeId || 0)
+      || text(expectedTarget.contentFingerprint) !== text(target.fingerprint)) return false;
+    const freshTargetPayload = await mvuPayloadAt(target.index, signal);
+    const finalPre = await previousMvuEvidence(target.index, true, signal);
+    const finalTargetPayload = await mvuPayloadAt(target.index, signal);
+    const lastPre = await previousMvuEvidence(target.index, true, signal);
+    // The target is deliberately read after the last awaited previous-MVU read.
+    // This closes the old window where a target mutation during `lastPre` could
+    // leave both earlier target samples looking valid.
+    const lastTargetPayload = await mvuPayloadAt(target.index, signal);
+    const lastUser = previousUserEvidence(target.index);
+    return Boolean(targetMatches()
+      && previousMvuEvidenceMatches(finalPre, expectedPre)
+      && previousMvuEvidenceMatches(lastPre, expectedPre)
+      && userEvidenceMatches(lastUser, expectedUser)
+      && contentFingerprint(JSON.stringify(freshTargetPayload)) === text(expectedTarget.payloadFingerprint)
+      && contentFingerprint(JSON.stringify(finalTargetPayload)) === text(expectedTarget.payloadFingerprint)
+      && contentFingerprint(JSON.stringify(lastTargetPayload)) === text(expectedTarget.payloadFingerprint));
+  }
+
+  async function verifiedDiagnosisReceiptForTarget(checkpoint, target, signal = null, allowHistorical = false) {
+    const receipt = diagnosisReceiptForTarget(checkpoint, target);
+    if (!receipt) return null;
+    try {
+      return await diagnosisReceiptEvidenceIsCurrent(receipt, target, signal, allowHistorical)
+        ? receipt : null;
+    }
+    catch (error) {
+      error.code ||= DIAGNOSIS_EVIDENCE_VERIFY_FAILED;
+      error.diagnosisReceipt ||= receipt;
+      throw error;
+    }
   }
 
   function generationTicketStorageKey(currentChatId = chatId()) {
@@ -2247,7 +3317,13 @@ ${bindingObligation}
   function loadGenerationTicket(currentChatId = chatId()) {
     if (!currentChatId) return null;
     try { return JSON.parse(localStorage.getItem(generationTicketStorageKey(currentChatId)) || 'null'); }
-    catch { return null; }
+    catch (error) {
+      return {
+        corrupt: true, chatId: currentChatId, status: 'corrupt',
+        errorCode: 'generation_ticket_corrupt',
+        error: `生成票据损坏：${error?.message || error}`,
+      };
+    }
   }
 
   function clearGenerationTicket(currentChatId = chatId(), expectedGenerationKey = '') {
@@ -2402,17 +3478,58 @@ ${bindingObligation}
     return text(target?.generationKey) || `${Number(target?.index)}:${Number(target?.swipeId) || 0}:${text(target?.fingerprint)}`;
   }
 
-  function profileReceiptFor(store, target) {
+  function diagnosisReceiptFingerprint(value) {
+    const receipt = compactDiagnosisReceipt(value);
+    return receipt ? contentFingerprint(JSON.stringify(receipt)) : '';
+  }
+
+  function profileReceiptFor(store, target, diagnosisReceipt = null) {
     const receipt = store?.profileReceipts?.[profileReceiptKey(target)];
     if (!receipt || receipt.chatId !== target?.chatId || receipt.identity !== target?.identity
       || receipt.fingerprint !== target?.fingerprint || receipt.status !== 'committed') return null;
+    if (Number(receipt.afterRevision) !== Number(store?.revision || 0)) return null;
     if (receipt.profileDigest !== contentFingerprint(JSON.stringify(store?.profiles || {}))) return null;
+    if (receipt.branchDigest !== contentFingerprint(JSON.stringify(store?.branches || {}))) return null;
+    if (diagnosisReceipt && text(receipt.diagnosisReceiptFingerprint) !== diagnosisReceiptFingerprint(diagnosisReceipt)) return null;
     return receipt;
   }
 
-  function storeAfterProfileRun(before, target, nextProfiles, committedProfileIds = []) {
+  function profileReceiptForGeneration(store, target) {
+    const generationKey = text(target?.generationKey);
+    if (!generationKey) return null;
+    const profileDigest = contentFingerprint(JSON.stringify(store?.profiles || {}));
+    return Object.values(store?.profileReceipts || {}).find((receipt) => receipt
+      && receipt.status === 'committed'
+      && receipt.chatId === target?.chatId
+      && text(receipt.generationKey) === generationKey
+      && receipt.profileDigest === profileDigest) || null;
+  }
+
+  function storeAfterProfileRun(before, target, nextProfiles, committedProfileIds = [], diagnosisReceipt = null) {
     const nextRevision = Number(before.revision || 0) + 1;
     const receiptKey = profileReceiptKey(target);
+    const nextBranches = pruneBranches({
+      ...before.branches,
+      [branchBaseKey(target.index, target.fingerprint)]: before.branches?.[branchBaseKey(target.index, target.fingerprint)] || deepClone(before.profiles),
+      [branchKey(target.index, target.swipeId, target.fingerprint)]: deepClone(nextProfiles),
+    });
+    const profileBeforeImages = Object.fromEntries(committedProfileIds.map((profileId) => {
+      const existed = Object.prototype.hasOwnProperty.call(before.profiles || {}, profileId);
+      return [profileId, { existed, value: existed ? deepClone(before.profiles[profileId]) : null }];
+    }));
+    const changedBranchKeys = new Set([
+      ...Object.keys(before.branches || {}),
+      ...Object.keys(nextBranches || {}),
+    ]);
+    const branchBeforeImages = {};
+    for (const key of changedBranchKeys) {
+      const existed = Object.prototype.hasOwnProperty.call(before.branches || {}, key);
+      const nextExists = Object.prototype.hasOwnProperty.call(nextBranches || {}, key);
+      const previousValue = existed ? before.branches[key] : null;
+      const nextValue = nextExists ? nextBranches[key] : null;
+      if (existed === nextExists && JSON.stringify(previousValue) === JSON.stringify(nextValue)) continue;
+      branchBeforeImages[key] = { existed, value: existed ? deepClone(previousValue) : null };
+    }
     const nextReceipts = {
       ...(before.profileReceipts || {}),
       [receiptKey]: {
@@ -2420,7 +3537,13 @@ ${bindingObligation}
         generationKey: text(target.generationKey), messageId: target.index, swipeId: target.swipeId,
         fingerprint: target.fingerprint, afterRevision: nextRevision,
         committedProfileIds: [...committedProfileIds],
+        diagnosisReceiptFingerprint: diagnosisReceiptFingerprint(diagnosisReceipt),
+        beforeProfileDigest: contentFingerprint(JSON.stringify(before.profiles || {})),
         profileDigest: contentFingerprint(JSON.stringify(nextProfiles)), at: new Date().toISOString(),
+        beforeBranchDigest: contentFingerprint(JSON.stringify(before.branches || {})),
+        branchDigest: contentFingerprint(JSON.stringify(nextBranches || {})),
+        profileBeforeImages,
+        branchBeforeImages,
       },
     };
     const retainedReceiptEntries = Object.entries(nextReceipts)
@@ -2431,11 +3554,7 @@ ${bindingObligation}
       schema: 2,
       revision: nextRevision,
       profiles: nextProfiles,
-      branches: pruneBranches({
-        ...before.branches,
-        [branchBaseKey(target.index, target.fingerprint)]: before.branches?.[branchBaseKey(target.index, target.fingerprint)] || deepClone(before.profiles),
-        [branchKey(target.index, target.swipeId, target.fingerprint)]: deepClone(nextProfiles),
-      }),
+      branches: nextBranches,
       profileReceipts: Object.fromEntries(retainedReceiptEntries),
       history: [...before.history, {
         identity: target.identity, chatId: target.chatId, messageId: target.index, swipeId: target.swipeId,
@@ -2446,20 +3565,138 @@ ${bindingObligation}
     };
   }
 
-  async function runTarget(target, reason = 'auto', owner = null) {
+  function rollbackTransactionForCommittedProfile(store, target, receipt) {
+    if (!receipt?.beforeProfileDigest || !receipt?.beforeBranchDigest
+      || !receipt?.profileBeforeImages || !receipt?.branchBeforeImages
+      || typeof receipt.profileBeforeImages !== 'object'
+      || typeof receipt.branchBeforeImages !== 'object') return null;
+    if (Number(receipt.afterRevision) !== Number(store?.revision || 0)) return null;
+    if (contentFingerprint(JSON.stringify(store?.profiles || {})) !== text(receipt.profileDigest)) return null;
+    if (contentFingerprint(JSON.stringify(store?.branches || {})) !== text(receipt.branchDigest)) return null;
+    const previousProfiles = deepClone(store.profiles || {});
+    for (const profileId of receipt.committedProfileIds || []) {
+      const image = receipt.profileBeforeImages[profileId];
+      if (!image || typeof image.existed !== 'boolean') return null;
+      if (image.existed) previousProfiles[profileId] = deepClone(image.value);
+      else delete previousProfiles[profileId];
+    }
+    if (contentFingerprint(JSON.stringify(previousProfiles)) !== text(receipt.beforeProfileDigest)) return null;
+    const previousBranches = deepClone(store.branches || {});
+    for (const [key, image] of Object.entries(receipt.branchBeforeImages || {})) {
+      if (!image || typeof image.existed !== 'boolean') return null;
+      if (image.existed) previousBranches[key] = deepClone(image.value);
+      else delete previousBranches[key];
+    }
+    if (contentFingerprint(JSON.stringify(previousBranches)) !== text(receipt.beforeBranchDigest)) return null;
+    const profileReceipts = { ...(store.profileReceipts || {}) };
+    delete profileReceipts[profileReceiptKey(target)];
+    const restored = {
+      ...deepClone(store),
+      revision: Number(store.revision || 0) + 1,
+      profiles: deepClone(previousProfiles),
+      branches: previousBranches,
+      profileReceipts,
+      history: [...(store.history || []), {
+        identity: target.identity, chatId: target.chatId, messageId: target.index,
+        swipeId: target.swipeId, compensatedReceiptAt: text(receipt?.at),
+        beforeRevision: Number(store.revision || 0), afterRevision: Number(store.revision || 0) + 1,
+        committedProfileIds: [], compensated: true, at: new Date().toISOString(),
+      }].slice(-MAX_HISTORY),
+    };
+    return { before: restored, after: deepClone(store) };
+  }
+
+  async function compensatePersistedProfileReceipt(target, diagnosisReceipt, reason, required = false) {
+    const committedStore = readStoreForChat(target.chatId);
+    const committedReceipt = profileReceiptFor(committedStore, target, diagnosisReceipt);
+    if (!committedReceipt && !required) return false;
+    const rollbackStore = committedReceipt
+      ? rollbackTransactionForCommittedProfile(committedStore, target, committedReceipt)
+      : null;
+    if (!committedReceipt || !rollbackStore) {
+      const rollbackFailure = Object.assign(new Error('人物档案缺少可逆的直接前态收据，不能让旧档案继续进入World'), {
+        code: PROFILE_BRANCH_ROLLBACK_FAILED,
+      });
+      try {
+        await persistMutationIntegrityLatch(target.chatId, rollbackFailure.code, rollbackFailure.message, {
+          kind: 'profile', chatId: target.chatId, messageId: target.index,
+          swipeId: target.swipeId, generationKey: text(target.generationKey),
+        });
+      } catch (latchError) { rollbackFailure.integrityLatchError = latchError?.message || String(latchError); }
+      throw rollbackFailure;
+    }
+    await rollbackCommittedProfileStore(target, rollbackStore, new Error(reason));
+    return true;
+  }
+
+  async function runTarget(target, reason = 'auto', owner = null, diagnosisReceipt = null) {
     if (!settings().enabled || !settings().profileEnabled) return { ok: true, status: 'disabled' };
     if (!target?.content) return { ok: true, status: 'empty' };
     target = target.identity ? target : decorateTarget(target);
-    requireTaskOwner(owner, target, '人物档案开始');
-    const identity = target.identity;
-    if (reason === 'auto' && runtime.lastResult?.identity === identity && runtime.lastResult?.ok) return runtime.lastResult;
+    const integrityLatch = loadMutationIntegrityLatch(target.chatId);
+    if (integrityLatch.compromised) {
+      throw Object.assign(new Error('上次原子补偿没有取得可靠读回；已阻止继续填表，请先导出完整报告'), {
+        code: text(integrityLatch.errorCode),
+        rollbackError: text(integrityLatch.error),
+      });
+    }
     runtime.abortController?.abort();
     const controller = new AbortController();
     runtime.abortController = controller;
+    const diagnosisEvidence = compactDiagnosisReceipt(diagnosisReceipt);
+    let fallbackTargetMvuFingerprint = '';
+    const assertProfileEvidenceCurrent = async (stage) => {
+      requireTaskOwner(owner, target, stage);
+      requireMutationIntegrityClean(target.chatId, stage, target, false);
+      if (diagnosisEvidence && !await diagnosisReceiptEvidenceIsCurrent(diagnosisEvidence, target, controller.signal)) {
+        throw Object.assign(new Error(`${stage}时变量诊断所依据的正文、输入或MVU已变化，拒绝提交旧人物档案`), { code: STALE_TASK });
+      }
+      if (!diagnosisEvidence && fallbackTargetMvuFingerprint) {
+        let freshPayload;
+        try { freshPayload = await mvuPayloadAt(target.index, controller.signal); }
+        catch (error) {
+          if (error?.name === 'AbortError') throw error;
+          throw Object.assign(new Error(`${stage}时无法复核人物档案所依据的目标楼MVU：${error?.message || error}`), {
+            code: DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+          });
+        }
+        if (contentFingerprint(JSON.stringify(freshPayload)) !== fallbackTargetMvuFingerprint) {
+          throw Object.assign(new Error(`${stage}时目标楼MVU已经变化，拒绝提交旧人物档案`), { code: STALE_TASK });
+        }
+      }
+      requireMutationIntegrityClean(target.chatId, stage, target, false);
+      requireTaskOwner(owner, target, stage);
+    };
+    try { await assertProfileEvidenceCurrent('人物档案开始'); }
+    catch (error) {
+      if (runtime.abortController === controller) runtime.abortController = null;
+      throw error;
+    }
+    const identity = target.identity;
     runtime.currentTarget = { identity, index: target.index, swipeId: target.swipeId, reason };
     const before = readStore();
-    const committedReceipt = reason !== 'manual-refill' ? profileReceiptFor(before, target) : null;
-    if (committedReceipt) {
+    const priorTargetReceipt = reason !== 'manual-refill' ? profileReceiptForGeneration(before, target) : null;
+    const committedReceipt = reason !== 'manual-refill' ? profileReceiptFor(before, target, diagnosisEvidence) : null;
+    const committedRollback = committedReceipt
+      ? rollbackTransactionForCommittedProfile(before, target, committedReceipt) : null;
+    if (committedReceipt && !committedRollback) {
+      const rollbackFailure = Object.assign(new Error('已提交人物档案收据缺少可逆的直接前态，已停止继续调用模型，避免覆盖真正前态'), {
+        code: PROFILE_BRANCH_ROLLBACK_FAILED,
+      });
+      try {
+        await persistMutationIntegrityLatch(target.chatId, rollbackFailure.code, rollbackFailure.message, {
+          kind: 'profile', chatId: target.chatId, messageId: target.index,
+          swipeId: target.swipeId, generationKey: text(target.generationKey),
+        });
+      } catch (latchError) { rollbackFailure.integrityLatchError = latchError?.message || String(latchError); }
+      throw rollbackFailure;
+    }
+    if (committedReceipt && committedRollback) {
+      try { await assertProfileEvidenceCurrent('人物档案收据复用前'); }
+      catch (error) {
+        await rollbackCommittedProfileStore(target, committedRollback, error);
+        throw error;
+      }
       const result = {
         ok: true, status: 'already-committed', identity, reason, repaired: false,
         count: 0, total: Object.keys(before.profiles).length, modelCalls: 0,
@@ -2468,23 +3705,62 @@ ${bindingObligation}
         persistence: 'durable', raw: '', initialRaw: '', repairRaw: '', initialErrors: [], repairErrors: [],
         requestPrompt: '', repairRequestPrompt: '',
       };
+      Object.defineProperty(result, 'rollbackStore', {
+        value: committedRollback, enumerable: false,
+      });
       if (owner === null) setPhase('done', '已读回本楼人物事务收据；恢复不重复调用模型', result);
       if (runtime.abortController === controller) runtime.abortController = null;
       return result;
     }
     const players = playerNames(target);
     setPhase('profile-discovery', '正在从修复后的MVU与正文结构确认人物补档任务');
-    const currentMvu = await currentMvuState(target.index);
-    requireTaskOwner(owner, target, '人物结构化发现完成');
+    let currentMvu;
+    try {
+      if (diagnosisEvidence) {
+        let currentPayload;
+        try { currentPayload = await mvuPayloadAt(target.index, controller.signal); }
+        catch (error) {
+          throw Object.assign(new Error(`人物档案无法读取已核验的目标楼MVU：${error?.message || error}`), {
+            code: error?.name === 'AbortError' ? '' : DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+            name: error?.name || 'Error',
+          });
+        }
+        const expectedTargetFingerprint = text(diagnosisEvidence.evidenceReceipt?.targetMvu?.payloadFingerprint);
+        if (!expectedTargetFingerprint
+          || contentFingerprint(JSON.stringify(currentPayload)) !== expectedTargetFingerprint) {
+          throw Object.assign(new Error('人物档案读取的目标楼MVU已不同于变量诊断收据'), { code: STALE_TASK });
+        }
+        currentMvu = deepClone(statDataOf(currentPayload) ?? null);
+      } else {
+        let currentPayload;
+        try { currentPayload = await mvuPayloadAt(target.index, controller.signal); }
+        catch (error) {
+          if (error?.name === 'AbortError') throw error;
+          throw Object.assign(new Error(`人物档案无法读取目标楼MVU：${error?.message || error}`), {
+            code: DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+          });
+        }
+        if (!hasUsableStatData(currentPayload)) throw new Error('人物档案没有可用的目标楼stat_data快照');
+        fallbackTargetMvuFingerprint = contentFingerprint(JSON.stringify(currentPayload));
+        currentMvu = deepClone(statDataOf(currentPayload) ?? null);
+      }
+    } catch (error) {
+      if (runtime.abortController === controller) runtime.abortController = null;
+      throw error;
+    }
+    await assertProfileEvidenceCurrent('人物结构化发现完成');
     const candidateSources = highConfidenceCandidateSources(target, before, players, currentMvu);
     const currentReplyCandidates = candidateSources.currentReplyCandidates;
     const mvuInventoryCandidates = candidateSources.mvuInventoryCandidates;
+    const evidenceChangedCandidates = priorTargetReceipt && !committedReceipt && diagnosisEvidence
+      ? (priorTargetReceipt.committedProfileIds || []).map((profileId) => text(before.profiles?.[profileId]?.name)).filter(Boolean)
+      : [];
     let discoveredCandidates = [...currentReplyCandidates];
     const suggestions = suggestedCandidates(target, players);
     const incompleteCandidates = profileCompletionCandidates(currentReplyCandidates, before, 0);
     let candidates = reason === 'manual-refill'
       ? [...currentReplyCandidates]
-      : incompleteCandidates;
+      : [...new Set([...incompleteCandidates, ...evidenceChangedCandidates])];
     let raw = '';
     let initialRaw = '';
     let repairRaw = '';
@@ -2535,10 +3811,12 @@ ${bindingObligation}
       );
       requestPromptParts.push(`【人物发现】\n${nameDiscoveryPrompt}`);
       syncProfileEvidence();
+      await assertProfileEvidenceCurrent('人物发现模型请求前');
       modelCalls += 1;
       let discoveryRaw = await callModel(nameDiscoveryPrompt, controller.signal);
       initialRawParts.push(`【人物发现】\n${String(discoveryRaw)}`);
       syncProfileEvidence();
+      await assertProfileEvidenceCurrent('人物发现模型返回后');
       requireTaskOwner(owner, target, '人物姓名发现返回');
       let narrativeDiscovery;
       try {
@@ -2557,10 +3835,12 @@ ${bindingObligation}
         );
         repairPromptParts.push(`【人物发现修复】\n${nameRepairPrompt}`);
         syncProfileEvidence();
+        await assertProfileEvidenceCurrent('人物发现修复模型请求前');
         modelCalls += 1;
         discoveryRaw = await callModel(nameRepairPrompt, controller.signal);
         repairRawParts.push(`【人物发现修复】\n${String(discoveryRaw)}`);
         syncProfileEvidence();
+        await assertProfileEvidenceCurrent('人物发现修复模型返回后');
         requireTaskOwner(owner, target, '人物姓名发现单次修复返回');
         try {
           narrativeDiscovery = validatedDiscoveryResponse(
@@ -2603,10 +3883,12 @@ ${bindingObligation}
         );
         requestPromptParts.push(`【第${batchNumber}批】\n${batchPrompt}`);
         syncProfileEvidence();
+        await assertProfileEvidenceCurrent(`人物档案第${batchNumber}批模型请求前`);
         modelCalls += 1;
         let batchRaw = await callModel(batchPrompt, controller.signal);
         initialRawParts.push(`【第${batchNumber}批】\n${String(batchRaw)}`);
         syncProfileEvidence();
+        await assertProfileEvidenceCurrent(`人物档案第${batchNumber}批模型返回后`);
         requireTaskOwner(owner, target, `人物档案第${batchNumber}批模型返回`);
         let envelope;
         let errors;
@@ -2632,10 +3914,12 @@ ${bindingObligation}
           );
           repairPromptParts.push(`【第${batchNumber}批】\n${batchRepairPrompt}`);
           syncProfileEvidence();
+          await assertProfileEvidenceCurrent(`人物档案第${batchNumber}批修复模型请求前`);
           modelCalls += 1;
           batchRaw = await callModel(batchRepairPrompt, controller.signal);
           repairRawParts.push(`【第${batchNumber}批】\n${String(batchRaw)}`);
           syncProfileEvidence();
+          await assertProfileEvidenceCurrent(`人物档案第${batchNumber}批修复模型返回后`);
           requireTaskOwner(owner, target, `人物档案第${batchNumber}批单次修复返回`);
           const binding = bindProfilesToTargetRows(
             normalizeEnvelope(parseJsonResponse(batchRaw)), targetRows, reservedCandidates,
@@ -2680,16 +3964,22 @@ ${bindingObligation}
         committed.push(profile);
       }
 
-      const after = storeAfterProfileRun(before, target, nextProfiles, committed.map((profile) => profile.profileId));
-      requireTaskOwner(owner, target, '人物档案提交前');
+      const after = storeAfterProfileRun(
+        before, target, nextProfiles, committed.map((profile) => profile.profileId), diagnosisEvidence,
+      );
+      await assertProfileEvidenceCurrent('人物档案提交前');
       const committedStore = await commitStore(
         after,
         target.chatId,
         before.revision,
-        () => requireTaskOwner(owner, target, '人物档案原子提交'),
+        () => assertProfileEvidenceCurrent('人物档案原子提交'),
       );
-      requireTaskOwner(owner, target, '人物档案提交后');
       const readback = committedStore.store;
+      try { await assertProfileEvidenceCurrent('人物档案提交后最终复核'); }
+      catch (error) {
+        await rollbackCommittedProfileStore(target, { before, after: readback }, error);
+        throw error;
+      }
       const result = {
         ok: true, status: committed.length ? 'committed' : 'no-profile', identity, reason, repaired,
         count: committed.length, total: Object.keys(readback.profiles).length,
@@ -2698,11 +3988,15 @@ ${bindingObligation}
         noProfileReason: envelope.noProfileReason || '', persistence: committedStore.persistence,
         raw: String(raw), initialRaw, repairRaw, initialErrors, repairErrors, requestPrompt, repairRequestPrompt,
       };
+      Object.defineProperty(result, 'rollbackStore', {
+        value: { before: deepClone(before), after: deepClone(readback) }, enumerable: false,
+      });
       const persistenceText = '已完成宿主持久化调用与完整内存读回';
       if (owner === null) setPhase('done', committed.length ? `${persistenceText}：${committed.length}张完整档案` : `${persistenceText}：本轮确实没有可建档NPC`, result);
       return result;
     } catch (error) {
       syncProfileEvidence();
+      if (error?.code === PROFILE_BRANCH_ROLLBACK_FAILED) throw error;
       if (error?.name === 'AbortError') {
         if (owner === null) setPhase('cancelled', '人物档案任务已取消');
         return {
@@ -2722,6 +4016,7 @@ ${bindingObligation}
       }
       const result = {
         ok: false, identity, reason, repaired, modelCalls, error: error?.message || String(error),
+        errorCode: text(error?.code), rollbackError: text(error?.rollbackError),
         raw: String(raw).slice(0, 16000), initialRaw, repairRaw, initialErrors, repairErrors,
         requestPrompt, repairRequestPrompt,
       };
@@ -2769,25 +4064,38 @@ ${bindingObligation}
     cancelAll(`手动${stage}接管`, true);
     const owner = ++runtime.pipelineEpoch;
     runtime.pipelineBusy = true;
+    let value = null;
+    let stateAccepted = false;
     try {
       await requireBranchRestore(owner);
       requirePipelineOwner(owner, target, `手动${stage}开始`);
-      const value = await action(owner);
+      value = await action(owner);
       if (value?.ok === false) throw new Error(value.error || `手动${stage}没有完成`);
       const fresh = refreshAcceptedTarget(target);
       requirePipelineOwner(owner, fresh, `手动${stage}完成`);
       if (typeof onSuccess === 'function') await onSuccess(fresh, value, owner);
+      stateAccepted = true;
       await recordRunReport({
         at: new Date().toISOString(), target: deepClone(fresh),
         result: { ok: true, manualStage: stage, value: deepClone(value) },
         worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null,
       });
+      requirePipelineOwner(owner, fresh, `手动${stage}报告持久化后`);
       return value;
     } catch (error) {
+      let failure = error;
+      if (failure?.code === STALE_TASK && !stateAccepted && !failure.diagnosisCompensated
+        && typeof value?.rollbackDiagnosis === 'function') {
+        failure = await value.rollbackDiagnosis(failure);
+      }
+      if (value?.rollbackStore && !stateAccepted) {
+        try { await rollbackCommittedProfileStore(target, value.rollbackStore, error); }
+        catch (rollbackError) { failure = rollbackError; }
+      }
       let reportTarget = target;
-      if (error?.doctorWrittenTarget && runtime.pipelineEpoch === owner) {
+      if (failure?.doctorWrittenTarget && runtime.pipelineEpoch === owner) {
         try {
-          const written = deepClone(error.doctorWrittenTarget);
+          const written = deepClone(failure.doctorWrittenTarget);
           const binding = knownGenerationBinding(target);
           if (binding?.generationKey) {
             written.generationKey = binding.generationKey;
@@ -2798,19 +4106,19 @@ ${bindingObligation}
             reportTarget = establishManualGenerationBinding(written, 'manual-doctor-write-after-error');
           }
         } catch (migrationError) {
-          error.identityMigrationError = migrationError?.message || String(migrationError);
+          failure.identityMigrationError = migrationError?.message || String(migrationError);
         }
       }
       await recordRunReport({
         at: new Date().toISOString(), target: deepClone(reportTarget),
         result: {
-          ok: false, manualStage: stage, error: error?.message || String(error), raw: String(error?.raw || ''),
-          identityMigrationError: String(error?.identityMigrationError || ''),
-          request: error?.request ? deepClone(error.request) : null,
+          ok: false, manualStage: stage, error: failure?.message || String(failure), raw: String(failure?.raw || ''),
+          identityMigrationError: String(failure?.identityMigrationError || ''),
+          request: failure?.request ? deepClone(failure.request) : null,
         },
         worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null,
       });
-      throw error;
+      throw failure;
     } finally {
       if (runtime.pipelineEpoch === owner) runtime.pipelineBusy = false;
     }
@@ -2903,6 +4211,19 @@ ${bindingObligation}
 
   async function runAcceptedPipeline(initialTarget, reason = 'auto', generationType = 'normal', startAt = 'diagnosis') {
     if (!initialTarget) return { ok: false, status: 'empty' };
+    const integrityLatch = loadMutationIntegrityLatch(initialTarget.chatId);
+    if (integrityLatch.compromised) {
+      const blocked = {
+        ok: false, status: 'failed', failedStep: 'integrity',
+        errorCode: text(integrityLatch.errorCode), error: text(integrityLatch.error),
+        identity: initialTarget.identity,
+      };
+      runtime.pipelineBusy = false;
+      runtime.failedStep = '';
+      runtime.lastResult = blocked;
+      setPhase('failed', `本聊天上次原子补偿没有可靠读回，已阻止新流水线：${blocked.error}`, blocked);
+      return blocked;
+    }
     if (runtime.pipelineBusy) cancelAll('新的最终正文接管旧任务');
     const owner = ++runtime.pipelineEpoch;
     runtime.pipelineBusy = true;
@@ -2917,60 +4238,189 @@ ${bindingObligation}
     rememberAccepted(initialTarget);
     let target = initialTarget;
     let step = startAt;
+    const existingCheckpoint = loadPipelineCheckpoint(initialTarget.chatId);
+    const priorCheckpoint = startAt === 'profile' ? existingCheckpoint : null;
+    const checkpointLineage = existingCheckpoint?.target?.generationKey
+      && existingCheckpoint.target.generationKey === initialTarget.generationKey
+      ? {
+        supersededGenerationKey: text(existingCheckpoint.supersededGenerationKey),
+        supersededIdentity: text(existingCheckpoint.supersededIdentity),
+      }
+      : {};
+    let effectiveStartAt = startAt;
     const result = {
       ok: false, identity: target.identity, reason, generationType,
       diagnosis: null, profile: null,
       world: { status: 'native-independent', round: Number(window.WORLD_ENGINE_CORE?.loadState?.()?.round || 0) },
     };
     try {
-      persistPipelineCheckpoint({ status: 'running', target: deepClone(target), generationType, nextStep: startAt, reason });
+      if (startAt === 'profile') {
+        result.diagnosis = await verifiedDiagnosisReceiptForTarget(priorCheckpoint, initialTarget);
+        requirePipelineOwner(owner, target, '人物续跑变量收据验证后');
+        if (!result.diagnosis) {
+          throw Object.assign(new Error('人物续跑所需的变量收据已失效；已停止，不会静默重复诊断'), {
+            code: STALE_TASK,
+          });
+        }
+      }
+      step = effectiveStartAt;
+      persistPipelineCheckpoint({
+        ...checkpointLineage,
+        status: 'running', target: deepClone(target), generationType, nextStep: effectiveStartAt, reason,
+        diagnosisReceipt: compactDiagnosisReceipt(result.diagnosis),
+      });
       await requireBranchRestore(owner);
       requirePipelineOwner(owner, target, '流水线开始');
-      if (startAt === 'diagnosis') {
+      if (effectiveStartAt === 'profile') {
+        const diagnosisStillCurrent = await diagnosisReceiptEvidenceIsCurrent(result.diagnosis, target);
+        requirePipelineOwner(owner, target, '人物续跑变量证据复核后');
+        if (!diagnosisStillCurrent) {
+          throw Object.assign(new Error('人物续跑开始前变量证据已变化；已停止，不会静默重复诊断'), {
+            code: STALE_TASK,
+          });
+        }
+      }
+      if (effectiveStartAt === 'diagnosis') {
         step = 'diagnosis';
         setPhase('diagnosing', '故事神谕正在核对并修复本楼MVU变量');
+        if (settings().diagnoseEnabled) {
+          await persistDiagnosisAttemptMarker(target, (stage) => {
+            requirePipelineOwner(owner, target, stage);
+            requireCurrentTarget(target, stage);
+          });
+          requirePipelineOwner(owner, target, '变量诊断请求标记持久化后');
+        }
         result.diagnosis = await runStoryDiagnosis(target, owner);
         target = refreshAcceptedTarget(target);
-        rememberAccepted(target);
         requirePipelineOwner(owner, target, '变量阶段完成');
-        persistPipelineCheckpoint({ status: 'running', target: deepClone(target), generationType, nextStep: 'profile', reason, lastCompletedStep: 'diagnosis' });
+        rememberAccepted(target);
+        step = 'profile';
+        let diagnosisPersistence;
+        try {
+          const assertDiagnosisCurrent = async (stage) => {
+            requirePipelineOwner(owner, target, stage);
+            if (!await diagnosisReceiptEvidenceIsCurrent(result.diagnosis, target)) {
+              throw Object.assign(new Error(`${stage}时本楼诊断证据已变化`), { code: STALE_TASK });
+            }
+            requirePipelineOwner(owner, target, stage);
+          };
+          diagnosisPersistence = await persistDiagnosisCompletion({
+            ...checkpointLineage,
+            status: 'running', target: deepClone(target), generationType, nextStep: 'profile', reason,
+            lastCompletedStep: 'diagnosis', diagnosisReceipt: compactDiagnosisReceipt(result.diagnosis),
+          }, target, result.diagnosis, assertDiagnosisCurrent);
+          await assertDiagnosisCurrent('变量完成收据持久化后');
+        } catch (error) {
+          if (error?.code === STALE_TASK && !error.diagnosisCompensated
+            && typeof result.diagnosis?.rollbackDiagnosis === 'function') {
+            throw await result.diagnosis.rollbackDiagnosis(error);
+          }
+          throw error;
+        }
+        result.diagnosis.persistence = {
+          sidecar: Boolean(diagnosisPersistence.sidecar),
+          checkpoint: Boolean(diagnosisPersistence.localCheckpoint),
+          warnings: diagnosisPersistence.errors,
+        };
         await recordRunReport({
           at: new Date().toISOString(), target: deepClone(target),
           result: { ok: true, stageReceipt: 'diagnosis', generationType, diagnosis: deepClone(result.diagnosis) },
         });
       }
-      if (startAt === 'diagnosis' || startAt === 'profile') {
+      if (effectiveStartAt === 'diagnosis' || effectiveStartAt === 'profile') {
         step = 'profile';
-        result.profile = await runTarget(target, reason, owner);
-        if (!result.profile?.ok) {
-          const interrupted = result.profile?.status === 'stale' || result.profile?.status === 'cancelled';
-          throw Object.assign(new Error(result.profile?.error || '人物档案事务没有完成'), interrupted ? { code: STALE_TASK } : {});
+        result.profile = await runTarget(target, reason, owner, result.diagnosis);
+        const profileTransactionExpected = Boolean(result.profile?.rollbackStore);
+        try {
+          if (!result.profile?.ok) {
+            const interrupted = result.profile?.status === 'stale' || result.profile?.status === 'cancelled';
+            throw Object.assign(new Error(result.profile?.error || '人物档案事务没有完成'), {
+              ...(interrupted ? { code: STALE_TASK } : {}),
+              ...(result.profile?.errorCode ? { code: result.profile.errorCode } : {}),
+              ...(result.profile?.rollbackError ? { rollbackError: result.profile.rollbackError } : {}),
+            });
+          }
+          target = refreshAcceptedTarget(target);
+          requirePipelineOwner(owner, target, '人物阶段完成');
+          rememberAccepted(target);
+          persistPipelineCheckpoint({
+            ...checkpointLineage,
+            status: 'running', target: deepClone(target), generationType, nextStep: '', reason,
+            lastCompletedStep: 'profile', diagnosisReceipt: compactDiagnosisReceipt(result.diagnosis),
+            profileTransactionExpected,
+          });
+          await recordRunReport({
+            at: new Date().toISOString(), target: deepClone(target),
+            result: { ok: true, stageReceipt: 'profile', generationType, profile: deepClone(result.profile) },
+          });
+          requirePipelineOwner(owner, target, '人物阶段报告持久化后');
+          const diagnosisStillCurrent = await diagnosisReceiptEvidenceIsCurrent(
+            compactDiagnosisReceipt(result.diagnosis), target,
+          );
+          requirePipelineOwner(owner, target, '流水线完成前变量证据复核后');
+          if (!diagnosisStillCurrent) {
+            throw Object.assign(new Error('人物阶段完成前变量诊断所依据的输入或前态已变化，本楼必须从变量诊断重新开始'), { code: STALE_TASK });
+          }
+          requireMutationIntegrityClean(target.chatId, '流水线完成', target, false);
+          if (settings().enabled && settings().profileEnabled) {
+            const committedStore = readStoreForChat(target.chatId);
+            if (!profileReceiptFor(committedStore, target, result.diagnosis)) {
+              throw Object.assign(new Error('人物档案提交收据没有与当前变量诊断证据精确绑定'), {
+                code: 'profile_receipt_verification_failed',
+              });
+            }
+          }
+          persistPipelineCheckpoint({
+            ...checkpointLineage,
+            status: 'complete', target: deepClone(target), generationType, nextStep: '', reason,
+            lastCompletedStep: 'profile', diagnosisReceipt: compactDiagnosisReceipt(result.diagnosis),
+            profileTransactionExpected,
+          });
+        } catch (error) {
+          try { await rollbackCommittedProfileStore(target, result.profile?.rollbackStore, error); }
+          catch (rollbackError) { throw rollbackError; }
+          if (error?.code === STALE_TASK) {
+            step = 'diagnosis';
+          } else {
+            step = 'profile';
+          }
+          throw error;
         }
-        target = refreshAcceptedTarget(target);
-        rememberAccepted(target);
-        requirePipelineOwner(owner, target, '人物阶段完成');
-        persistPipelineCheckpoint({ status: 'running', target: deepClone(target), generationType, nextStep: '', reason, lastCompletedStep: 'profile' });
-        await recordRunReport({
-          at: new Date().toISOString(), target: deepClone(target),
-          result: { ok: true, stageReceipt: 'profile', generationType, profile: deepClone(result.profile) },
-        });
       }
       result.ok = true;
-      result.status = result.diagnosis?.status === 'partial' ? 'complete_with_warning' : 'complete';
+      result.status = ['partial', 'unverified'].includes(result.diagnosis?.status) ? 'complete_with_warning' : 'complete';
       result.identity = target.identity;
       result.world = {
         status: 'native-independent',
         round: Number(window.WORLD_ENGINE_CORE?.loadState?.()?.round || 0),
         detail: '世界由原版 World Engine 3.0.2 的自动生命周期独立推进，不受人物填表成败控制',
       };
-      persistPipelineCheckpoint({ status: 'complete', target: deepClone(target), generationType, nextStep: '', reason, lastCompletedStep: 'profile' });
       runtime.lastResult = result;
       runtime.failedStep = '';
-      await recordRunReport({ at: new Date().toISOString(), target: deepClone(target), result: deepClone(result), worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null });
+      try {
+        await recordRunReport({
+          at: new Date().toISOString(), target: deepClone(target), result: deepClone(result),
+          worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null,
+        });
+      } catch (reportError) {
+        result.reportWarning = reportError?.message || String(reportError);
+      }
+      // Reporting is non-authoritative: it may delay the green presentation,
+      // but can never roll back a completed MVU/profile transaction.  A newer
+      // task owns the UI if it arrived while the report was flushing.
+      if (runtime.pipelineEpoch !== owner || !targetIsCurrent(target)) return result;
       const diagnosisLabel = diagnosisDisplayLabel(result.diagnosis);
       setPhase('done', `${result.status === 'complete_with_warning' ? '本楼人物已完成，变量仍有警告' : '本楼变量与人物完成'}：变量${diagnosisLabel}；档案${result.profile?.count ?? 0}张。原版世界引擎独立运行，当前第${result.world.round}轮`, result);
       return result;
     } catch (error) {
+      if (error?.code === STALE_TASK && !error.diagnosisCompensated
+        && typeof result.diagnosis?.rollbackDiagnosis === 'function') {
+        error = await result.diagnosis.rollbackDiagnosis(error);
+        if (error.diagnosisCompensated) {
+          result.diagnosis = null;
+          step = 'diagnosis';
+        }
+      }
       if (error?.doctorWrittenTarget && target?.generationKey && runtime.pipelineEpoch === owner) {
         try {
           const written = deepClone(error.doctorWrittenTarget);
@@ -2983,8 +4433,9 @@ ${bindingObligation}
         }
       }
       const stale = error?.code === STALE_TASK;
+      const integrityBlocked = loadMutationIntegrityLatch(target.chatId).compromised;
       result.status = stale ? 'stale' : 'failed';
-      result.failedStep = step;
+      result.failedStep = integrityBlocked ? 'integrity' : step;
       result.error = error?.message || String(error);
       if (error?.code) result.errorCode = String(error.code);
       if (error?.identityMigrationError) result.error += `；受控正文身份迁移失败：${error.identityMigrationError}`;
@@ -2993,13 +4444,19 @@ ${bindingObligation}
       if (error?.diagnosisAttempts) result.diagnosisAttempts = deepClone(error.diagnosisAttempts);
       if (runtime.pipelineEpoch === owner) {
         try {
-          persistPipelineCheckpoint({ status: stale ? 'stale' : 'failed', target: deepClone(target), generationType, nextStep: step, reason, error: result.error });
+          persistPipelineCheckpoint({
+            ...checkpointLineage,
+            status: stale ? 'stale' : 'failed', target: deepClone(target), generationType,
+            nextStep: integrityBlocked ? '' : step, reason, error: result.error,
+            errorCode: text(error?.code), rollbackError: text(error?.rollbackError),
+            diagnosisReceipt: compactDiagnosisReceipt(error?.diagnosisReceipt || result.diagnosis),
+          });
         } catch (checkpointError) {
           result.checkpointError = checkpointError?.message || String(checkpointError);
         }
         runtime.lastResult = result;
-        runtime.failedStep = step;
-        setPhase(stale ? 'discarded' : 'failed', stale ? result.error : `${step}失败：${result.error}`, result);
+        runtime.failedStep = integrityBlocked ? '' : step;
+        setPhase(stale ? 'discarded' : 'failed', stale ? result.error : `${result.failedStep}失败：${result.error}`, result);
       }
       await recordRunReport({ at: new Date().toISOString(), target: deepClone(target), result: deepClone(result), worldDebug: window.WORLD_ENGINE_EVOLUTION?.getLastDebug?.() || null });
       return result;
@@ -3113,6 +4570,18 @@ ${bindingObligation}
       return;
     }
     fresh.generationKey = ticket.generationKey;
+    const integrityLatch = loadMutationIntegrityLatch(fresh.chatId);
+    if (integrityLatch.compromised) {
+      runtime.acceptedGeneration = null;
+      try { clearGenerationTicket(ticket.chatId || fresh.chatId, ticket.generationKey); }
+      catch (error) { noteGenerationTicketFailure('完整性阻断时清理', error); }
+      runtime.failedStep = '';
+      setPhase('failed', `本聊天上次原子补偿没有可靠读回，新回复不会覆盖事故证据：${integrityLatch.error}`, {
+        ok: false, status: 'failed', failedStep: 'integrity',
+        errorCode: integrityLatch.errorCode, error: integrityLatch.error, identity: fresh.identity,
+      });
+      return;
+    }
     try {
       persistPipelineCheckpoint({
         status: 'running', target: deepClone(fresh), generationType: type,
@@ -3149,6 +4618,15 @@ ${bindingObligation}
 
   function retryTargetForFailedStep() {
     if (!runtime.failedStep) throw new Error('当前没有失败步骤；不会重复推进同一正文');
+    const integrityLatch = loadMutationIntegrityLatch(chatId());
+    if (integrityLatch.compromised) {
+      throw new Error('上次原子补偿没有可靠读回，已阻止普通重试；请先导出完整报告用于恢复');
+    }
+    const checkpointErrorCode = text(loadPipelineCheckpoint(chatId())?.errorCode);
+    if ([PROFILE_BRANCH_ROLLBACK_FAILED, DIAGNOSIS_ROLLBACK_FAILED].includes(text(runtime.lastResult?.errorCode))
+      || [PROFILE_BRANCH_ROLLBACK_FAILED, DIAGNOSIS_ROLLBACK_FAILED].includes(checkpointErrorCode)) {
+      throw new Error('上次原子补偿没有可靠读回，已阻止普通重试；请先导出完整报告用于恢复');
+    }
     const latest = latestAssistant();
     if (!latest || !runtime.lastAccepted?.identity || latest.identity !== runtime.lastAccepted.identity) {
       throw new Error('失败任务属于另一条正文或swipe；拒绝把旧的跳步重试套到当前最新正文，请改用“手动复检MVU”从头检查当前楼');
@@ -3219,6 +4697,13 @@ ${bindingObligation}
         generationType: text(checkpoint.generationType || 'normal'),
       };
     }
+    const sidecar = loadDiagnosisReceiptSidecar(target);
+    if (sidecar?.target?.generationKey) {
+      return {
+        generationKey: sidecar.target.generationKey,
+        generationType: 'recovered-diagnosis-receipt',
+      };
+    }
     return null;
   }
 
@@ -3247,78 +4732,428 @@ ${bindingObligation}
     return fresh;
   }
 
+  function diagnosisRecoveryMatchesTarget(rawTarget, latch) {
+    const recovery = latch?.recovery;
+    return Boolean(rawTarget && recovery?.kind === 'diagnosis'
+      && recovery.chatId === rawTarget.chatId
+      && Number(recovery.messageId) === Number(rawTarget.index)
+      && Number(recovery.swipeId || 0) === Number(rawTarget.swipeId || 0)
+      && text(recovery.generationKey)
+      && [recovery.originalContent, recovery.candidateContent].some((value) => (
+        typeof value === 'string' && value === rawTarget.content
+      )));
+  }
+
+  async function normalizeDiagnosisIntegrityState(rawTarget, latch, recoveryToken) {
+    const recovery = latch?.recovery;
+    if (!diagnosisRecoveryMatchesTarget(rawTarget, latch)
+      || !recovery.mvuSnapshot || !recovery.mvuCandidate
+      || typeof recovery.originalContent !== 'string') {
+      throw Object.assign(new Error('旧变量事故缺少可核验的事务前后快照；不能靠再次调用模型猜测恢复'), {
+        code: DIAGNOSIS_ROLLBACK_FAILED,
+      });
+    }
+    if (recovery.generationKey && rawTarget.generationKey
+      && recovery.generationKey !== rawTarget.generationKey) {
+      throw Object.assign(new Error('旧变量事故属于另一生成事务；拒绝跨事务恢复'), { code: DIAGNOSIS_ROLLBACK_FAILED });
+    }
+    if (chatId() !== recovery.chatId) {
+      throw Object.assign(new Error('变量事故恢复期间聊天已经切换'), { code: DIAGNOSIS_ROLLBACK_FAILED });
+    }
+    const so = storyInternals();
+    const Mvu = await so.getMvu();
+    if (!Mvu) throw Object.assign(new Error('变量事故恢复找不到MVU框架'), { code: DIAGNOSIS_ROLLBACK_FAILED });
+    const opts = { type: 'message', message_id: Number(recovery.messageId) };
+    const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+    let currentMvu = await Promise.resolve(Mvu.getMvuData(opts));
+    if (same(currentMvu, recovery.mvuCandidate)) {
+      await Promise.resolve(Mvu.replaceMvuData(deepClone(recovery.mvuSnapshot), opts));
+      currentMvu = await Promise.resolve(Mvu.getMvuData(opts));
+    }
+    if (!same(currentMvu, recovery.mvuSnapshot)) {
+      throw Object.assign(new Error('固定楼层MVU既不是事故前快照，也无法从本次候选精确归一；拒绝覆盖第三方新值'), {
+        code: DIAGNOSIS_ROLLBACK_FAILED,
+      });
+    }
+
+    const activeMessage = ctx()?.chat?.[Number(recovery.messageId)];
+    const slot = activeSwipeSlot(activeMessage);
+    if (!activeMessage || slot.swipeId !== Number(recovery.swipeId || 0)) {
+      throw Object.assign(new Error('变量事故恢复找不到原活动swipe'), { code: DIAGNOSIS_ROLLBACK_FAILED });
+    }
+    let currentContent = messageText(activeMessage);
+    const candidateContent = typeof recovery.candidateContent === 'string' ? recovery.candidateContent : '';
+    if (currentContent !== recovery.originalContent) {
+      if (!candidateContent || currentContent !== candidateContent) {
+        throw Object.assign(new Error('正文既不是事故前版本，也不是医生候选版本；拒绝覆盖第三方新正文'), {
+          code: DIAGNOSIS_ROLLBACK_FAILED,
+        });
+      }
+      activeMessage.mes = recovery.originalContent;
+      if (Array.isArray(activeMessage.swipes) && typeof activeMessage.swipes[slot.swipeId] === 'string') {
+        activeMessage.swipes[slot.swipeId] = recovery.originalContent;
+      }
+      if (typeof so.getCtx()?.saveChat === 'function') await so.getCtx().saveChat();
+      currentContent = messageText(ctx()?.chat?.[Number(recovery.messageId)]);
+      if (currentContent !== recovery.originalContent) {
+        throw Object.assign(new Error('正文事故快照恢复后读回不一致'), { code: DIAGNOSIS_ROLLBACK_FAILED });
+      }
+    }
+    const fresh = refreshAcceptedTarget(rawTarget);
+    if (rawTarget.generationKey) fresh.generationKey = rawTarget.generationKey;
+    await updateMutationIntegrityLatch(rawTarget.chatId, latch.incidentId, DIAGNOSIS_ROLLBACK_FAILED, latch.error, {
+      ...deepClone(recovery), recoveryToken, normalizedAt: new Date().toISOString(),
+      normalizedMvuFingerprint: contentFingerprint(JSON.stringify(currentMvu)),
+      normalizedContentFingerprint: fresh.fingerprint,
+    });
+    return fresh;
+  }
+
+  async function runManualProfileRefill(rawTarget) {
+    const target = attachKnownGeneration(rawTarget);
+    if (!target?.generationKey) throw new Error('本楼还没有变量诊断收据；请先点击“手动复检MVU”');
+    const initialCheckpoint = loadPipelineCheckpoint(target.chatId);
+    const storedDiagnosis = diagnosisReceiptForTarget(initialCheckpoint, target);
+    if (!storedDiagnosis) throw new Error('本楼没有可绑定的人物补档诊断收据；请先点击“手动复检MVU”');
+    const manualBinding = {
+      chatId: target.chatId, index: target.index, swipeId: target.swipeId,
+      generationKey: target.generationKey, token: ++runtime.manualProfileSerial,
+    };
+    runtime.manualProfileBinding = deepClone(manualBinding);
+    runtime.lastAccepted = deepClone({
+      ...target, generationType: text(initialCheckpoint?.generationType || 'manual'),
+    });
+    persistPipelineCheckpoint({
+      ...initialCheckpoint, status: 'running', target: deepClone(target), nextStep: 'profile',
+      reason: 'manual-profile-refill-running', lastCompletedStep: 'diagnosis',
+      error: '', errorCode: '', rollbackError: '', diagnosisReceipt: compactDiagnosisReceipt(storedDiagnosis),
+    });
+    let diagnosisReceipt = null;
+    let manualOwner = null;
+    try {
+      return await runExclusiveStage(
+        '人物补档',
+        target,
+        async (owner) => {
+          manualOwner = owner;
+          const checkpoint = loadPipelineCheckpoint(target.chatId);
+          diagnosisReceipt = await verifiedDiagnosisReceiptForTarget(checkpoint, target);
+          requirePipelineOwner(owner, target, '手动人物补档变量收据验证后');
+          if (!diagnosisReceipt) throw new Error('本楼没有当前有效的变量诊断收据；请先点击“手动复检MVU”');
+          return runTarget(target, 'manual-refill', owner, diagnosisReceipt);
+        },
+        async (fresh) => {
+          const checkpoint = loadPipelineCheckpoint(fresh.chatId);
+          requireCurrentTarget(fresh, '手动人物补档检查点提交');
+          if (checkpoint?.target?.generationKey !== fresh.generationKey) {
+            throw new Error('手动人物补档完成后流水线身份已变化，拒绝覆盖其他任务检查点');
+          }
+          const store = readStoreForChat(fresh.chatId);
+          if (!profileReceiptFor(store, fresh, diagnosisReceipt)) {
+            throw new Error('手动人物补档完成后没有读回与变量诊断绑定的档案收据');
+          }
+          persistPipelineCheckpoint({
+            ...checkpoint, status: 'complete', target: deepClone(fresh), nextStep: '',
+            reason: 'manual-profile-refill', lastCompletedStep: 'profile', error: '', errorCode: '',
+            rollbackError: '', diagnosisReceipt: compactDiagnosisReceipt(diagnosisReceipt),
+          });
+          runtime.lastAccepted = deepClone({
+            ...fresh, generationType: text(checkpoint?.generationType || 'manual'),
+          });
+          runtime.failedStep = '';
+        },
+      );
+    } catch (error) {
+      const checkpoint = loadPipelineCheckpoint(target.chatId);
+      if (runtime.manualProfileBinding?.token === manualBinding.token
+        && manualOwner !== null && runtime.pipelineEpoch === manualOwner
+        && targetIsCurrent(target)
+        && checkpoint?.target?.identity === target.identity
+        && checkpoint?.target?.generationKey === target.generationKey) {
+        try {
+          persistPipelineCheckpoint({
+            ...checkpoint, status: 'failed', nextStep: 'profile', reason: 'manual-profile-refill-failed',
+            error: error?.message || String(error), errorCode: text(error?.code),
+            rollbackError: text(error?.rollbackError),
+            diagnosisReceipt: compactDiagnosisReceipt(error?.diagnosisReceipt || diagnosisReceipt || storedDiagnosis),
+          });
+        } catch (checkpointError) { error.checkpointError = checkpointError?.message || String(checkpointError); }
+        runtime.failedStep = 'profile';
+      }
+      throw error;
+    } finally {
+      if (runtime.manualProfileBinding?.token === manualBinding.token) runtime.manualProfileBinding = null;
+    }
+  }
+
   async function runManualDiagnosisAndResume(rawTarget) {
-    let target = attachKnownGeneration(rawTarget);
+    let target = rawTarget;
     if (!target) throw new Error('当前没有可复检的最终AI回复');
-    let binding = knownGenerationBinding(target);
-    if (!binding?.generationKey) {
-      target = establishManualGenerationBinding(target, 'manual-diagnosis-anchor');
+    const integrityLatch = loadMutationIntegrityLatch(target.chatId);
+    if (integrityLatch.compromised && integrityLatch.errorCode !== DIAGNOSIS_ROLLBACK_FAILED) {
+      throw new Error('人物档案原子回滚没有可靠读回；变量复检不能修复人物存储，请先导出完整报告');
+    }
+    const diagnosisCanClearRollback = (receipt) => Boolean(receipt
+      && !['disabled', 'unverified'].includes(text(receipt.status))
+      && receipt.applicationComplete !== false);
+    let binding = null;
+    let recoveryIncidentId = '';
+    let recoveryToken = '';
+    if (integrityLatch.errorCode === DIAGNOSIS_ROLLBACK_FAILED) {
+      recoveryIncidentId = text(integrityLatch.incidentId);
+      const known = knownGenerationBinding(target);
+      if (known?.generationKey) {
+        target.generationKey = known.generationKey;
+        binding = known;
+      }
+      const existingCheckpoint = loadPipelineCheckpoint(target.chatId);
+      const savedAfterRepair = Boolean(integrityLatch.recovery?.normalizedAt
+        && target.generationKey
+        && (existingCheckpoint?.target?.identity === target.identity
+          || loadDiagnosisReceiptSidecar(target)));
+      if (savedAfterRepair) {
+        let savedReceipt = null;
+        try { savedReceipt = await verifiedDiagnosisReceiptForTarget(existingCheckpoint, target); }
+        catch (error) {
+          error.code ||= DIAGNOSIS_EVIDENCE_VERIFY_FAILED;
+          error.diagnosisReceipt ||= compactDiagnosisReceipt(existingCheckpoint.diagnosisReceipt);
+          throw error;
+        }
+        if (diagnosisCanClearRollback(savedReceipt)) {
+          const assertSavedReceiptCurrent = async () => {
+            if (!await diagnosisReceiptEvidenceIsCurrent(savedReceipt, target)) {
+              throw Object.assign(new Error('已保存的变量复检收据所依据的输入或MVU已变化'), { code: STALE_TASK });
+            }
+          };
+          if (!await clearRecoverableDiagnosisIntegrityLatch(
+            target.chatId, recoveryIncidentId, text(integrityLatch.recovery?.recoveryToken),
+            assertSavedReceiptCurrent,
+          )) {
+            throw new Error('已保存的变量复检收据有效，但旧事务完整性锁仍不能清除');
+          }
+          binding ||= { generationKey: target.generationKey, generationType: 'manual-recovery' };
+          return runAcceptedPipeline(target, 'manual-diagnosis-recovery-saved', binding.generationType, 'profile');
+        }
+      }
+      if (!diagnosisRecoveryMatchesTarget(target, integrityLatch)) {
+        throw new Error('当前最新正文不属于完整性事故记录的原楼层与原swipe；未改写任何检查点，请切回事故楼后再手动复检');
+      }
+      target.generationKey = text(integrityLatch.recovery.generationKey);
+      binding = {
+        generationKey: target.generationKey,
+        generationType: text(existingCheckpoint?.generationType || 'manual-recovery'),
+      };
+      recoveryToken = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+      target = await normalizeDiagnosisIntegrityState(target, integrityLatch, recoveryToken);
+      target.generationKey = binding.generationKey;
+      const normalizedCheckpoint = loadPipelineCheckpoint(target.chatId);
+      if (normalizedCheckpoint?.target?.generationKey
+        && normalizedCheckpoint.target.generationKey !== binding.generationKey) {
+        throw Object.assign(new Error('变量事故归一后检查点已属于另一生成事务'), { code: DIAGNOSIS_ROLLBACK_FAILED });
+      }
+      persistPipelineCheckpoint({
+        ...(normalizedCheckpoint || {}), status: 'failed', target: deepClone(target),
+        generationType: binding.generationType, nextStep: 'diagnosis',
+        reason: 'manual-diagnosis-integrity-normalized', lastCompletedStep: '',
+        error: '旧变量事务已精确归一到事故前快照，等待重新诊断',
+        errorCode: DIAGNOSIS_ROLLBACK_FAILED, diagnosisReceipt: null,
+      });
+      runtime.lastAccepted = deepClone({ ...target, generationType: binding.generationType });
+      if (!settings().diagnoseEnabled) {
+        throw new Error('上次变量回滚状态不确定；必须先启用MVU变量检查并进行一次真实复检，不能用“已关闭”结果清除事故锁');
+      }
+    } else {
+      target = attachKnownGeneration(target);
       binding = knownGenerationBinding(target);
+      if (!binding?.generationKey) {
+        target = establishManualGenerationBinding(target, 'manual-diagnosis-anchor');
+        binding = knownGenerationBinding(target);
+      }
     }
     if (!binding?.generationKey) throw new Error('手动MVU复检无法建立本楼事务身份');
-    const checkpoint = loadPipelineCheckpoint(target.chatId);
-    const resumesFailedDiagnosis = Boolean(
-      binding?.generationKey
-      && checkpoint?.target?.identity === target.identity
-      && checkpoint?.target?.generationKey === binding.generationKey
-      && checkpoint?.nextStep === 'diagnosis'
-      && ['running', 'failed', 'stale'].includes(checkpoint.status),
-    );
     let resumeTarget = null;
     const manualBinding = {
       chatId: target.chatId, index: target.index, swipeId: target.swipeId,
       generationKey: binding.generationKey,
+      recoveryIncidentId, recoveryToken,
       token: ++runtime.manualDiagnosisSerial,
     };
     runtime.manualDiagnosisBinding = deepClone(manualBinding);
     setPhase('diagnosing', '正在手动复检本楼MVU');
     let value;
+    let manualOwner = null;
     try {
       value = await runExclusiveStage(
         'MVU复检',
         target,
-        (owner) => runStoryDiagnosis(target, owner),
-        async (fresh) => {
+        async (owner) => {
+          manualOwner = owner;
+          if (settings().diagnoseEnabled) {
+            await persistDiagnosisAttemptMarker(target, (stage) => {
+              requirePipelineOwner(owner, target, stage);
+              requireCurrentTarget(target, stage);
+            });
+          }
+          return runStoryDiagnosis(target, owner);
+        },
+        async (fresh, diagnosisValue, successOwner) => {
           const migrated = migrateDoctorWrittenAcceptedTarget(target, fresh, binding);
-          if (!resumesFailedDiagnosis) return;
-          persistPipelineCheckpoint({
+          const assertManualDiagnosisCurrent = async (stage) => {
+            requirePipelineOwner(successOwner, migrated, stage);
+            if (!await diagnosisReceiptEvidenceIsCurrent(diagnosisValue, migrated)) {
+              throw Object.assign(new Error(`${stage}时手动变量复检证据已变化`), { code: STALE_TASK });
+            }
+            requirePipelineOwner(successOwner, migrated, stage);
+          };
+          const liveIntegrityLatch = loadMutationIntegrityLatch(target.chatId);
+          if (recoveryIncidentId
+            && !diagnosisCanClearRollback(diagnosisValue)) {
+            throw new Error('本次变量复检没有得到可确认应用的结果；旧事务完整性锁继续保留');
+          }
+          if (liveIntegrityLatch.compromised
+            && (!recoveryIncidentId || liveIntegrityLatch.incidentId !== recoveryIncidentId)) {
+            throw new Error('手动复检期间出现了另一笔事务完整性事故；本次结果已中止，且不会清除新事故');
+          }
+          const currentCheckpoint = loadPipelineCheckpoint(migrated.chatId);
+          if (currentCheckpoint?.target?.identity !== migrated.identity
+            || currentCheckpoint?.target?.generationKey !== binding.generationKey) {
+            throw new Error('手动变量复检完成后，本楼检查点身份已经变化；拒绝跳过人物档案复核');
+          }
+          await persistDiagnosisCompletion({
+            ...currentCheckpoint,
             status: 'running', target: deepClone(migrated), generationType: binding.generationType,
-            nextStep: 'profile', reason: 'manual-diagnosis-recovery', lastCompletedStep: 'diagnosis',
-          });
+            nextStep: 'profile', reason: 'manual-diagnosis-recovery',
+            lastCompletedStep: 'diagnosis',
+            error: '', errorCode: '', rollbackError: '', manualDiagnosisAt: new Date().toISOString(),
+            diagnosisReceipt: compactDiagnosisReceipt(diagnosisValue),
+          }, migrated, diagnosisValue, assertManualDiagnosisCurrent);
+          if (recoveryIncidentId && !await clearRecoverableDiagnosisIntegrityLatch(
+            target.chatId, recoveryIncidentId, recoveryToken,
+            assertManualDiagnosisCurrent,
+          )) {
+            const clearError = new Error('变量诊断已完成，但旧事务完整性锁未能安全清除');
+            clearError.diagnosisReceipt = compactDiagnosisReceipt(diagnosisValue);
+            throw clearError;
+          }
+          await assertManualDiagnosisCurrent('手动变量复检收据提交后');
+          requireMutationIntegrityClean(target.chatId, '手动变量复检完成', migrated, false);
           runtime.failedStep = 'profile';
           resumeTarget = deepClone(migrated);
         },
       );
+    } catch (error) {
+      if (runtime.manualDiagnosisBinding?.token === manualBinding.token
+        && manualOwner !== null && runtime.pipelineEpoch === manualOwner) {
+        const stale = error?.code === STALE_TASK;
+        const failedTarget = attachKnownGeneration(latestAssistant());
+        const currentCheckpoint = failedTarget ? loadPipelineCheckpoint(failedTarget.chatId) : null;
+        if (failedTarget?.generationKey === binding.generationKey
+          && currentCheckpoint?.target?.identity === failedTarget.identity
+          && currentCheckpoint?.target?.generationKey === binding.generationKey) {
+          const completedDiagnosis = text(currentCheckpoint.lastCompletedStep) === 'diagnosis'
+            && text(currentCheckpoint.nextStep) === 'profile'
+            ? compactDiagnosisReceipt(currentCheckpoint.diagnosisReceipt)
+            : null;
+          try {
+            persistPipelineCheckpoint(completedDiagnosis ? {
+              ...currentCheckpoint,
+              status: 'failed', target: deepClone(failedTarget), nextStep: 'profile',
+              reason: 'manual-after-diagnosis-failed',
+              error: error?.message || String(error),
+              errorCode: text(error?.code || 'manual_after_diagnosis_failed'),
+              rollbackError: text(error?.rollbackError),
+              diagnosisReceipt: completedDiagnosis,
+            } : {
+              ...currentCheckpoint,
+              status: stale ? 'stale' : 'failed',
+              target: deepClone(failedTarget),
+              nextStep: 'diagnosis',
+              reason: stale ? 'manual-diagnosis-stale' : 'manual-diagnosis-failed',
+              error: error?.message || String(error),
+              errorCode: text(error?.code), rollbackError: text(error?.rollbackError),
+              diagnosisReceipt: null,
+            });
+          } catch (checkpointError) {
+            error.checkpointError = checkpointError?.message || String(checkpointError);
+          }
+          runtime.lastAccepted = deepClone({ ...failedTarget, generationType: binding.generationType });
+          runtime.failedStep = completedDiagnosis ? 'profile' : 'diagnosis';
+          runtime.lastResult = {
+            ok: false,
+            status: completedDiagnosis ? 'failed' : (stale ? 'stale' : 'failed'),
+            failedStep: completedDiagnosis ? 'profile' : 'diagnosis',
+            error: error?.message || String(error),
+            errorCode: text(error?.code || (completedDiagnosis ? 'manual_after_diagnosis_failed' : '')),
+            checkpointError: text(error?.checkpointError),
+            identity: failedTarget.identity,
+            diagnosis: completedDiagnosis,
+          };
+          setPhase(completedDiagnosis ? 'failed' : (stale ? 'discarded' : 'failed'), runtime.lastResult.error, runtime.lastResult);
+        }
+      }
+      throw error;
     } finally {
       if (runtime.manualDiagnosisBinding?.token === manualBinding.token) {
         runtime.manualDiagnosisBinding = null;
       }
     }
     if (resumeTarget) {
-      return runAcceptedPipeline(resumeTarget, 'manual-diagnosis-recovery', binding.generationType, 'profile');
+      requirePipelineOwner(manualOwner, resumeTarget, '手动变量复检向人物阶段交接');
+      requireCurrentTarget(resumeTarget, '手动变量复检向人物阶段交接');
+      await runAcceptedPipeline(resumeTarget, 'manual-diagnosis-recovery', binding.generationType, 'profile');
     }
     return value;
   }
 
-  function cancelCurrentTaskFromUi() {
+  async function cancelCurrentTaskFromUi() {
     const currentChatId = chatId();
     const checkpoint = loadPipelineCheckpoint(currentChatId);
-    const hadPendingGeneration = Boolean(runtime.acceptedGeneration || loadGenerationTicket(currentChatId));
+    const pendingGeneration = runtime.acceptedGeneration || loadGenerationTicket(currentChatId);
+    const hadPendingGeneration = Boolean(pendingGeneration);
     const cancellableCheckpoint = checkpoint && ['running', 'failed', 'stale'].includes(checkpoint.status)
       ? checkpoint : null;
+    const hasActiveTask = Boolean(runtime.pipelineBusy || hadPendingGeneration || cancellableCheckpoint);
+    if (!hasActiveTask) {
+      runtime.diagnostics.unshift({
+        at: new Date().toISOString(), phase: 'cancel-noop',
+        detail: '用户点击取消时没有运行中或可恢复任务；已完成收据保持不变',
+      });
+      persistDiagnostics();
+      render();
+      return true;
+    }
+    let tombstoneTarget = latestAssistant();
+    try {
+      const binding = tombstoneTarget ? knownGenerationBinding(tombstoneTarget) : null;
+      if (tombstoneTarget && binding?.generationKey) tombstoneTarget.generationKey = binding.generationKey;
+    } catch { /* a corrupt sidecar remains fail-closed on reload */ }
     cancelAll('用户从面板取消', true);
     try { clearGenerationTicket(currentChatId); }
     catch (error) { noteGenerationTicketFailure('用户取消时清理', error); }
+    const persistenceErrors = [];
+    let localCancelled = false;
+    let durableCancelled = false;
     if (cancellableCheckpoint?.target?.chatId === currentChatId) {
       try {
         persistPipelineCheckpoint({
           ...cancellableCheckpoint, status: 'cancelled', cancelledAt: new Date().toISOString(),
           cancelReason: '用户从面板取消',
         });
-      } catch (error) {
-        setPhase('failed', `任务已停止，但取消状态持久化失败：${error?.message || error}`);
-        return false;
-      }
+        localCancelled = true;
+      } catch (error) { persistenceErrors.push(`本地检查点：${error?.message || error}`); }
+    }
+    let existingSidecar = null;
+    try { existingSidecar = tombstoneTarget?.generationKey ? loadDiagnosisReceiptSidecar(tombstoneTarget) : null; }
+    catch (error) { persistenceErrors.push(`读取IndexedDB诊断状态：${error?.message || error}`); }
+    if (tombstoneTarget?.generationKey && existingSidecar?.status !== 'complete') {
+      try {
+        await persistDiagnosisSidecarTombstone(tombstoneTarget, 'cancelled', '用户从面板取消');
+        durableCancelled = true;
+      } catch (error) { persistenceErrors.push(`IndexedDB取消标记：${error?.message || error}`); }
+    }
+    if ((cancellableCheckpoint || tombstoneTarget?.generationKey) && !localCancelled && !durableCancelled) {
+      setPhase('failed', `任务已停止，但取消状态无法持久化：${persistenceErrors.join('；')}`);
+      return false;
     }
     runtime.failedStep = '';
     setPhase('cancelled', (cancellableCheckpoint || hadPendingGeneration)
@@ -3327,34 +5162,306 @@ ${bindingObligation}
     return true;
   }
 
-  function restorePipelineAfterLoad() {
-    const checkpoint = loadPipelineCheckpoint(chatId());
-    if (!checkpoint) return false;
-    const pendingTicket = loadGenerationTicket(chatId());
-    const checkpointTime = Number.isFinite(Date.parse(checkpoint.updatedAt || '')) ? Date.parse(checkpoint.updatedAt) : 0;
+  async function restorePipelineAfterLoad(assertLoadCurrent = null) {
+    const restoreChatId = chatId();
+    const restoreEpoch = runtime.pipelineEpoch;
+    const restoreStillCurrent = () => chatId() === restoreChatId
+      && runtime.pipelineEpoch === restoreEpoch
+      && (typeof assertLoadCurrent !== 'function' || assertLoadCurrent());
+    if (!restoreStillCurrent()) return true;
+    const integrityLatch = loadMutationIntegrityLatch(restoreChatId);
+    if (integrityLatch.compromised) {
+      runtime.failedStep = '';
+      runtime.lastResult = {
+        ok: false, status: 'failed', failedStep: 'integrity',
+        errorCode: integrityLatch.errorCode, error: integrityLatch.error,
+      };
+      setPhase('failed', `已读回本聊天的事务完整性阻断：${integrityLatch.error}`, runtime.lastResult);
+      return true;
+    }
+    let checkpoint = loadPipelineCheckpoint(restoreChatId);
+    const latest = latestAssistant();
+    const pendingTicket = loadGenerationTicket(restoreChatId);
+    if (checkpoint?.corrupt || pendingTicket?.corrupt) {
+      const detail = checkpoint?.corrupt ? checkpoint.error : pendingTicket.error;
+      runtime.lastResult = {
+        ok: false, status: 'failed', failedStep: 'integrity',
+        errorCode: checkpoint?.corrupt ? checkpoint.errorCode : pendingTicket.errorCode,
+        error: `${detail}；已停止自动恢复，旧收据和旧任务都不会被猜测性重放`,
+      };
+      runtime.failedStep = '';
+      setPhase('failed', runtime.lastResult.error, runtime.lastResult);
+      return true;
+    }
+    const checkpointTime = Number.isFinite(Date.parse(checkpoint?.updatedAt || '')) ? Date.parse(checkpoint.updatedAt) : 0;
     const ticketTime = Number.isFinite(Date.parse(pendingTicket?.updatedAt || '')) ? Date.parse(pendingTicket.updatedAt) : 0;
+    const pendingDifferentGeneration = Boolean(pendingTicket?.generationKey
+      && text(pendingTicket.generationKey) !== text(checkpoint?.target?.generationKey));
     if (pendingTicket?.generationKey
-      && ['started', 'ended'].includes(pendingTicket.status) && ticketTime >= checkpointTime) {
-      // A newer main generation supersedes an older failed/running/cancelled
-      // checkpoint. This also covers a continuation revision which deliberately
-      // keeps the root generationKey while advancing its serial/timestamp.
-      // Its durable ticket owns recovery until it creates a newer checkpoint or
-      // is explicitly cancelled.
+      && ['started', 'ended'].includes(pendingTicket.status)
+      && (pendingDifferentGeneration || ticketTime >= checkpointTime)) {
+      // Compare against the original checkpoint, never a late sidecar write.
+      // A cancelled/older pipeline therefore cannot make its receipt appear
+      // newer than the generation ticket that actually superseded it.
       return false;
     }
+    if (checkpoint?.status === 'cancelled') {
+      runtime.failedStep = '';
+      setPhase('cancelled', '已读回用户取消状态；本楼任务不会自动恢复');
+      return true;
+    }
+    let sidecar = null;
+    try { sidecar = loadDiagnosisReceiptSidecar(latest); }
+    catch (error) {
+      const detail = `变量诊断持久收据无法读取；已停止自动恢复且不会重复调用诊断：${error?.message || error}`;
+      runtime.lastResult = {
+        ok: false, status: 'failed', failedStep: 'profile',
+        errorCode: DIAGNOSIS_EVIDENCE_VERIFY_FAILED, error: detail,
+        identity: latest?.identity || '', diagnosis: null,
+      };
+      runtime.failedStep = 'profile';
+      setPhase('failed', detail, runtime.lastResult);
+      return true;
+    }
+    if (sidecar && sidecar.status !== 'complete') {
+      const cancelled = sidecar.status === 'cancelled' || sidecar.status === 'superseded';
+      const detail = cancelled
+        ? '已读回本楼耐久取消标记；旧诊断不会自动恢复'
+        : '已读回一次没有完成收据的诊断请求；为避免重复应用，已停止自动重放，请手动复检当前楼';
+      runtime.lastResult = {
+        ok: false, status: cancelled ? 'cancelled' : 'failed',
+        failedStep: cancelled ? '' : 'diagnosis',
+        errorCode: `diagnosis_sidecar_${sidecar.status}`, error: detail,
+        identity: latest?.identity || sidecar.target?.identity || '',
+      };
+      runtime.failedStep = cancelled ? '' : 'diagnosis';
+      setPhase(cancelled ? 'cancelled' : 'failed', detail, runtime.lastResult);
+      return true;
+    }
+    if (sidecar?.receipt && latest) {
+      latest.generationKey = sidecar.target.generationKey;
+      const checkpointMatchesSidecar = checkpoint?.target?.identity === latest.identity
+        && text(checkpoint?.target?.generationKey) === text(latest.generationKey);
+      const sidecarTime = Number.isFinite(Date.parse(sidecar.savedAt || '')) ? Date.parse(sidecar.savedAt) : 0;
+      const localStillNeedsDiagnosis = !checkpoint
+        || (!checkpointMatchesSidecar && sidecarTime > checkpointTime)
+        || (checkpointMatchesSidecar
+          && !['failed', 'stale', 'cancelled'].includes(text(checkpoint?.status))
+          && (text(checkpoint?.nextStep) === 'diagnosis'
+            || !compactDiagnosisReceipt(checkpoint?.diagnosisReceipt)));
+      if (localStillNeedsDiagnosis) {
+        checkpoint = {
+          ...(checkpointMatchesSidecar ? checkpoint : {}),
+          status: 'running', target: deepClone(latest),
+          generationType: text(checkpoint?.generationType || 'recovered-diagnosis-receipt'),
+          nextStep: 'profile', reason: 'durable-diagnosis-receipt-recovery',
+          lastCompletedStep: 'diagnosis', diagnosisReceipt: compactDiagnosisReceipt(sidecar.receipt),
+          updatedAt: text(sidecar.savedAt || new Date().toISOString()),
+        };
+        try { checkpoint = persistPipelineCheckpoint(checkpoint); }
+        catch (error) {
+          runtime.diagnostics.unshift({
+            at: new Date().toISOString(), phase: 'checkpoint-warning',
+            detail: `已从IndexedDB读回变量诊断收据，但本地检查点仍无法保存：${error?.message || error}`,
+          });
+        }
+      }
+    }
+    if (!checkpoint) return false;
     if (pendingTicket?.generationKey && pendingTicket.generationKey === checkpoint?.target?.generationKey) {
-      try { clearGenerationTicket(chatId(), pendingTicket.generationKey); }
+      try { clearGenerationTicket(restoreChatId, pendingTicket.generationKey); }
       catch (error) { noteGenerationTicketFailure('恢复检查点时清理', error); }
     }
-    const latest = latestAssistant();
     const generationType = text(checkpoint.generationType || 'normal');
     if (latest?.identity === checkpoint?.target?.identity) {
+      if (checkpoint.target?.generationKey) latest.generationKey = checkpoint.target.generationKey;
       runtime.lastAccepted = deepClone({ ...checkpoint.target, generationType });
     }
-    if (checkpoint.status === 'complete' || !checkpoint.nextStep) return false;
     if (checkpoint.status === 'cancelled') {
       runtime.failedStep = '';
       setPhase('cancelled', '已读回用户取消状态；本楼任务不会自动恢复');
+      return true;
+    }
+    const finalizingProfileCheckpoint = checkpoint.status === 'running'
+      && text(checkpoint.lastCompletedStep) === 'profile'
+      && !text(checkpoint.nextStep);
+    if ((checkpoint.status === 'complete' || finalizingProfileCheckpoint)
+      && ['diagnosis', 'profile'].includes(text(checkpoint.lastCompletedStep))) {
+      const storedDiagnosis = diagnosisReceiptForTarget(checkpoint, latest);
+      if (!storedDiagnosis) {
+        const detail = '已完成检查点缺少与当前正文绑定的变量诊断收据；已按损坏状态停止，绝不自动重诊断';
+        runtime.lastResult = {
+          ok: false, status: 'failed', failedStep: 'integrity',
+          errorCode: 'pipeline_checkpoint_missing_diagnosis_receipt', error: detail,
+          identity: latest?.identity || checkpoint?.target?.identity || '', diagnosis: null,
+        };
+        runtime.failedStep = '';
+        setPhase('failed', detail, runtime.lastResult);
+        return true;
+      }
+      let restoredDiagnosis;
+      try {
+        restoredDiagnosis = await verifiedDiagnosisReceiptForTarget(
+          checkpoint, latest, null, checkpoint.status === 'complete',
+        );
+      }
+      catch (error) {
+        if (!restoreStillCurrent()) return true;
+        const detail = `变量证据暂时无法读回验证，已保留原收据且不会重复诊断：${error?.message || error}`;
+        persistPipelineCheckpoint({
+          ...checkpoint, status: 'failed', nextStep: 'profile', error: detail,
+          errorCode: DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+          diagnosisReceipt: compactDiagnosisReceipt(error?.diagnosisReceipt || storedDiagnosis),
+        });
+        runtime.lastResult = {
+          ok: false, status: 'failed', failedStep: 'profile', error: detail,
+          errorCode: DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+          identity: latest?.identity || checkpoint?.target?.identity || '', diagnosis: storedDiagnosis,
+        };
+        runtime.failedStep = 'profile';
+        setPhase('failed', detail, runtime.lastResult);
+        return true;
+      }
+      if (!restoreStillCurrent()) return true;
+      if (storedDiagnosis && !restoredDiagnosis) {
+        const detail = '已完成记录所依据的触发输入或前态已经变化；旧变量结论不再有效，请手动复检当前楼';
+        if (text(checkpoint.lastCompletedStep) === 'profile'
+          && checkpoint.profileTransactionExpected !== false) {
+          try {
+            await compensatePersistedProfileReceipt(latest, storedDiagnosis, detail, true);
+          } catch (error) {
+            const rollbackDetail = `旧变量证据失效后人物档案无法安全补偿：${error?.message || error}`;
+            runtime.lastResult = {
+              ok: false, status: 'failed', failedStep: 'integrity',
+              errorCode: text(error?.code || PROFILE_BRANCH_ROLLBACK_FAILED), error: rollbackDetail,
+              identity: latest?.identity || checkpoint?.target?.identity || '', diagnosis: null,
+            };
+            runtime.failedStep = '';
+            setPhase('failed', rollbackDetail, runtime.lastResult);
+            return true;
+          }
+        }
+        if (text(storedDiagnosis.status) === 'applied') {
+          const compensationDetail = '旧变量证据已失效，但跨刷新收据没有保存可核验的MVU与正文事务前态；已锁定本聊天，绝不以旧副作用为基线重复诊断';
+          try {
+            await persistMutationIntegrityLatch(restoreChatId, DIAGNOSIS_ROLLBACK_FAILED, compensationDetail, {
+              kind: 'diagnosis', chatId: restoreChatId, messageId: latest?.index,
+              swipeId: latest?.swipeId, generationKey: text(latest?.generationKey),
+            });
+          } catch (latchError) {
+            runtime.lastResult = {
+              ok: false, status: 'failed', failedStep: 'integrity',
+              errorCode: DIAGNOSIS_ROLLBACK_FAILED,
+              error: `${compensationDetail}；事故锁持久化也失败：${latchError?.message || latchError}`,
+              identity: latest?.identity || checkpoint?.target?.identity || '', diagnosis: null,
+            };
+            runtime.failedStep = '';
+            setPhase('failed', runtime.lastResult.error, runtime.lastResult);
+            return true;
+          }
+          runtime.lastResult = {
+            ok: false, status: 'failed', failedStep: 'integrity',
+            errorCode: DIAGNOSIS_ROLLBACK_FAILED, error: compensationDetail,
+            identity: latest?.identity || checkpoint?.target?.identity || '', diagnosis: null,
+          };
+          runtime.failedStep = '';
+          setPhase('failed', compensationDetail, runtime.lastResult);
+          return true;
+        }
+        persistPipelineCheckpoint({
+          ...checkpoint, status: 'stale', nextStep: 'diagnosis', error: detail, diagnosisReceipt: null,
+        });
+        runtime.lastResult = {
+          ok: false, status: 'stale', failedStep: 'diagnosis', error: detail,
+          identity: latest?.identity || checkpoint?.target?.identity || '', diagnosis: null,
+        };
+        runtime.failedStep = 'diagnosis';
+        setPhase('discarded', detail, runtime.lastResult);
+        return true;
+      }
+      if (!restoredDiagnosis) return false;
+      if (text(checkpoint.lastCompletedStep) === 'diagnosis') {
+        const restoredStatus = ['partial', 'unverified'].includes(restoredDiagnosis.status)
+          ? 'complete_with_warning' : 'complete';
+        runtime.failedStep = '';
+        runtime.lastResult = {
+          ok: true, status: restoredStatus,
+          identity: latest?.identity || checkpoint?.target?.identity || '',
+          diagnosis: restoredDiagnosis, profile: null,
+          world: { status: 'native-independent' },
+          recoveredFromCheckpoint: true,
+        };
+        setPhase('done', `已读回本楼手动变量复检：变量${diagnosisDisplayLabel(restoredDiagnosis)}`, runtime.lastResult);
+        return true;
+      }
+      let restoredProfileReceipt = true;
+      if (checkpoint.profileTransactionExpected !== false
+        && settings().enabled && settings().profileEnabled) {
+        try {
+          restoredProfileReceipt = Boolean(profileReceiptFor(
+            readStoreForChat(restoreChatId), latest, restoredDiagnosis,
+          ));
+        } catch (error) {
+          const detail = `变量收据已读回，但人物档案存储损坏或无法读取；已保留变量收据并停止自动重诊断：${error?.message || error}`;
+          try {
+            persistPipelineCheckpoint({
+              ...checkpoint, status: 'failed', nextStep: 'profile', lastCompletedStep: 'diagnosis',
+              error: detail, errorCode: 'profile_store_read_failed',
+              diagnosisReceipt: compactDiagnosisReceipt(restoredDiagnosis),
+            });
+          } catch { /* API and export must remain available even if localStorage is also broken */ }
+          runtime.lastResult = {
+            ok: false, status: 'failed', failedStep: 'profile', error: detail,
+            errorCode: 'profile_store_read_failed',
+            identity: latest?.identity || checkpoint?.target?.identity || '', diagnosis: restoredDiagnosis,
+          };
+          runtime.failedStep = 'profile';
+          setPhase('failed', detail, runtime.lastResult);
+          return true;
+        }
+      }
+      if (!restoredProfileReceipt) {
+        const detail = '变量收据有效，但人物档案收据不属于这份变量证据；正在从人物阶段恢复';
+        persistPipelineCheckpoint({
+          ...checkpoint, status: 'running', nextStep: 'profile', lastCompletedStep: 'diagnosis',
+          error: '', errorCode: '', diagnosisReceipt: compactDiagnosisReceipt(restoredDiagnosis),
+        });
+        runtime.failedStep = 'profile';
+        setPhase('waiting', detail);
+        const expectedIdentity = latest.identity;
+        const recoveryEpoch = runtime.pipelineEpoch;
+        setTimeout(() => {
+          const fresh = latestAssistant();
+          if (runtime.pipelineEpoch !== recoveryEpoch || runtime.pipelineBusy || chatId() !== restoreChatId
+            || fresh?.identity !== expectedIdentity) return;
+          fresh.generationKey = checkpoint.target.generationKey;
+          void runAcceptedPipeline(fresh, 'recovery', generationType, 'profile');
+        }, 350);
+        return true;
+      }
+      if (finalizingProfileCheckpoint) {
+        checkpoint = persistPipelineCheckpoint({
+          ...checkpoint, status: 'complete', nextStep: '', finalizedAfterReload: new Date().toISOString(),
+          diagnosisReceipt: compactDiagnosisReceipt(restoredDiagnosis),
+        });
+      }
+      const restoredStatus = ['partial', 'unverified'].includes(restoredDiagnosis.status)
+        ? 'complete_with_warning' : 'complete';
+      runtime.lastResult = {
+        ok: true,
+        status: restoredStatus,
+        identity: latest?.identity || checkpoint?.target?.identity || '',
+        diagnosis: restoredDiagnosis,
+        profile: null,
+        world: {
+          status: 'native-independent',
+          round: Number(window.WORLD_ENGINE_CORE?.loadState?.()?.round || 0),
+        },
+        recoveredFromCheckpoint: true,
+      };
+      setPhase('done', restoredStatus === 'complete_with_warning'
+        ? `已读回本楼完成状态：变量${diagnosisDisplayLabel(restoredDiagnosis)}；不会刷新成绿色正确`
+        : `已读回本楼完成状态：变量${diagnosisDisplayLabel(restoredDiagnosis)}`, runtime.lastResult);
       return true;
     }
     if (checkpoint.nextStep === 'world') {
@@ -3376,7 +5483,144 @@ ${bindingObligation}
     }
     if (checkpoint.target?.generationKey) latest.generationKey = checkpoint.target.generationKey;
     runtime.failedStep = nextStep;
+    if (checkpoint.status === 'running' && nextStep === 'profile') {
+      let runningProfileDiagnosis = null;
+      let storedProfileDiagnosis = null;
+      try {
+        storedProfileDiagnosis = diagnosisReceiptForTarget(checkpoint, latest);
+        if (!storedProfileDiagnosis) {
+          const missing = new Error('运行中的人物阶段缺少与当前正文绑定的变量诊断收据；拒绝静默退回并重复调用变量模型');
+          missing.code = 'pipeline_checkpoint_missing_diagnosis_receipt';
+          throw missing;
+        }
+        runningProfileDiagnosis = await verifiedDiagnosisReceiptForTarget(checkpoint, latest);
+      } catch (error) {
+        if (!restoreStillCurrent()) return true;
+        const retainedReceipt = compactDiagnosisReceipt(error?.diagnosisReceipt || checkpoint.diagnosisReceipt);
+        const detail = `运行中的人物阶段无法验证变量完成收据；已停止自动恢复且不会重复诊断：${error?.message || error}`;
+        try {
+          persistPipelineCheckpoint({
+            ...checkpoint, status: 'failed', nextStep: 'profile', error: detail,
+            errorCode: text(error?.code || DIAGNOSIS_EVIDENCE_VERIFY_FAILED), diagnosisReceipt: retainedReceipt,
+          });
+        } catch { /* UI and export remain available if localStorage is also broken */ }
+        runtime.failedStep = 'profile';
+        runtime.lastResult = {
+          ok: false, status: 'failed', failedStep: 'profile', error: detail,
+          errorCode: text(error?.code || DIAGNOSIS_EVIDENCE_VERIFY_FAILED),
+          identity: latest.identity, diagnosis: retainedReceipt, recoveredFromCheckpoint: true,
+        };
+        setPhase('failed', detail, runtime.lastResult);
+        return true;
+      }
+      if (!restoreStillCurrent()) return true;
+      if (!runningProfileDiagnosis) {
+        const detail = '运行中的人物阶段所绑定的变量证据已经变化；已停止自动恢复，请手动复检当前楼';
+        try {
+          await compensatePersistedProfileReceipt(latest, storedProfileDiagnosis, detail, false);
+        } catch (error) {
+          const rollbackDetail = `中断人物事务的旧变量证据失效，且人物档案无法安全补偿：${error?.message || error}`;
+          runtime.failedStep = '';
+          runtime.lastResult = {
+            ok: false, status: 'failed', failedStep: 'integrity',
+            errorCode: text(error?.code || PROFILE_BRANCH_ROLLBACK_FAILED), error: rollbackDetail,
+            identity: latest.identity, diagnosis: null, recoveredFromCheckpoint: true,
+          };
+          setPhase('failed', rollbackDetail, runtime.lastResult);
+          return true;
+        }
+        if (text(storedProfileDiagnosis?.status) === 'applied') {
+          const compensationDetail = '中断人物事务所绑定的旧变量修复已失据，且跨刷新收据没有变量/正文前态；已锁定本聊天并禁止自动重诊断';
+          try {
+            await persistMutationIntegrityLatch(restoreChatId, DIAGNOSIS_ROLLBACK_FAILED, compensationDetail, {
+              kind: 'diagnosis', chatId: restoreChatId, messageId: latest.index,
+              swipeId: latest.swipeId, generationKey: text(latest.generationKey),
+            });
+          } catch (latchError) {
+            runtime.lastResult = {
+              ok: false, status: 'failed', failedStep: 'integrity',
+              errorCode: DIAGNOSIS_ROLLBACK_FAILED,
+              error: `${compensationDetail}；事故锁持久化失败：${latchError?.message || latchError}`,
+              identity: latest.identity, diagnosis: null, recoveredFromCheckpoint: true,
+            };
+            runtime.failedStep = '';
+            setPhase('failed', runtime.lastResult.error, runtime.lastResult);
+            return true;
+          }
+          runtime.failedStep = '';
+          runtime.lastResult = {
+            ok: false, status: 'failed', failedStep: 'integrity',
+            errorCode: DIAGNOSIS_ROLLBACK_FAILED, error: compensationDetail,
+            identity: latest.identity, diagnosis: null, recoveredFromCheckpoint: true,
+          };
+          setPhase('failed', compensationDetail, runtime.lastResult);
+          return true;
+        }
+        persistPipelineCheckpoint({
+          ...checkpoint, status: 'stale', nextStep: 'diagnosis', error: detail, diagnosisReceipt: null,
+        });
+        runtime.failedStep = 'diagnosis';
+        runtime.lastResult = {
+          ok: false, status: 'stale', failedStep: 'diagnosis', error: detail,
+          identity: latest.identity, diagnosis: null, recoveredFromCheckpoint: true,
+        };
+        setPhase('discarded', detail, runtime.lastResult);
+        return true;
+      }
+    }
     if (checkpoint.status !== 'running') {
+      let restoredDiagnosis = null;
+      try {
+        const storedProfileDiagnosis = nextStep === 'profile'
+          ? diagnosisReceiptForTarget(checkpoint, latest) : null;
+        if (nextStep === 'profile' && !storedProfileDiagnosis) {
+          const missing = new Error('人物续跑检查点缺少与当前正文绑定的变量诊断收据；拒绝退化成重复诊断');
+          missing.code = 'pipeline_checkpoint_missing_diagnosis_receipt';
+          throw missing;
+        }
+        restoredDiagnosis = nextStep === 'profile'
+          ? await verifiedDiagnosisReceiptForTarget(checkpoint, latest) : null;
+      } catch (error) {
+        if (!restoreStillCurrent()) return true;
+        const retainedReceipt = compactDiagnosisReceipt(error?.diagnosisReceipt || checkpoint.diagnosisReceipt);
+        const detail = `人物续跑所需的变量证据暂时无法读回验证，已保留原收据且不会重复诊断：${error?.message || error}`;
+        persistPipelineCheckpoint({
+          ...checkpoint, status: 'failed', nextStep: 'profile', error: detail,
+          errorCode: DIAGNOSIS_EVIDENCE_VERIFY_FAILED, diagnosisReceipt: retainedReceipt,
+        });
+        runtime.failedStep = 'profile';
+        runtime.lastResult = {
+          ok: false, status: 'failed', failedStep: 'profile', error: detail,
+          errorCode: DIAGNOSIS_EVIDENCE_VERIFY_FAILED,
+          identity: latest.identity, diagnosis: retainedReceipt, recoveredFromCheckpoint: true,
+        };
+        setPhase('failed', detail, runtime.lastResult);
+        return true;
+      }
+      if (!restoreStillCurrent()) return true;
+      if (nextStep === 'profile' && checkpoint.diagnosisReceipt && !restoredDiagnosis) {
+        const detail = '人物失败记录中的变量证据已经变化；重试将从变量诊断重新开始';
+        persistPipelineCheckpoint({
+          ...checkpoint, status: 'failed', nextStep: 'diagnosis', error: detail, diagnosisReceipt: null,
+        });
+        runtime.failedStep = 'diagnosis';
+        runtime.lastResult = {
+          ok: false, status: 'failed', failedStep: 'diagnosis', error: detail,
+          identity: latest.identity, diagnosis: null,
+        };
+        setPhase('failed', detail, runtime.lastResult);
+        return true;
+      }
+      runtime.lastResult = {
+        ok: false,
+        status: checkpoint.status === 'stale' ? 'stale' : 'failed',
+        failedStep: nextStep,
+        error: text(checkpoint.error),
+        errorCode: text(checkpoint.errorCode),
+        identity: latest.identity,
+        diagnosis: restoredDiagnosis,
+        recoveredFromCheckpoint: true,
+      };
       setPhase(checkpoint.status === 'stale' ? 'discarded' : 'failed', `已恢复本楼失败步骤：${nextStep}。点击“重试失败步骤”只会继续这一楼。`);
       return true;
     }
@@ -3398,6 +5642,15 @@ ${bindingObligation}
 
   function restoreGenerationTicketAfterLoad() {
     const ticket = loadGenerationTicket(chatId());
+    if (ticket?.corrupt) {
+      runtime.lastResult = {
+        ok: false, status: 'failed', failedStep: 'integrity',
+        errorCode: ticket.errorCode, error: `${ticket.error}；已停止自动恢复`,
+      };
+      runtime.failedStep = '';
+      setPhase('failed', runtime.lastResult.error, runtime.lastResult);
+      return true;
+    }
     if (!ticket || ticket.chatId !== chatId()
       || !ticket.generationKey || !Number.isFinite(Number(ticket.serial))) return false;
     if (!['started', 'ended'].includes(ticket.status)) {
@@ -3936,7 +6189,9 @@ ${bindingObligation}
       if (!loadStillCurrent()) return;
       await persistDiagnostics();
       if (!loadStillCurrent()) return;
-      if (!restorePipelineAfterLoad() && !restoreGenerationTicketAfterLoad()) {
+      const pipelineRestored = await restorePipelineAfterLoad(loadStillCurrent);
+      if (!loadStillCurrent()) return;
+      if (!pipelineRestored && !restoreGenerationTicketAfterLoad()) {
         setPhase('idle', '已切换聊天；当前聊天档案已独立读回');
       }
     });
@@ -4009,17 +6264,32 @@ ${bindingObligation}
       const secretValues = currentApiSecretValues();
       let mvu = null;
       let mvuError = '';
+      let diagnosisReceiptSidecar = null;
+      let diagnosisReceiptSidecarError = '';
       try {
-        mvu = Number.isInteger(Number(reportTarget)) ? await currentMvuState(Number(reportTarget)) : null;
+        if (!Number.isInteger(Number(reportTarget))) throw new Error('当前报告没有可绑定的助手楼层');
+        const reportMvuPayload = await mvuPayloadAt(Number(reportTarget));
+        if (!hasUsableStatData(reportMvuPayload)) throw new Error('当前报告目标楼没有可用的stat_data');
+        mvu = deepClone(statDataOf(reportMvuPayload));
       } catch (error) { mvuError = error?.message || String(error); }
+      try {
+        const sidecarTarget = latestAssistant();
+        if (sidecarTarget && runtime.lastAccepted?.identity === sidecarTarget.identity) {
+          sidecarTarget.generationKey = text(runtime.lastAccepted.generationKey);
+        }
+        diagnosisReceiptSidecar = loadDiagnosisReceiptSidecar(sidecarTarget);
+      } catch (error) { diagnosisReceiptSidecarError = error?.message || String(error); }
       if (!exportStillCurrent()) return;
       const freshReports = loadRunReports(exportChatId);
       const freshDiagnostics = loadDiagnostics(exportChatId);
       const freshManifest = loadReportManifest(exportChatId, freshReports);
       const reportsMatchRuntime = reportCollectionsMatch(freshReports.reports, runtime.runReports);
+      const mutationIntegrity = loadMutationIntegrityLatch(exportChatId);
       const complete = freshManifest.ok && reportsMatchRuntime && !freshDiagnostics.error && !mvuError
+        && !diagnosisReceiptSidecarError
         && runtime.diagnosticPersistence.ok !== false
-        && runtime.diagnosticPersistence.integrityCompromised !== true;
+        && runtime.diagnosticPersistence.integrityCompromised !== true
+        && mutationIntegrity.compromised !== true;
       const report = redactApiConfiguration({
       exportedAt: new Date().toISOString(),
       version: ENGINE_VERSION,
@@ -4030,7 +6300,9 @@ ${bindingObligation}
         reportPersistence: freshManifest,
         reportsMatchRuntime,
         diagnosticPersistence: { ...runtime.diagnosticPersistence, loadError: freshDiagnostics.error },
+        mutationIntegrity,
         mvuError,
+        diagnosisReceiptSidecarError,
       },
       chat: deepClone(ctx()?.chat || []),
       runtime: {
@@ -4039,6 +6311,7 @@ ${bindingObligation}
         diagnostics: freshDiagnostics.items, runs: freshReports.reports,
         reportPersistence: freshManifest,
         diagnosticPersistence: runtime.diagnosticPersistence,
+        mutationIntegrity,
       },
       doctorSettings: settings(),
       profiles: readStore(),
@@ -4057,6 +6330,7 @@ ${bindingObligation}
       },
       worldEngineSettings: deepClone(worldApiConfig().config || {}),
       pipelineCheckpoint: loadPipelineCheckpoint(exportChatId),
+      diagnosisReceiptSidecar,
       api: { configured: worldApiConfig().configured, excluded: true },
       }, secretValues);
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -4314,16 +6588,16 @@ ${bindingObligation}
           try {
             setPhase('diagnosing', '正在手动复检本楼MVU');
             const value = await runManualDiagnosisAndResume(target);
-            if (!value?.diagnosis && !value?.profile && !value?.world) {
+            if (!['done', 'failed', 'discarded', 'cancelled'].includes(runtime.phase)
+              && !value?.diagnosis && !value?.profile && !value?.world) {
               setPhase('done', `MVU手动复检完成：${diagnosisDisplayLabel(value)}`, value);
             }
           }
           catch (error) { if (error?.code !== STALE_TASK) setPhase('failed', `MVU手动复检失败：${error.message || error}`); }
         }
         else if (action === 'retry-profile') {
-          const target = latestAssistant();
           try {
-            const value = await runExclusiveStage('人物补档', target, (owner) => runTarget(target, 'manual-refill', owner));
+            const value = await runManualProfileRefill(latestAssistant());
             setPhase('done', `人物手动补档完成：${value.count ?? 0}张完整档案`, value);
           }
           catch (error) { if (error?.code !== STALE_TASK) setPhase('failed', `人物手动补档失败：${error.message || error}`); }
@@ -4332,7 +6606,7 @@ ${bindingObligation}
           window.WORLD_ENGINE_UI?.showPanel?.();
           window.WORLD_ENGINE_UI?.refresh?.(true);
         }
-        else if (action === 'cancel') cancelCurrentTaskFromUi();
+        else if (action === 'cancel') await cancelCurrentTaskFromUi();
         else if (action === 'export') await safeExport();
         else if (action === 'save-api') {
           try { await saveApiForm(panel); render(true); }
@@ -4433,7 +6707,9 @@ ${bindingObligation}
         detail: `本聊天内部运行日志不完整：${runtime.reportPersistence.error || '持久化条数不一致'}`,
       });
       await persistDiagnostics();
-        if (startupLoadStillCurrent() && !restorePipelineAfterLoad() && !restoreGenerationTicketAfterLoad()) {
+        const pipelineRestored = startupLoadStillCurrent()
+          ? await restorePipelineAfterLoad(startupLoadStillCurrent) : true;
+        if (startupLoadStillCurrent() && !pipelineRestored && !restoreGenerationTicketAfterLoad()) {
           setPhase('idle', '成熟组件适配链已加载，等待下一条最终回复');
         }
       }
@@ -4448,7 +6724,7 @@ ${bindingObligation}
         ? runAcceptedPipeline(retryTargetForFailedStep(), 'manual', runtime.lastAccepted?.generationType || 'normal', runtime.failedStep)
         : Promise.resolve({ ok: false, status: 'nothing-to-retry' }),
       runDiagnosis: () => runManualDiagnosisAndResume(latestAssistant()),
-      runProfile: () => { const target = latestAssistant(); return runExclusiveStage('人物补档', target, (owner) => runTarget(target, 'manual-refill', owner)); },
+      runProfile: () => runManualProfileRefill(latestAssistant()),
       openWorld: () => {
         window.WORLD_ENGINE_UI?.showPanel?.();
         window.WORLD_ENGINE_UI?.refresh?.(true);

@@ -2,7 +2,7 @@
   'use strict';
 
   const PLUGIN_ID = 'mvu-doctor-kemini-clean';
-  const VERSION = '0.9.8';
+  const VERSION = '0.9.9';
   const WORLD_VERSION = '3.0.2';
   const WORLD_GLOBALS = ['WORLD_ENGINE_STORE', 'WORLD_ENGINE_CORE', 'WORLD_ENGINE_API'];
   const WORLD_SETTINGS_KEY = 'world_engine_settings';
@@ -280,6 +280,10 @@
       // setting and remains untouched.
       ...(!migrated && forced08Signature
         ? { evolveMode: 'auto', syncToChat: false, autoBackup: false } : {}),
+      // Directly use World's native blue/green activation for a new/default
+      // setting.  A saved true or false is user-owned and remains untouched.
+      ...(!Object.prototype.hasOwnProperty.call(current, 'worldbookTrigger')
+        ? { worldbookTrigger: true } : {}),
       evolveFilterRegex,
     };
     if (JSON.stringify(next) !== JSON.stringify(current)) {

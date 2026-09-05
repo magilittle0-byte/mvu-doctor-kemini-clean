@@ -93,7 +93,9 @@ test('native World keeps ownership while Doctor uses the existing task slot and 
   assert.match(gate, /\['failed', 'stale', 'cancelled', 'complete'\]/);
   assert.match(gate, /text\(checkpoint\.nextStep\) !== 'diagnosis'/);
   assert.match(gate, /if \(!worldGateTargetMatches\(live, expected\)\) return \{ ok: false, status: 'stale' \}/);
-  assert.match(gate, /status: checkpoint\.status === 'failed' \? 'diagnosis-failed' : 'diagnosis-complete'/);
+  assert.match(gate, /if \(checkpoint\.status === 'failed'\) return \{ ok: false, status: 'diagnosis-failed' \}/);
+  assert.match(gate, /verifiedDiagnosisReceiptForTarget\(checkpoint, boundTarget\)/);
+  assert.match(gate, /profileReceiptFor\(storedProfiles, boundTarget, verifiedDiagnosis\)/);
   assert.match(gate, /let bindingGenerationKey = ''/);
   assert.match(gate, /checkpointGenerationKey === bindingGenerationKey/);
   assert.match(gate, /activeGenerationKey !== bindingGenerationKey/);
@@ -101,7 +103,8 @@ test('native World keeps ownership while Doctor uses the existing task slot and 
   assert.match(gate, /missingHandoffPolls >= 20/);
   assert.match(gate, /throughProfile \? 'profile-handoff-missing' : 'diagnosis-handoff-missing'/);
   assert.match(gate, /function profileCheckpointReceipt\(checkpoint\)/);
-  assert.match(gate, /status: 'profile-complete'/);
+  assert.match(gate, /'profile-complete'/);
+  assert.match(gate, /'profile-disabled'/);
   assert.match(gate, /const throughProfile = input\?\.throughProfile === true/);
   assert.match(gate, /setTimeout\(resolve, 100\)/);
   assert.match(gate, /worldGateScopeMatches\(runtime\.manualDiagnosisBinding, expected\)/);
@@ -114,7 +117,7 @@ test('native World keeps ownership while Doctor uses the existing task slot and 
   assert.match(profile, /buildWorldActorInstruction,\s*\n/);
 });
 
-test('variable diagnosis keeps the Story Oracle single-parse chain and no shadow patch executor', () => {
+test('variable diagnosis restores the mature evidence packet while keeping one official MVU parse and no shadow executor', () => {
   const profile = read('profile-engine.js');
   const diagnosis = profile.slice(
     profile.indexOf('async function runStoryDiagnosis'),
@@ -123,7 +126,14 @@ test('variable diagnosis keeps the Story Oracle single-parse chain and no shadow
   assert.equal((diagnosis.match(/Mvu\.parseMessage\(/g) || []).length, 1);
   assert.match(diagnosis, /verificationMode: 'story-oracle-official-mvu'/);
   assert.match(diagnosis, /MVU固定楼层写后读回与预期不一致/);
-  assert.doesNotMatch(profile, /previousMvuPayload|simulateDiagnosisOperation|auditDiagnosisPatch|appliedDiagnosisBlock|operationReceipts/);
+  assert.match(diagnosis, /previousMvuEvidence\(target\.index, true/);
+  assert.match(profile, /for \(let cursor = Number\(messageId\) - 1; cursor >= 0; cursor -= 1\)/);
+  for (const evidenceTag of ['pre_update_stat_data', 'current_post_update_stat_data', 'original_update_block', 'triggering_user_input', 'accepted_narrative']) {
+    assert.match(diagnosis, new RegExp(evidenceTag));
+  }
+  assert.match(diagnosis, /领取资格、可领取、承诺、意图、尝试和待确认都不等于已经获得、持有、消耗或完成/);
+  assert.match(diagnosis, /禁止改变现有容器类型/);
+  assert.doesNotMatch(profile, /simulateDiagnosisOperation|auditDiagnosisPatch|appliedDiagnosisBlock|operationReceipts/);
   assert.doesNotMatch(diagnosis, /unsafeCandidate|safeBlock|result\.status = 'partial'/);
 });
 
@@ -196,7 +206,7 @@ test('shared World API lane is FIFO, preserves arguments, releases after failure
     },
   };
   vm.runInNewContext(`
-    const VERSION = '0.9.8';
+    const VERSION = '0.9.9';
     const WORLD_API_SERIAL_LANE = Symbol.for('mvu-doctor.shared-world-api-serial-lane');
     ${serialLane}
     this.installWorldApiSerialLane = installWorldApiSerialLane;
@@ -204,7 +214,7 @@ test('shared World API lane is FIFO, preserves arguments, releases after failure
   assert.equal(sandbox.installWorldApiSerialLane(), true);
   const installed = sandbox.window.WORLD_ENGINE_API.callApi;
   const marker = sandbox.window.WORLD_ENGINE_API[Symbol.for('mvu-doctor.shared-world-api-serial-lane')];
-  assert.equal(marker.version, '0.9.8');
+  assert.equal(marker.version, '0.9.9');
   assert.equal(marker.installed, installed);
   assert.equal(sandbox.installWorldApiSerialLane(), true);
   assert.equal(sandbox.window.WORLD_ENGINE_API.callApi, installed, 'hot reload must not wrap the lane twice');
@@ -275,14 +285,14 @@ test('shared World API lane is FIFO, preserves arguments, releases after failure
     { value: legacyReceipt, configurable: false },
   );
   vm.runInNewContext(`
-    const VERSION = '0.9.8';
+    const VERSION = '0.9.9';
     const WORLD_API_SERIAL_LANE = Symbol.for('mvu-doctor.shared-world-api-serial-lane');
     ${serialLane}
     this.installWorldApiSerialLane = installWorldApiSerialLane;
   `, upgradeSandbox);
   assert.equal(upgradeSandbox.installWorldApiSerialLane(), true);
   assert.notEqual(upgradeSandbox.window.WORLD_ENGINE_API.callApi, legacyWrapper);
-  assert.equal(legacyReceipt.version, '0.9.8');
+  assert.equal(legacyReceipt.version, '0.9.9');
   assert.equal(legacyReceipt.installed, upgradeSandbox.window.WORLD_ENGINE_API.callApi);
   assert.equal(await upgradeSandbox.window.WORLD_ENGINE_API.callApi('upgrade-probe'), 'upgraded-success');
   assert.equal(legacyWrapperCalls, 0, 'upgrading must unwrap rather than stack the legacy lane');
@@ -383,7 +393,7 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
       });
     }
     vm.runInNewContext(`
-      const VERSION = '0.9.8';
+      const VERSION = '0.9.9';
       const WORLD_EVOLUTION_BARRIER = Symbol.for('mvu-doctor.native-world-diagnosis-barrier');
       let worldbookInitialization = { chatId: '', promise: null, attempt: 0 };
       let worldbookAttemptSerial = 0;
@@ -431,10 +441,10 @@ test('native World retries a false prewarm once per chat and filters MVU mechani
   const upgradedMarker = upgradedEvolution[Symbol.for('mvu-doctor.native-world-diagnosis-barrier')];
   assert.equal(upgradedMarker.version, undefined, 'the fixture must begin with the unversioned 0.9.3 receipt');
   assert.equal(upgraded.sandbox.installWorldEvolutionDiagnosisBarrier(), true);
-  assert.equal(upgradedMarker.version, '0.9.8');
+  assert.equal(upgradedMarker.version, '0.9.9');
   assert.equal(upgradedMarker.installed, upgradedEvolution.evolve);
   assert.equal(await upgradedEvolution.evolve({ round: 1 }, '用户行动', '最终正文', {}), 'native-evolved');
-  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.8 must unwrap rather than stack the legacy barrier');
+  assert.equal(upgraded.calls.legacyWrappers, 0, '0.9.9 must unwrap rather than stack the legacy barrier');
   assert.equal(upgraded.calls.originals.length, 1);
   assert.equal(upgraded.calls.waits[0].throughProfile, true);
 
@@ -630,6 +640,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
   assert.equal(migrated.evolveMode, 'auto');
   assert.equal(migrated.syncToChat, false);
   assert.equal(migrated.autoBackup, false);
+  assert.equal(migrated.worldbookTrigger, true, 'an unset setting must reuse native blue/green activation instead of injecting the whole selected book');
   assert.ok(migrated.evolveFilterRegex.includes('[\\s\\S]*?<\\/UpdateVariable>'));
   assert.ok(migrated.evolveFilterRegex.includes('[\\s\\S]*$'));
   assert.deepEqual(legacy.memoryPatches, [{ engineEnabled: true, evolveMode: 'auto' }]);
@@ -657,6 +668,13 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
   assert.equal(JSON.parse(worldDeviation.values.get('world_engine_settings')).evolveMode, 'manual');
   assert.deepEqual(worldDeviation.memoryPatches, []);
 
+  for (const explicitValue of [false, true]) {
+    const explicitTrigger = makeHarness({ world: { worldbookTrigger: explicitValue } });
+    explicitTrigger.sandbox.migrateWorldSettings({ extensionSettings: {} });
+    assert.equal(JSON.parse(explicitTrigger.values.get('world_engine_settings')).worldbookTrigger, explicitValue,
+      'an explicit World trigger preference remains user-owned');
+  }
+
   const memoryDeviation = makeHarness({ memory: { engineEnabled: false, evolveMode: 'auto' } });
   memoryDeviation.sandbox.migrateWorldSettings({ extensionSettings: {} });
   assert.deepEqual(memoryDeviation.memoryPatches, []);
@@ -676,7 +694,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.8');
+  assert.equal(manifest.version, '0.9.9');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');
@@ -709,7 +727,7 @@ test('accepted-final orchestrator runs diagnosis then profile while native World
   const source = read('profile-engine.js');
   const block = source.slice(source.indexOf('async function runAcceptedPipeline'), source.indexOf('async function waitForAcceptedFinal'));
   const diagnosis = block.indexOf('await runStoryDiagnosis(target, owner)');
-  const profile = block.indexOf('await runTarget(target, reason, owner)');
+  const profile = block.indexOf('await runTarget(target, reason, owner, result.diagnosis)');
   assert.ok(diagnosis >= 0 && profile > diagnosis);
   assert.doesNotMatch(block, /runWorldEvolution|manualEvolve|restoreCheckpoint|saveState/);
   assert.match(source, /message_id: target\.index/);

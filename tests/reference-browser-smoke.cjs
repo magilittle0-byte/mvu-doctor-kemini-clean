@@ -107,11 +107,28 @@ async function installHarness(page, options = {}) {
     });
   });
   await page.addStyleTag({ content: styleSource });
-  await page.evaluate(({ profileReplies: replies, discoveryReplies: suppliedDiscoveryReplies, slowProfile, slowDiagnosis, slowMetadata, diagnosisReply, diagnosisReplies, mvuPatchMode, saveChatFailOnce, saveMetadataFailOnce, initialMvuState }) => {
+  await page.evaluate(({ profileReplies: replies, discoveryReplies: suppliedDiscoveryReplies, slowProfile, slowDiagnosis, slowMetadata, diagnosisReply, diagnosisReplies, mvuPatchMode, saveChatFailOnce, saveMetadataFailOnce, initialMvuState, nativeStoryBusy }) => {
     const durableKv = new Map();
     let remainingSlowProfileWrites = 0;
     let remainingProfileWriteFailures = 0;
+    let remainingPipelineWriteFailures = 0;
     let resolveDurableWrite = null;
+    let mutationIncidentAfterPendingReadback = null;
+    let mutationIncidentReadyForWorldRead = null;
+    let writeMutationLatchCopies = null;
+    let profileDurableCommitSerial = 0;
+    let staleAfterProfileCommit = null;
+    let staleAfterCommittedReceiptRead = null;
+    const nativeStorageSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItemWithFaultInjection(key, value) {
+      if (this === localStorage
+        && String(key).startsWith('mvuDoctorReferencePipeline:')
+        && remainingPipelineWriteFailures > 0) {
+        remainingPipelineWriteFailures -= 1;
+        throw new DOMException('synthetic pipeline checkpoint quota failure', 'QuotaExceededError');
+      }
+      return nativeStorageSetItem.call(this, key, value);
+    };
     const durableDatabase = {
       objectStoreNames: { contains: (name) => name === 'kv' },
       createObjectStore() {},
@@ -146,7 +163,19 @@ async function installHarness(page, options = {}) {
             request.result = durableKv.get(key);
             request.onsuccess?.();
           }
+          if (mode === 'readwrite'
+            && pendingWrites.some(([key]) => key.startsWith('mvuDoctorReferenceProfileStore:'))) {
+            profileDurableCommitSerial += 1;
+          }
+          const pendingMutationReadback = mode === 'readonly' && pendingReads.some(([key]) => {
+            if (!key.startsWith('mvuDoctorReferenceMutationIntegrity:')) return false;
+            try { return JSON.parse(durableKv.get(key) || 'null')?.clearPending === true; }
+            catch { return false; }
+          });
+          const incidentToInject = pendingMutationReadback ? mutationIncidentAfterPendingReadback : null;
+          if (incidentToInject) mutationIncidentAfterPendingReadback = null;
           transaction.oncomplete?.();
+          if (incidentToInject) mutationIncidentReadyForWorldRead = incidentToInject;
         };
         setTimeout(() => {
           const isProfileWrite = mode === 'readwrite'
@@ -254,6 +283,8 @@ async function installHarness(page, options = {}) {
     window.__worldPanelOpens = 0;
     window.__worldPanelRefreshes = 0;
     window.__mvuReads = [];
+    window.__mvuParseCalls = 0;
+    window.__mvuWrites = [];
     window.__saves = [];
     window.__downloads = [];
     window.__profilePrompts = [];
@@ -291,9 +322,13 @@ async function installHarness(page, options = {}) {
     window.__metadataPending = () => Boolean(resolveMetadata);
     window.__slowNextDurableWrite = () => { remainingSlowProfileWrites += 1; };
     window.__failNextDurableWrite = () => { remainingProfileWriteFailures += 1; };
+    window.__failNextPipelineWrites = (count = 1) => { remainingPipelineWriteFailures += Math.max(1, Number(count) || 1); };
     window.__durableWritePending = () => Boolean(resolveDurableWrite);
     window.__resolveDurableWrite = () => { const resolve = resolveDurableWrite; resolveDurableWrite = null; resolve?.(); };
     window.__setDiagnosisReply = (value) => { activeDiagnosisReply = String(value); queuedDiagnosisReplies = []; };
+    window.__setDiscoveryReplies = (values) => {
+      queuedDiscoveryReplies = Array.isArray(values) ? values.map(String) : [];
+    };
     window.__failNextSaveChat = () => { remainingSaveChatFailures += 1; };
     window.SillyTavern = { getContext: () => context };
 
@@ -304,11 +339,21 @@ async function installHarness(page, options = {}) {
         window.__mvuReads.push(structuredClone(request));
         return structuredClone(mvuState);
       },
-      parseMessage: async (_block, oldData) => mvuPatchMode === 'apply'
-        ? { ...structuredClone(oldData), hp: Number(oldData?.hp || 0) + 1 }
-        : structuredClone(oldData),
-      replaceMvuData: async (next) => Object.assign(mvuState, structuredClone(next)),
+      parseMessage: async (_block, oldData) => {
+        window.__mvuParseCalls += 1;
+        return mvuPatchMode === 'apply'
+          ? { ...structuredClone(oldData), hp: Number(oldData?.hp || 0) + 1 }
+          : structuredClone(oldData);
+      },
+      replaceMvuData: async (next) => {
+        window.__mvuWrites.push({ before: structuredClone(mvuState), after: structuredClone(next) });
+        Object.assign(mvuState, structuredClone(next));
+      },
     };
+    window.__mvuState = () => structuredClone(mvuState);
+    let nativeStoryBusyState = Boolean(nativeStoryBusy);
+    window.__nativeStoryCancelCalls = 0;
+    window.__finishNativeStory = () => { nativeStoryBusyState = false; };
     const extractUpdateBlock = (value) => String(value || '').match(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable>/iu)?.[0] || '';
     const storyInternals = {
       getCtx: () => context,
@@ -355,7 +400,8 @@ async function installHarness(page, options = {}) {
       notifyAutoDiagnose(result, patch) {
         window.__storyNotifications.push({ status: String(result?.status || ''), patch: String(patch || '') });
       },
-      cancelPostReply() {},
+      cancelPostReply() { window.__nativeStoryCancelCalls += 1; },
+      postReplyState: () => ({ busy: nativeStoryBusyState }),
       getFixCfg: () => ({ ...storyFixCfg }),
       setFixCfg: (next) => Object.assign(storyFixCfg, next),
       awaitMvuIdle: async () => 0,
@@ -374,10 +420,90 @@ async function installHarness(page, options = {}) {
     };
 
     const worldStore = new Map([['world_engine_settings', JSON.stringify(worldSettings)]]);
+    writeMutationLatchCopies = (record) => {
+      const currentChatId = String(record?.chatId || context.chatId || '');
+      const key = `mvuDoctorReferenceMutationIntegrity:${encodeURIComponent(currentChatId)}`;
+      const value = JSON.stringify(record);
+      nativeStorageSetItem.call(localStorage, key, value);
+      worldStore.set(key, value);
+      durableKv.set(key, value);
+    };
+    window.__setMutationLatch = (record) => writeMutationLatchCopies(structuredClone(record));
+    window.__injectMutationIncidentAfterClearPending = (record) => {
+      mutationIncidentAfterPendingReadback = structuredClone(record);
+    };
+    window.__mutationLatchCopies = () => {
+      const key = `mvuDoctorReferenceMutationIntegrity:${encodeURIComponent(context.chatId)}`;
+      const parse = (raw) => {
+        try { return JSON.parse(raw || 'null'); } catch { return { corrupt: true, raw: String(raw) }; }
+      };
+      return {
+        local: parse(localStorage.getItem(key)),
+        mirror: parse(worldStore.get(key)),
+        durable: parse(durableKv.get(key)),
+      };
+    };
+    window.__durableGet = (key) => durableKv.get(String(key)) ?? null;
+    window.__setWorldStoreCopies = (key, value) => {
+      const storageKey = String(key);
+      const raw = String(value);
+      worldStore.set(storageKey, raw);
+      durableKv.set(storageKey, raw);
+    };
+    const markProfileEvidenceStale = (mutationTarget = 'assistant') => {
+      const message = mutationTarget === 'user'
+        ? [...context.chat].reverse().find((entry) => entry?.is_user)
+        : context.chat.at(-1);
+      if (!message || message.is_system) return;
+      const changed = `${String(message.mes || '')}\n\nPROFILE_POST_COMMIT_STALE_SENTINEL`;
+      message.mes = changed;
+      if (Array.isArray(message.swipes) && typeof message.swipes[message.swipe_id] === 'string') {
+        message.swipes[message.swipe_id] = changed;
+      }
+    };
+    window.__staleAfterNextProfileCommit = (failRollback = false, mutationTarget = 'assistant') => {
+      staleAfterProfileCommit = {
+        afterSerial: profileDurableCommitSerial + 1,
+        failRollback: Boolean(failRollback),
+        mutationTarget: String(mutationTarget || 'assistant'),
+      };
+    };
+    window.__staleAfterNextCommittedReceiptRead = (mutationTarget = 'user') => {
+      staleAfterCommittedReceiptRead = { mutationTarget: String(mutationTarget || 'user') };
+    };
     window.__worldStoreWrites = [];
     window.__worldStore = worldStore;
     window.WORLD_ENGINE_STORE = {
-      getItem: (key) => worldStore.has(key) ? worldStore.get(key) : null,
+      getItem: (key) => {
+        const value = worldStore.has(key) ? worldStore.get(key) : null;
+        if (String(key).startsWith('mvuDoctorReferenceMutationIntegrity:')
+          && mutationIncidentReadyForWorldRead) {
+          const incident = mutationIncidentReadyForWorldRead;
+          mutationIncidentReadyForWorldRead = null;
+          // Return the phase-1 tombstone to the read already in progress, but
+          // install the newer incident before phase 2 can clear the old one.
+          // A correct incident-id CAS must observe it on the final write path.
+          writeMutationLatchCopies(incident);
+          return value;
+        }
+        if (String(key).startsWith('mvuDoctorReferenceProfileStore:')
+          && staleAfterCommittedReceiptRead) {
+          const plan = staleAfterCommittedReceiptRead;
+          staleAfterCommittedReceiptRead = null;
+          queueMicrotask(() => markProfileEvidenceStale(plan.mutationTarget));
+        }
+        if (String(key).startsWith('mvuDoctorReferenceProfileStore:')
+          && staleAfterProfileCommit
+          && profileDurableCommitSerial >= staleAfterProfileCommit.afterSerial) {
+          const plan = staleAfterProfileCommit;
+          staleAfterProfileCommit = null;
+          queueMicrotask(() => {
+            if (plan.failRollback) remainingProfileWriteFailures += 1;
+            markProfileEvidenceStale(plan.mutationTarget);
+          });
+        }
+        return value;
+      },
       setItem: (key, value) => {
         worldStore.set(key, String(value));
         window.__worldStoreWrites.push({ key: String(key), value: String(value) });
@@ -468,6 +594,7 @@ async function installHarness(page, options = {}) {
     slowMetadata: Boolean(options.slowMetadata),
     saveChatFailOnce: Boolean(options.saveChatFailOnce),
     saveMetadataFailOnce: Boolean(options.saveMetadataFailOnce),
+    nativeStoryBusy: Boolean(options.nativeStoryBusy),
     initialMvuState: options.initialMvuState || {
       hp: 10,
       契约者: { 当前敌人: { 白露: { 姓名: '白露' } } },
@@ -559,7 +686,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 }, async (t) => {
+test('0.9.9 mature World adapter and Doctor browser smoke', { timeout: 300000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -1114,6 +1241,64 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.deepEqual(settled.receipt, { ok: true, status: 'diagnosis-complete' });
         assert.equal(settled.runtime.manualDiagnosisBinding, null);
         assert.equal(settled.runtime.pipelineBusy, false);
+      } finally { await page.close(); }
+    });
+
+    await t.test('editing the triggering user row while diagnosis is in flight discards the stale evidence', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowDiagnosis: true });
+        await runAcceptedReply(page);
+        await page.waitForFunction(() => window.__diagnosisPending());
+        await page.evaluate(() => {
+          window.__context.chat[0].mes = '诊断发出后被编辑的另一条用户输入。';
+        });
+        await page.evaluate(() => window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>'));
+        await waitForSettled(page, 'discarded');
+        const evidence = await page.evaluate(() => ({
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          stages: window.__stages,
+        }));
+        assert.equal(evidence.result.status, 'stale');
+        assert.equal(evidence.result.errorCode, 'stale_accepted_target');
+        assert.match(evidence.result.error, /触发用户输入已变化/u);
+        assert.deepEqual(evidence.stages, ['diagnosis']);
+      } finally { await page.close(); }
+    });
+
+    await t.test('changing the previous assistant MVU snapshot while diagnosis is in flight discards the stale evidence', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowDiagnosis: true });
+        await page.evaluate(() => {
+          const clone = (value) => structuredClone(value);
+          const states = new Map([
+            [0, { stat_data: { 测试状态: { 属性: 5 } } }],
+            [2, { stat_data: { 测试状态: { 属性: 7 } } }],
+          ]);
+          const internals = window.StoryOracleAPI.unsafe.eval('get doctor test internals');
+          internals.getMvu = async () => ({
+            async getMvuData(request) {
+              return clone(states.get(Number(request?.message_id)) || null);
+            },
+            async parseMessage(_block, oldData) { return clone(oldData); },
+            async replaceMvuData(next, request) { states.set(Number(request?.message_id), clone(next)); },
+          });
+          window.__changePreviousMvu = () => states.set(0, { stat_data: { 测试状态: { 属性: 6 } } });
+        });
+        await runAcceptedReplyInTauriOrder(page);
+        await page.waitForFunction(() => window.__diagnosisPending());
+        await page.evaluate(() => window.__changePreviousMvu());
+        await page.evaluate(() => window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>'));
+        await waitForSettled(page, 'discarded');
+        const evidence = await page.evaluate(() => ({
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          stages: window.__stages,
+        }));
+        assert.equal(evidence.result.status, 'stale');
+        assert.equal(evidence.result.errorCode, 'stale_accepted_target');
+        assert.match(evidence.result.error, /更新前MVU证据已变化/u);
+        assert.deepEqual(evidence.stages, ['diagnosis']);
       } finally { await page.close(); }
     });
 
@@ -2133,7 +2318,7 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       } finally { await page.close(); }
     });
 
-    await t.test('a nonempty Story Oracle patch with no MVU effect follows the original nochange path', async () => {
+    await t.test('a nonempty Story Oracle patch with no MVU effect stays visible as an unverified warning', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, { diagnosisReply: '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":10}]</JSONPatch></UpdateVariable>' });
@@ -2144,11 +2329,40 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
         }));
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
-        assert.equal(evidence.result.diagnosis.status, 'nochange');
+        assert.equal(evidence.result.status, 'complete_with_warning');
+        assert.equal(evidence.result.diagnosis.status, 'unverified');
+        assert.equal(evidence.result.diagnosis.applicationComplete, false);
+        await page.evaluate(() => window.__emit('chat_loaded'));
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().lastResult?.recoveredFromCheckpoint === true);
+        const restored = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime().lastResult);
+        assert.equal(restored.status, 'complete_with_warning');
+        assert.equal(restored.diagnosis.status, 'unverified');
+        assert.equal(restored.diagnosis.recoveredFromCheckpoint, true);
       } finally { await page.close(); }
     });
 
-    await t.test('diagnosis keeps the Story Oracle prompt small and applies a residual fix to the current post-state', async () => {
+    await t.test('a cancelled checkpoint with an empty next step remains cancelled after reload', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        await page.evaluate(async () => {
+          const key = 'mvuDoctorReferencePipeline:chat-a';
+          const checkpoint = JSON.parse(localStorage.getItem(key));
+          localStorage.setItem(key, JSON.stringify({
+            ...checkpoint, status: 'cancelled', nextStep: '', cancelledAt: new Date().toISOString(),
+          }));
+          await window.__emit('chat_loaded');
+        });
+        await waitForSettled(page, 'cancelled');
+        const runtime = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime());
+        assert.equal(runtime.phase, 'cancelled');
+        assert.equal(runtime.lastResult, null);
+      } finally { await page.close(); }
+    });
+
+    await t.test('diagnosis restores the five-part evidence packet and applies a residual fix to the current post-state', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -2216,9 +2430,14 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
             result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
           };
         });
-        assert.equal(evidence.systemMessage, 'diagnose the accepted final', 'the mature Story Oracle prompt remains the sole model context');
-        assert.equal(evidence.userMessage, '【自动诊断】最新一条 AI 回复里带有 <UpdateVariable> 更新。请按本卡 MVU 规则与当前状态核验它：有错就只输出一个修正后的 <UpdateVariable> 区块（仅含需改正的字段）；完全正确则在 <JSONPatch> 里输出空数组（[]）。');
-        assert.doesNotMatch(`${evidence.systemMessage}\n${evidence.userMessage}`, /<pre_update_stat_data>|<current_post_update_stat_data>|<original_update_block>|<triggering_user_input>|<accepted_narrative>|【核对顺序】/u);
+        assert.match(evidence.systemMessage, /^diagnose the accepted final/u, 'Story Oracle remains the base diagnostic prompt');
+        assert.match(evidence.systemMessage, /current post-update 只是原更新落地后的观测结果/u);
+        for (const evidenceTag of ['pre_update_stat_data', 'current_post_update_stat_data', 'original_update_block', 'triggering_user_input', 'accepted_narrative']) {
+          assert.match(evidence.userMessage, new RegExp(`<${evidenceTag}>`));
+        }
+        assert.match(evidence.userMessage, /本回合把初始值明确设为10，并获得2点奖励/u);
+        assert.match(evidence.userMessage, /白露确认初始值10，奖励生效后最终值应为12/u);
+        assert.match(evidence.userMessage, /【核对顺序】/u);
         assert.equal(evidence.pre.stat_data.测试状态.属性, 5);
         assert.equal(evidence.current.stat_data.测试状态.属性, 12, 'the correction is residual against post-state, not a replay of the old delta');
         assert.equal(evidence.result.diagnosis.status, 'applied');
@@ -2242,9 +2461,11 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
             userMessage: String(request.find((message) => message.role === 'user')?.content || ''),
           };
         });
-        assert.equal(evidence.systemMessage, 'diagnose the accepted final');
-        assert.equal(evidence.userMessage, '【自动诊断】最新一条 AI 回复的正文里【没有】变量更新区块。请充当变量更新引擎：通读这条回复，依本卡 MVU 规则与当前状态，推导出本回合应当发生的全部变量更新，输出一个 <UpdateVariable> 区块把状态更新到位；若这条回复确实不涉及任何变量变化，则在 <JSONPatch> 里输出空数组（[]）。');
-        assert.doesNotMatch(`${evidence.systemMessage}\n${evidence.userMessage}`, /<current_pre_update_stat_data>|<current_post_update_stat_data>|<accepted_narrative>/u);
+        assert.match(evidence.systemMessage, /^diagnose the accepted final/u);
+        assert.match(evidence.systemMessage, /current pre-update 是本轮尚未写入变化时的起点/u);
+        assert.match(evidence.userMessage, /<current_pre_update_stat_data>/u);
+        assert.doesNotMatch(evidence.userMessage, /<current_post_update_stat_data>/u);
+        assert.match(evidence.userMessage, /<accepted_narrative>[\s\S]*本轮没有发生需要写入变量的变化/u);
       } finally { await page.close(); }
     });
 
@@ -2364,9 +2585,9 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           official: window.__normalizedInsertEvidence(),
           stages: [...window.__stages],
         }));
-        assert.equal(evidence.result.status, 'complete');
-        assert.equal(evidence.result.diagnosis.status, 'nochange');
-        assert.equal(evidence.result.diagnosis.applicationComplete, true);
+        assert.equal(evidence.result.status, 'complete_with_warning');
+        assert.equal(evidence.result.diagnosis.status, 'unverified');
+        assert.equal(evidence.result.diagnosis.applicationComplete, false);
         assert.equal(evidence.result.diagnosis.canProceed, true);
         assert.equal(evidence.result.diagnosis.verificationMode, 'story-oracle-official-mvu');
         assert.equal(evidence.result.diagnosis.officialResult, 'parsed-equivalent');
@@ -2382,18 +2603,24 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
     await t.test('Story Oracle wrapped empty JSONPatch is the original nochange success path', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
-        await installHarness(page, { diagnosisReply: '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>' });
+        await installHarness(page, {
+          diagnosisReply: '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>',
+          mvuPatchMode: 'apply',
+        });
         await runAcceptedReply(page);
         await waitForSettled(page, 'done');
         const evidence = await page.evaluate(() => ({
           stages: window.__stages,
           result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
           notifications: window.__storyNotifications,
+          parseCalls: window.__mvuParseCalls,
         }));
         assert.deepEqual(evidence.stages, ['diagnosis', 'profile']);
         assert.equal(evidence.result.diagnosis.status, 'nochange');
         assert.equal(evidence.result.diagnosis.semanticProof, false);
         assert.match(evidence.result.diagnosis.verdict, /不是脚本对剧情语义的独立证明/u);
+        assert.equal(evidence.parseCalls, 1, 'a wrapped empty result still traverses the single official MVU parser');
+        assert.equal(evidence.result.diagnosis.mvu.hp, 10, 'an explicit empty result remains zero-write even if parsing normalizes a candidate');
         assert.deepEqual(evidence.notifications, [], 'model nochange must not invoke Story Oracle\'s misleading clean-success notifier');
       } finally { await page.close(); }
     });
@@ -2434,9 +2661,9 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
             userMessage: String(request.find((message) => message.role === 'user')?.content || ''),
           };
         });
-        assert.equal(request.systemMessage, 'diagnose the accepted final');
-        assert.equal(request.userMessage, '【自动诊断】最新一条 AI 回复里带有 <UpdateVariable> 更新。请按本卡 MVU 规则与当前状态核验它：有错就只输出一个修正后的 <UpdateVariable> 区块（仅含需改正的字段）；完全正确则在 <JSONPatch> 里输出空数组（[]）。');
-        assert.doesNotMatch(`${request.systemMessage}\n${request.userMessage}`, /只有机制更新|<accepted_narrative>|<UpdateVariable><Analysis>只有机制更新/u);
+        assert.match(request.systemMessage, /^diagnose the accepted final/u);
+        assert.match(request.userMessage, /<accepted_narrative>[\s\S]*本楼没有可独立读取的叙事正文，只有变量机制区块/u);
+        assert.equal((request.userMessage.match(/只有机制更新/gu) || []).length, 1, 'the mechanism block appears only in original_update_block, not duplicated as narrative');
       } finally { await page.close(); }
     });
 
@@ -2483,7 +2710,7 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       } finally { await page.close(); }
     });
 
-    await t.test('an empty example outside the returned nonempty block cannot hide a real correction', async () => {
+    await t.test('an empty JSONPatch example outside the returned nonempty block is rejected as ambiguous', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -2491,10 +2718,57 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           mvuPatchMode: 'apply',
         });
         await runAcceptedReply(page);
-        await waitForSettled(page, 'done');
-        const result = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime().lastResult);
-        assert.equal(result.diagnosis.status, 'applied');
+        await waitForSettled(page, 'failed');
+        const evidence = await page.evaluate(() => ({
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          parseCalls: window.__mvuParseCalls,
+          writes: window.__mvuWrites.length,
+          profileCalls: window.__modelCalls.filter((call) => call.kind === 'profile').length,
+        }));
+        assert.equal(evidence.result.failedStep, 'diagnosis');
+        assert.equal(evidence.result.errorCode, 'story_oracle_ambiguous_jsonpatch');
+        assert.equal(evidence.parseCalls, 0, 'an ambiguous full response must not reach official MVU parsing');
+        assert.equal(evidence.writes, 0, 'an ambiguous full response must not write MVU state');
+        assert.equal(evidence.profileCalls, 0, 'an ambiguous diagnosis must not advance to profile generation');
       } finally { await page.close(); }
+    });
+
+    await t.test('an empty JSONPatch example inside the selected envelope cannot hide a second patch', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReply: '<UpdateVariable><Analysis>空结果示例：<JSONPatch>[]</JSONPatch></Analysis><JSONPatch>[{"op":"replace","path":"/hp","value":11}]</JSONPatch></UpdateVariable>',
+          mvuPatchMode: 'apply',
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'failed');
+        const evidence = await page.evaluate(() => ({
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          stages: window.__stages,
+        }));
+        assert.equal(evidence.result.failedStep, 'diagnosis');
+        assert.equal(evidence.result.errorCode, 'story_oracle_ambiguous_jsonpatch');
+        assert.deepEqual(evidence.stages, ['diagnosis']);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a second complete or truncated UpdateVariable cannot hide behind the first empty envelope', async () => {
+      for (const suffix of [
+        '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":11}]</JSONPatch></UpdateVariable>',
+        '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":11}]',
+      ]) {
+        const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+        try {
+          await installHarness(page, {
+            diagnosisReply: `<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>${suffix}`,
+          });
+          await runAcceptedReply(page);
+          await waitForSettled(page, 'failed');
+          const result = await page.evaluate(() => window.MVUDoctorProfileEngine.getRuntime().lastResult);
+          assert.equal(result.failedStep, 'diagnosis');
+          assert.equal(result.errorCode, 'story_oracle_ambiguous_update_envelope');
+        } finally { await page.close(); }
+      }
     });
 
     await t.test('soft title suggestions do not become mandatory profile rows', async () => {
@@ -3309,8 +3583,20 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           window.__setChat([
             { is_user: true, mes: '只检查眼前的人。' },
             { is_user: false, is_system: false, mes: '白姑娘把药箱放到桌边。', swipe_id: 0, swipes: ['白姑娘把药箱放到桌边。'] },
-          ]);
+           ]);
         }, { current: currentProfile, remote: remoteProfile });
+        await page.evaluate(async () => {
+          const extensionKey = 'mvu-doctor-kemini-clean';
+          window.__context.extensionSettings[extensionKey] = {
+            mvuDoctorReferenceSettings: { profileEnabled: false },
+          };
+          try {
+            await window.MVUDoctorProfileEngine.runDiagnosis();
+          } finally {
+            window.__context.extensionSettings[extensionKey].mvuDoctorReferenceSettings.profileEnabled = true;
+          }
+        });
+        await waitForSettled(page, 'done');
         await page.locator('#mvu-ref-launcher').click();
         await page.locator('[data-action="retry-profile"]').click();
         await waitForSettled(page, 'done');
@@ -3592,33 +3878,63 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       } finally { await page.close(); }
     });
 
+    await t.test('profile retry preserves a parsed-equivalent warning from the durable diagnosis receipt', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          diagnosisReply: '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":10}]</JSONPatch></UpdateVariable>',
+          discoveryReplies: ['无法解析的人物发现', '修复后仍无法解析'],
+        });
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'failed');
+        const before = await page.evaluate(() => ({
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+        }));
+        assert.equal(before.result.failedStep, 'profile');
+        assert.equal(before.result.diagnosis.status, 'unverified');
+        assert.equal(before.checkpoint.diagnosisReceipt.status, 'unverified');
+        await page.evaluate(async () => {
+          window.__setDiscoveryReplies([JSON.stringify({ detectedCharacters: ['白露'], noCharacterReason: '' })]);
+          await window.MVUDoctorProfileEngine.runCurrent();
+        });
+        await waitForSettled(page, 'done');
+        const after = await page.evaluate(() => ({
+          result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+          stages: window.__stages,
+        }));
+        assert.equal(after.result.status, 'complete_with_warning');
+        assert.equal(after.result.diagnosis.status, 'unverified');
+        assert.equal(after.result.diagnosis.recoveredFromCheckpoint, true);
+        assert.equal(after.checkpoint.diagnosisReceipt.status, 'unverified');
+        assert.deepEqual(after.stages, ['diagnosis', 'profile']);
+      } finally { await page.close(); }
+    });
+
     await t.test('a committed profile receipt skips a duplicate model call when reload resumes profile', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page);
-        await page.evaluate(() => {
-          const reply = '白露：我先替你看一看伤口。';
-          window.__setChat([
-            { is_user: true, mes: '请继续。' },
-            { is_user: false, is_system: false, mes: reply, swipe_id: 0, swipes: [reply] },
-          ]);
-        });
-        const first = await page.evaluate(() => window.MVUDoctorProfileEngine.runProfile());
-        assert.equal(first.modelCalls, 2);
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const before = await page.evaluate(() => ({
+          stages: [...window.__stages],
+          modelCalls: window.__modelCalls.length,
+          checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+          receipts: Object.values(window.MVUDoctorProfileEngine.getStore().profileReceipts || {}),
+        }));
+        assert.equal(before.checkpoint.lastCompletedStep, 'profile');
+        assert.ok(before.checkpoint.diagnosisReceipt?.evidenceReceipt?.targetMvu?.payloadFingerprint);
+        assert.equal(before.receipts.length, 1);
+        assert.ok(before.receipts[0].diagnosisReceiptFingerprint);
         await page.evaluate(async () => {
-          const store = window.MVUDoctorProfileEngine.getStore();
-          const receipt = Object.values(store.profileReceipts)[0];
-          const generationKey = 'chat-a:receipt-window:test-generation';
-          store.profileReceipts[generationKey] = { ...receipt, generationKey };
-          window.WORLD_ENGINE_STORE.setItem('mvuDoctorReferenceProfileStore:chat-a', JSON.stringify(store));
-          const message = window.__context.chat[receipt.messageId];
-          const target = {
-            chatId: receipt.chatId, index: receipt.messageId, swipeId: receipt.swipeId,
-            fingerprint: receipt.fingerprint, identity: receipt.identity, generationKey, content: message.mes,
-          };
-          localStorage.setItem('mvuDoctorReferencePipeline:chat-a', JSON.stringify({
-            status: 'running', target, generationType: 'normal', nextStep: 'profile',
-            reason: 'auto', lastCompletedStep: 'diagnosis', updatedAt: new Date().toISOString(),
+          const key = 'mvuDoctorReferencePipeline:chat-a';
+          const checkpoint = JSON.parse(localStorage.getItem(key));
+          localStorage.setItem(key, JSON.stringify({
+            ...checkpoint,
+            status: 'running', nextStep: 'profile', lastCompletedStep: 'diagnosis',
+            reason: 'synthetic-reload-after-profile-commit', updatedAt: new Date().toISOString(),
           }));
           await window.__emit('chat_loaded');
         });
@@ -3631,14 +3947,15 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
         }));
         assert.equal(evidence.runtime.phase, 'done', JSON.stringify({ runtime: evidence.runtime, checkpoint: evidence.checkpoint }));
-        assert.deepEqual(evidence.stages, ['profile']);
+        assert.deepEqual(evidence.stages, before.stages);
+        assert.equal(await page.evaluate(() => window.__modelCalls.length), before.modelCalls);
         assert.equal(evidence.result.profile.status, 'already-committed');
         assert.equal(evidence.result.profile.modelCalls, 0);
         assert.equal(evidence.calls, 0);
       } finally { await page.close(); }
     });
 
-    await t.test('a Story write followed by save failure preserves identity and manual recovery continues', async () => {
+    await t.test('a Story write followed by save failure compensates MVU and body without migrating identity', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -3651,10 +3968,14 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         const before = await page.evaluate(() => ({
           runtime: window.MVUDoctorProfileEngine.getRuntime(),
           latest: window.__context.chat.at(-1).mes,
+          mvu: window.__mvuState(),
+          latch: window.__mutationLatchCopies(),
           checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
         }));
         assert.equal(before.runtime.lastResult.failedStep, 'diagnosis');
-        assert.ok(before.latest.includes('<UpdateVariable>'));
+        assert.equal(before.latest, '白露：我先替你看一看伤口。');
+        assert.equal(before.mvu.hp, 10);
+        assert.notEqual(before.latch.local?.compromised, true);
         assert.equal(before.runtime.lastAccepted.identity, before.checkpoint.target.identity);
         assert.ok(before.checkpoint.target.generationKey);
         await page.evaluate(async () => {
@@ -3668,7 +3989,7 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
       } finally { await page.close(); }
     });
 
-    await t.test('manual Story save failure also migrates identity before exposing the error', async () => {
+    await t.test('manual Story save failure also compensates MVU and keeps the accepted identity', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, { mvuPatchMode: 'apply' });
@@ -3683,16 +4004,713 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
           catch (caught) { error = caught?.message || String(caught); }
           const afterFailure = window.MVUDoctorProfileEngine.getRuntime().lastAccepted;
           const checkpoint = JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null');
+          const failedContent = window.__context.chat.at(-1).mes;
+          const failedMvu = window.__mvuState();
+          const failedLatch = window.__mutationLatchCopies();
           window.__setDiagnosisReply('<JSONPatch>[]</JSONPatch>');
           const retry = await window.MVUDoctorProfileEngine.runDiagnosis();
-          return { before, afterFailure, checkpoint, retry, error, calls: window.__worldCalls };
+          return { before, afterFailure, checkpoint, failedContent, failedMvu, failedLatch, retry, error, calls: window.__worldCalls };
         });
         assert.match(evidence.error, /synthetic saveChat failure/u);
-        assert.notEqual(evidence.afterFailure.identity, evidence.before.identity);
+        assert.equal(evidence.afterFailure.identity, evidence.before.identity);
         assert.equal(evidence.afterFailure.generationKey, evidence.before.generationKey);
-        assert.equal(evidence.checkpoint.target.identity, evidence.afterFailure.identity);
+        assert.equal(evidence.checkpoint.target.identity, evidence.before.identity);
+        assert.equal(evidence.failedContent, '白露：我先替你看一看伤口。');
+        assert.equal(evidence.failedMvu.hp, 10);
+        assert.notEqual(evidence.failedLatch.local?.compromised, true);
         assert.ok(evidence.retry.diagnosis || evidence.retry.profile || evidence.retry.status);
         assert.equal(evidence.calls.length, 0);
+      } finally { await page.close(); }
+    });
+
+    await t.test('a durable diagnosis receipt sidecar recovers with zero re-diagnosis while a compensated profile reruns once', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, {
+          slowDiagnosis: true,
+          profileReplies: [profileEnvelope(), profileEnvelope()],
+        });
+        await runAcceptedReply(page);
+        await page.waitForFunction(() => window.__diagnosisPending());
+        const initialCheckpoint = await page.evaluate(() => localStorage.getItem('mvuDoctorReferencePipeline:chat-a'));
+        assert.ok(initialCheckpoint);
+        await page.evaluate(() => {
+          window.__failNextPipelineWrites(2);
+          window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>');
+        });
+        await waitForSettled(page, 'failed');
+        const sidecar = await page.evaluate(() => {
+          const key = [...window.__worldStore.keys()]
+            .find((candidate) => candidate.startsWith('mvuDoctorReferenceDiagnosisReceipt:'));
+          return {
+            key: key || '',
+            mirror: key ? window.__worldStore.get(key) : null,
+            durable: key ? window.__durableGet(key) : null,
+            diagnosisCalls: window.__diagnosisRequests.length,
+          };
+        });
+        assert.ok(sidecar.key, 'diagnosis success must create a durable receipt sidecar before the local checkpoint handoff');
+        assert.equal(sidecar.durable, sidecar.mirror, 'the sidecar requires an IndexedDB readback, not only the sync mirror');
+        assert.equal(sidecar.diagnosisCalls, 1);
+
+        await page.evaluate(async (checkpointRaw) => {
+          localStorage.setItem('mvuDoctorReferencePipeline:chat-a', checkpointRaw);
+          await window.__emit('chat_loaded');
+        }, initialCheckpoint);
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done'
+          || window.__diagnosisPendingCount() > 0, null, { timeout: 8000 });
+        const recovered = await page.evaluate(() => ({
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          diagnosisCalls: window.__diagnosisRequests.length,
+          pendingDiagnoses: window.__diagnosisPendingCount(),
+          stages: [...window.__stages],
+        }));
+        assert.equal(recovered.pendingDiagnoses, 0, 'reload must not start another diagnosis request');
+        assert.equal(recovered.diagnosisCalls, 1, 'the durable sidecar owns recovery after checkpoint loss');
+        assert.equal(recovered.runtime.phase, 'done');
+        assert.equal(recovered.stages.filter((stage) => stage === 'diagnosis').length, 1,
+          'durable diagnosis completion must prevent re-diagnosis');
+        assert.equal(recovered.stages.filter((stage) => stage === 'profile').length, 2,
+          'the profile committed before checkpoint failure is compensated, then rerun exactly once');
+      } finally { await page.close(); }
+    });
+
+    await t.test('an older diagnosis clear cannot overwrite a newer mutation-integrity incident', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { slowDiagnosis: true });
+        await runAcceptedReply(page);
+        await page.waitForFunction(() => window.__diagnosisPending());
+        await page.evaluate(() => window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>'));
+        await waitForSettled(page, 'done');
+        const beforeProfileCalls = await page.evaluate(() => window.__modelCalls.filter((call) => call.kind === 'profile').length);
+        await page.evaluate(() => {
+          const checkpoint = JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a'));
+          const target = checkpoint.target;
+          const message = window.__context.chat[target.index];
+          const snapshot = window.__mvuState();
+          window.__setMutationLatch({
+            schema: 2,
+            chatId: target.chatId,
+            compromised: true,
+            errorCode: 'stale_diagnosis_rollback_failed',
+            error: 'synthetic older diagnosis rollback incident',
+            at: new Date(Date.now() - 1000).toISOString(),
+            incidentId: 'diagnosis-incident-old',
+            recovery: {
+              kind: 'diagnosis', chatId: target.chatId, messageId: target.index,
+              swipeId: target.swipeId, generationKey: target.generationKey,
+              mvuSnapshot: snapshot, mvuCandidate: { ...snapshot, hp: Number(snapshot.hp || 0) + 1 },
+              originalContent: message.mes, candidateContent: message.mes,
+              patchBlock: '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>',
+            },
+          });
+          window.__injectMutationIncidentAfterClearPending({
+            schema: 2,
+            chatId: target.chatId,
+            compromised: true,
+            errorCode: 'profile_branch_rollback_failed',
+            error: 'synthetic newer profile rollback incident',
+            at: new Date().toISOString(),
+            incidentId: 'profile-incident-new',
+            recovery: { kind: 'profile', chatId: target.chatId, generationKey: target.generationKey },
+          });
+          window.__manualIncidentRecoveryDone = false;
+          window.__manualIncidentRecoveryError = '';
+          window.MVUDoctorProfileEngine.runDiagnosis().then(
+            () => { window.__manualIncidentRecoveryDone = true; },
+            (error) => {
+              window.__manualIncidentRecoveryError = error?.message || String(error);
+              window.__manualIncidentRecoveryDone = true;
+            },
+          );
+        });
+        await page.waitForFunction(() => window.__diagnosisPendingCount() === 1);
+        await page.evaluate(() => window.__resolveDiagnosis('<JSONPatch>[]</JSONPatch>'));
+        await page.waitForFunction(() => window.__manualIncidentRecoveryDone);
+        const evidence = await page.evaluate(() => ({
+          error: window.__manualIncidentRecoveryError,
+          copies: window.__mutationLatchCopies(),
+          profileCalls: window.__modelCalls.filter((call) => call.kind === 'profile').length,
+        }));
+        assert.match(evidence.error, /事务完整性|事故|incident|清除/u);
+        for (const [source, copy] of Object.entries(evidence.copies)) {
+          assert.equal(copy?.compromised, true, `${source} must remain fail-closed`);
+          assert.equal(copy?.errorCode, 'profile_branch_rollback_failed', `${source} must retain the newer incident kind`);
+          assert.equal(copy?.incidentId, 'profile-incident-new', `${source} must retain the newer incident identity`);
+        }
+        assert.equal(evidence.profileCalls, beforeProfileCalls, 'a failed CAS clear must not resume profile generation');
+      } finally { await page.close(); }
+    });
+
+    await t.test('Doctor waits for an in-flight native Story task and never issues a second diagnosis', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page, { nativeStoryBusy: true });
+        const cancelCallsAtStart = await page.evaluate(() => window.__nativeStoryCancelCalls);
+        await runAcceptedReply(page);
+        await page.waitForFunction((baseline) => window.MVUDoctorProfileEngine.getRuntime().phase === 'diagnosing'
+          && window.__nativeStoryCancelCalls > baseline, cancelCallsAtStart);
+        await page.waitForTimeout(150);
+        const blocked = await page.evaluate(() => ({
+          diagnosisCalls: window.__diagnosisRequests.length,
+          parseCalls: window.__mvuParseCalls,
+          writes: window.__mvuWrites.length,
+        }));
+        assert.deepEqual(blocked, { diagnosisCalls: 0, parseCalls: 0, writes: 0 });
+        await page.evaluate(() => window.__finishNativeStory());
+        await waitForSettled(page, 'failed');
+        const completed = await page.evaluate(() => ({
+          runtime: window.MVUDoctorProfileEngine.getRuntime(),
+          diagnosisCalls: window.__diagnosisRequests.length,
+          parseCalls: window.__mvuParseCalls,
+          writes: window.__mvuWrites.length,
+        }));
+        assert.equal(completed.runtime.lastResult.errorCode, 'native_story_post_reply_preempted');
+        assert.equal(completed.diagnosisCalls, 0);
+        assert.equal(completed.parseCalls, 0);
+        assert.equal(completed.writes, 0);
+      } finally { await page.close(); }
+    });
+
+    await t.test('profile post-commit staleness rolls back exactly, and a failed rollback latches the incident', async () => {
+      for (const failRollback of [false, true]) {
+        const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+        try {
+          await installHarness(page, { slowProfile: true });
+          await runAcceptedReply(page);
+          await page.waitForFunction(() => window.__profilePending());
+          await page.evaluate(({ reply, fail }) => {
+            window.__staleAfterNextProfileCommit(fail);
+            window.__resolveProfile(reply);
+          }, { reply: profileEnvelope(), fail: failRollback });
+          await waitForSettled(page, failRollback ? 'failed' : 'discarded');
+          const evidence = await page.evaluate(() => {
+            const profileKey = 'mvuDoctorReferenceProfileStore:chat-a';
+            const durableRaw = window.__durableGet(profileKey);
+            return {
+              runtime: window.MVUDoctorProfileEngine.getRuntime(),
+              mirror: window.MVUDoctorProfileEngine.getStore(),
+              durable: durableRaw ? JSON.parse(durableRaw) : null,
+              latch: window.__mutationLatchCopies(),
+              latest: window.__context.chat.at(-1).mes,
+            };
+          });
+          assert.match(evidence.latest, /PROFILE_POST_COMMIT_STALE_SENTINEL/u);
+          if (!failRollback) {
+            assert.equal(evidence.runtime.lastResult.status, 'stale');
+            assert.equal(Object.keys(evidence.mirror.profiles || {}).length, 0);
+            assert.equal(Object.keys(evidence.durable?.profiles || {}).length, 0);
+            assert.notEqual(evidence.latch.local?.compromised, true);
+          } else {
+            assert.equal(evidence.runtime.lastResult.errorCode, 'profile_branch_rollback_failed');
+            assert.equal(Object.keys(evidence.durable?.profiles || {}).length, 1, 'failed durable rollback leaves the committed candidate uncertain');
+            assert.equal(evidence.latch.local?.compromised, true);
+            assert.equal(evidence.latch.local?.errorCode, 'profile_branch_rollback_failed');
+            assert.equal(evidence.latch.mirror?.compromised, true);
+          }
+        } finally { await page.close(); }
+      }
+    });
+
+    await t.test('applied diagnosis side effects are compensated when profile evidence turns stale after commit', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      const originalAssistant = '白露：我先替你看一看伤口。';
+      try {
+        await installHarness(page, {
+          slowProfile: true,
+          mvuPatchMode: 'apply',
+          diagnosisReply: '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":11}]</JSONPatch></UpdateVariable>',
+        });
+        await runAcceptedReply(page, originalAssistant);
+        await page.waitForFunction(() => window.__profilePending());
+        await page.evaluate((reply) => {
+          window.__staleAfterNextProfileCommit(false, 'user');
+          window.__resolveProfile(reply);
+        }, profileEnvelope());
+        await waitForSettled(page, 'discarded');
+        const evidence = await page.evaluate(() => {
+          const profileKey = 'mvuDoctorReferenceProfileStore:chat-a';
+          const durableRaw = window.__durableGet(profileKey);
+          return {
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            mirror: window.MVUDoctorProfileEngine.getStore(),
+            durable: durableRaw ? JSON.parse(durableRaw) : null,
+            latch: window.__mutationLatchCopies(),
+            assistant: window.__context.chat.at(-1).mes,
+            user: window.__context.chat.find((message) => message?.is_user)?.mes || '',
+            mvu: window.__mvuState(),
+            mvuWrites: window.__mvuWrites.length,
+          };
+        });
+        assert.equal(evidence.runtime.lastResult.status, 'stale');
+        assert.equal(evidence.runtime.lastResult.failedStep, 'diagnosis');
+        assert.equal(evidence.assistant, originalAssistant, 'Doctor-written repair body must return to its exact pre-diagnosis text');
+        assert.match(evidence.user, /PROFILE_POST_COMMIT_STALE_SENTINEL/u, 'the external evidence change itself must not be overwritten');
+        assert.equal(evidence.mvu.hp, 10, 'the applied MVU candidate must be compensated to its exact snapshot');
+        assert.equal(evidence.mvuWrites, 2, 'one candidate write requires exactly one compensating MVU write');
+        assert.equal(Object.keys(evidence.mirror.profiles || {}).length, 0);
+        assert.equal(Object.keys(evidence.durable?.profiles || {}).length, 0);
+        assert.notEqual(evidence.latch.local?.compromised, true);
+      } finally { await page.close(); }
+    });
+
+    await t.test('ordinary manual diagnosis completes its bound profile, returns the diagnosis verdict, and stale reload never replays a model', async () => {
+      for (const applied of [false, true]) {
+        const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+        const originalAssistant = applied
+          ? '白露：这次手动复检会留下可补偿的变量修复。'
+          : '白露：这次手动复检不会产生变量副作用。';
+        try {
+          await installHarness(page, {
+            mvuPatchMode: applied ? 'apply' : 'noop',
+            diagnosisReply: applied
+              ? '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":11}]</JSONPatch></UpdateVariable>'
+              : '<JSONPatch>[]</JSONPatch>',
+          });
+          const beforeReload = await page.evaluate(async ({ assistant, shouldApply }) => {
+            window.__setChat([
+              { is_user: true, mes: '手动复检这一楼的MVU，并按正常流程补齐人物档案。' },
+              { is_user: false, is_system: false, mes: assistant, swipe_id: 0, swipes: [assistant] },
+            ]);
+            const diagnosis = await window.MVUDoctorProfileEngine.runDiagnosis();
+            const checkpoint = JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null');
+            const store = window.MVUDoctorProfileEngine.getStore();
+            const receipt = store.profileReceipts?.[checkpoint?.target?.generationKey] || null;
+            const fingerprint = (value) => {
+              const source = String(value || '');
+              let hash = 2166136261;
+              for (let index = 0; index < source.length; index += 1) {
+                hash ^= source.charCodeAt(index);
+                hash = Math.imul(hash, 16777619);
+              }
+              return `${source.length}-${(hash >>> 0).toString(36)}`;
+            };
+            const triggeringUser = window.__context.chat.find((message) => message?.is_user);
+            triggeringUser.mes = `${String(triggeringUser.mes || '')}\n\nMANUAL_DIAGNOSIS_STALE_SENTINEL_${shouldApply ? 'APPLIED' : 'NOCHANGE'}`;
+            return {
+              diagnosis,
+              checkpoint,
+              runtimeResult: window.MVUDoctorProfileEngine.getRuntime().lastResult,
+              receipt,
+              expectedDiagnosisReceiptFingerprint: fingerprint(JSON.stringify(checkpoint?.diagnosisReceipt || null)),
+              profiles: Object.keys(store.profiles || {}).length,
+              receipts: Object.keys(store.profileReceipts || {}).length,
+              diagnosisCalls: window.__diagnosisRequests.length,
+              modelCalls: window.__modelCalls.map((call) => call.kind),
+              assistant: window.__context.chat.at(-1).mes,
+              mvu: window.__mvuState(),
+            };
+          }, { assistant: originalAssistant, shouldApply: applied });
+          assert.equal(beforeReload.diagnosis.status, applied ? 'applied' : 'nochange');
+          assert.equal(beforeReload.runtimeResult.diagnosis.status, beforeReload.diagnosis.status,
+            'the public API must return the original diagnosis verdict while the runtime records the full pipeline');
+          assert.equal(beforeReload.runtimeResult.profile.ok, true);
+          assert.equal(beforeReload.checkpoint.status, 'complete');
+          assert.equal(beforeReload.checkpoint.lastCompletedStep, 'profile',
+            'an ordinary manual recheck must finish the normal bound profile stage');
+          assert.equal(beforeReload.checkpoint.nextStep, '');
+          assert.equal(beforeReload.checkpoint.profileTransactionExpected, true);
+          assert.equal(beforeReload.profiles, 1);
+          assert.equal(beforeReload.receipts, 1, 'the normal manual flow must commit one profile receipt');
+          assert.equal(beforeReload.receipt?.status, 'committed');
+          assert.equal(beforeReload.receipt?.generationKey, beforeReload.checkpoint.target.generationKey);
+          assert.equal(beforeReload.receipt?.identity, beforeReload.checkpoint.target.identity);
+          assert.equal(beforeReload.receipt?.diagnosisReceiptFingerprint,
+            beforeReload.expectedDiagnosisReceiptFingerprint,
+            'the profile receipt must bind the actual diagnosis receipt, not a fabricated or empty verdict');
+          assert.equal(beforeReload.diagnosisCalls, 1, 'ordinary manual diagnosis must call Story exactly once');
+          assert.deepEqual(beforeReload.modelCalls, ['discovery', 'profile'],
+            'this reply has one profile candidate, so the normal manual flow must perform only its required profile calls');
+          if (applied) {
+            assert.equal(beforeReload.mvu.hp, 11);
+            assert.match(beforeReload.assistant, /<UpdateVariable>/u);
+          } else {
+            assert.equal(beforeReload.mvu.hp, 10);
+            assert.equal(beforeReload.assistant, originalAssistant);
+          }
+
+          await page.evaluate(async () => { await window.__emit('chat_loaded'); });
+          await page.waitForFunction(() => ['discarded', 'failed'].includes(
+            window.MVUDoctorProfileEngine.getRuntime().phase,
+          ));
+          const recovered = await page.evaluate(() => ({
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+            store: window.MVUDoctorProfileEngine.getStore(),
+            diagnosisCalls: window.__diagnosisRequests.length,
+            modelCalls: window.__modelCalls.length,
+            assistant: window.__context.chat.at(-1).mes,
+            mvu: window.__mvuState(),
+            latch: window.__mutationLatchCopies(),
+          }));
+          assert.equal(recovered.diagnosisCalls, beforeReload.diagnosisCalls,
+            'reload must not replay the manual diagnosis model');
+          assert.equal(recovered.modelCalls, beforeReload.modelCalls.length,
+            'reload must not repeat any profile model call after the completed manual pipeline');
+          assert.equal(Object.keys(recovered.store.profiles || {}).length, 0);
+          assert.equal(Object.keys(recovered.store.profileReceipts || {}).length, 0);
+          for (const [source, copy] of Object.entries(recovered.latch)) {
+            assert.notEqual(copy?.errorCode, 'profile_branch_rollback_failed',
+              `${source} must not demand a profile rollback for a diagnosis-only completion`);
+          }
+          if (!applied) {
+            assert.equal(recovered.runtime.lastResult.status, 'stale',
+              'a stale nochange receipt has no side effects and must be reported honestly as stale');
+            assert.equal(recovered.mvu.hp, 10);
+            assert.equal(recovered.assistant, originalAssistant);
+            for (const [source, copy] of Object.entries(recovered.latch)) {
+              assert.notEqual(copy?.compromised, true, `${source} must stay clean for side-effect-free nochange`);
+            }
+          } else {
+            const diagnosisCompensated = recovered.mvu.hp === 10 && recovered.assistant === originalAssistant;
+            if (diagnosisCompensated) {
+              assert.equal(recovered.runtime.lastResult.status, 'stale');
+              for (const [source, copy] of Object.entries(recovered.latch)) {
+                assert.notEqual(copy?.compromised, true, `${source} must be clean after exact diagnosis compensation`);
+              }
+            } else {
+              for (const [source, copy] of Object.entries(recovered.latch)) {
+                assert.equal(copy?.compromised, true, `${source} must block an uncompensated applied diagnosis`);
+                assert.equal(copy?.errorCode, 'stale_diagnosis_rollback_failed',
+                  `${source} must attribute the incident to diagnosis compensation, never a missing profile receipt`);
+              }
+              assert.equal(recovered.runtime.failedStep, '');
+              assert.notEqual(recovered.checkpoint?.nextStep, 'diagnosis',
+                'an uncompensated applied diagnosis must not become replayable');
+            }
+          }
+        } finally { await page.close(); }
+      }
+    });
+
+    await t.test('a direct committed profile receipt with a missing or corrupt rollback capsule fails closed before any model replay', async () => {
+      for (const capsuleFault of ['missing', 'corrupt']) {
+        const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+        try {
+          await installHarness(page);
+          await runAcceptedReply(page);
+          await waitForSettled(page, 'done');
+          const beforeReload = await page.evaluate((fault) => {
+            const checkpointKey = 'mvuDoctorReferencePipeline:chat-a';
+            const profileKey = 'mvuDoctorReferenceProfileStore:chat-a';
+            const checkpoint = JSON.parse(localStorage.getItem(checkpointKey) || 'null');
+            const store = window.MVUDoctorProfileEngine.getStore();
+            const receiptKey = checkpoint?.target?.generationKey;
+            const receipt = store.profileReceipts?.[receiptKey];
+            if (!receipt) throw new Error('test precondition: committed profile receipt is missing');
+            if (fault === 'missing') delete receipt.profileBeforeImages;
+            else receipt.profileBeforeImages = 'CORRUPT_ROLLBACK_CAPSULE';
+            window.__setWorldStoreCopies(profileKey, JSON.stringify(store));
+            localStorage.setItem(checkpointKey, JSON.stringify({
+              ...checkpoint,
+              status: 'running', nextStep: 'profile', lastCompletedStep: 'diagnosis',
+              reason: `synthetic-direct-receipt-${fault}-capsule`, updatedAt: new Date().toISOString(),
+            }));
+            return {
+              receipt: structuredClone(receipt),
+              diagnosisCalls: window.__diagnosisRequests.length,
+              modelCalls: window.__modelCalls.length,
+            };
+          }, capsuleFault);
+          assert.equal(beforeReload.receipt.status, 'committed');
+          assert.ok(beforeReload.receipt.beforeProfileDigest);
+          assert.ok(beforeReload.receipt.beforeBranchDigest);
+          assert.ok(beforeReload.receipt.diagnosisReceiptFingerprint,
+            'the direct receipt must remain otherwise valid and diagnosis-bound');
+
+          await page.evaluate(async () => { await window.__emit('chat_loaded'); });
+          await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'failed');
+          const recovered = await page.evaluate(() => ({
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+            diagnosisCalls: window.__diagnosisRequests.length,
+            modelCalls: window.__modelCalls.length,
+            latch: window.__mutationLatchCopies(),
+          }));
+          assert.equal(recovered.diagnosisCalls, beforeReload.diagnosisCalls,
+            `${capsuleFault}: recovery must not replay Story diagnosis`);
+          assert.equal(recovered.modelCalls, beforeReload.modelCalls,
+            `${capsuleFault}: an unusable rollback capsule must be rejected before discovery/profile calls`);
+          for (const [source, copy] of Object.entries(recovered.latch)) {
+            assert.equal(copy?.compromised, true, `${capsuleFault}/${source}: the unsafe direct receipt must remain fail-closed`);
+            assert.equal(copy?.errorCode, 'profile_branch_rollback_failed',
+              `${capsuleFault}/${source}: the persisted incident must identify profile rollback integrity`);
+          }
+          assert.equal(recovered.runtime.failedStep, '',
+            `${capsuleFault}: a persisted integrity incident, not a retryable profile step, must own recovery`);
+          assert.notEqual(recovered.checkpoint?.nextStep, 'profile',
+            `${capsuleFault}: the unsafe committed receipt must not remain directly retryable`);
+        } finally { await page.close(); }
+      }
+    });
+
+    await t.test('historical complete survives a new user turn whose generation stops before any assistant reply', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const beforeReload = await page.evaluate(async () => {
+          const store = window.MVUDoctorProfileEngine.getStore();
+          const checkpoint = JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null');
+          const assistantCount = window.__context.chat.filter((message) => message && !message.is_user && !message.is_system).length;
+          window.__context.chat.push({ is_user: true, mes: '下一轮输入已经发送，但这次生成随后被停止。' });
+          await window.__emit('message_sent');
+          await window.__emit('generation_started', 'normal', {}, false);
+          await window.__emit('generation_stopped');
+          return {
+            checkpoint,
+            profiles: JSON.stringify(store.profiles || {}),
+            branches: JSON.stringify(store.branches || {}),
+            receipts: JSON.stringify(store.profileReceipts || {}),
+            diagnosisCalls: window.__diagnosisRequests.length,
+            modelCalls: window.__modelCalls.length,
+            assistantCount,
+            phaseAfterStop: window.MVUDoctorProfileEngine.getRuntime().phase,
+          };
+        });
+        assert.equal(beforeReload.checkpoint.status, 'complete');
+        assert.equal(beforeReload.checkpoint.lastCompletedStep, 'profile');
+        assert.equal(beforeReload.phaseAfterStop, 'cancelled');
+
+        await page.evaluate(async () => { await window.__emit('chat_loaded'); });
+        await page.waitForFunction(() => window.MVUDoctorProfileEngine.getRuntime().phase === 'done');
+        const recovered = await page.evaluate(() => {
+          const store = window.MVUDoctorProfileEngine.getStore();
+          return {
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+            ticket: JSON.parse(localStorage.getItem('mvuDoctorReferenceGeneration:chat-a') || 'null'),
+            profiles: JSON.stringify(store.profiles || {}),
+            branches: JSON.stringify(store.branches || {}),
+            receipts: JSON.stringify(store.profileReceipts || {}),
+            diagnosisCalls: window.__diagnosisRequests.length,
+            modelCalls: window.__modelCalls.length,
+            assistantCount: window.__context.chat.filter((message) => message && !message.is_user && !message.is_system).length,
+            tailIsUser: window.__context.chat.at(-1)?.is_user === true,
+            latch: window.__mutationLatchCopies(),
+          };
+        });
+        assert.equal(recovered.runtime.lastResult.status, 'complete');
+        assert.equal(recovered.checkpoint.status, 'complete');
+        assert.equal(recovered.checkpoint.lastCompletedStep, 'profile');
+        assert.equal(recovered.ticket, null, 'the stopped new generation must not be resurrected on reload');
+        assert.equal(recovered.assistantCount, beforeReload.assistantCount, 'no new assistant reply exists to process');
+        assert.equal(recovered.tailIsUser, true);
+        assert.equal(recovered.diagnosisCalls, beforeReload.diagnosisCalls,
+          'historical validation must not replay the completed diagnosis');
+        assert.equal(recovered.modelCalls, beforeReload.modelCalls,
+          'historical validation must not repeat discovery or profile generation');
+        assert.equal(recovered.profiles, beforeReload.profiles, 'the completed active profiles must be preserved exactly');
+        assert.equal(recovered.branches, beforeReload.branches, 'the completed branch snapshots must be preserved exactly');
+        assert.equal(recovered.receipts, beforeReload.receipts, 'the completed profile receipt must remain reusable');
+        for (const [source, copy] of Object.entries(recovered.latch)) {
+          assert.notEqual(copy?.compromised, true, `${source}: a later normal user turn is not historical evidence tampering`);
+          assert.notEqual(copy?.errorCode, 'stale_diagnosis_rollback_failed');
+          assert.notEqual(copy?.errorCode, 'profile_branch_rollback_failed');
+        }
+      } finally { await page.close(); }
+    });
+
+    await t.test('a crash after durable profile commit compensates stale evidence or latches without model replay', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const beforeReload = await page.evaluate(() => {
+          const key = 'mvuDoctorReferencePipeline:chat-a';
+          const checkpoint = JSON.parse(localStorage.getItem(key));
+          const store = window.MVUDoctorProfileEngine.getStore();
+          const branchProfileCount = (value) => Object.values(value?.branches || {})
+            .reduce((count, branch) => count + Object.keys(branch || {}).length, 0);
+          localStorage.setItem(key, JSON.stringify({
+            ...checkpoint,
+            status: 'running', nextStep: 'profile', lastCompletedStep: 'diagnosis',
+            reason: 'synthetic-crash-after-durable-profile-commit', updatedAt: new Date().toISOString(),
+          }));
+          const triggeringUser = window.__context.chat.find((message) => message?.is_user);
+          triggeringUser.mes = `${String(triggeringUser.mes || '')}\n\nPOST_PROFILE_COMMIT_CRASH_STALE_SENTINEL`;
+          return {
+            profiles: Object.keys(store.profiles || {}).length,
+            receipts: Object.keys(store.profileReceipts || {}).length,
+            branchProfiles: branchProfileCount(store),
+            diagnosisCalls: window.__diagnosisRequests.length,
+            modelCalls: window.__modelCalls.length,
+          };
+        });
+        assert.equal(beforeReload.profiles, 1, 'the simulated crash starts after the profile is durably visible');
+        assert.equal(beforeReload.receipts, 1, 'the committed transaction must retain its rollback receipt');
+        assert.ok(beforeReload.branchProfiles > 0, 'the committed swipe branch must exist before recovery');
+
+        await page.evaluate(async () => { await window.__emit('chat_loaded'); });
+        await page.waitForFunction(() => ['discarded', 'failed'].includes(
+          window.MVUDoctorProfileEngine.getRuntime().phase,
+        ));
+        const recovered = await page.evaluate(() => {
+          const profileKey = 'mvuDoctorReferenceProfileStore:chat-a';
+          const durableRaw = window.__durableGet(profileKey);
+          const mirror = window.MVUDoctorProfileEngine.getStore();
+          const durable = durableRaw ? JSON.parse(durableRaw) : null;
+          const branchProfileCount = (value) => Object.values(value?.branches || {})
+            .reduce((count, branch) => count + Object.keys(branch || {}).length, 0);
+          return {
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+            mirror,
+            durable,
+            mirrorBranchProfiles: branchProfileCount(mirror),
+            durableBranchProfiles: branchProfileCount(durable),
+            diagnosisCalls: window.__diagnosisRequests.length,
+            modelCalls: window.__modelCalls.length,
+            latch: window.__mutationLatchCopies(),
+          };
+        });
+        assert.equal(recovered.diagnosisCalls, beforeReload.diagnosisCalls,
+          'crash recovery must not replay diagnosis after its durable receipt');
+        assert.equal(recovered.modelCalls, beforeReload.modelCalls,
+          'stale evidence must be handled before any profile retry');
+        const profileFullyCompensated = Object.keys(recovered.mirror.profiles || {}).length === 0
+          && Object.keys(recovered.durable?.profiles || {}).length === 0
+          && Object.keys(recovered.mirror.profileReceipts || {}).length === 0
+          && Object.keys(recovered.durable?.profileReceipts || {}).length === 0
+          && recovered.mirrorBranchProfiles === 0
+          && recovered.durableBranchProfiles === 0;
+        if (profileFullyCompensated) {
+          assert.equal(recovered.runtime.lastResult.status, 'stale');
+          for (const [source, copy] of Object.entries(recovered.latch)) {
+            assert.notEqual(copy?.compromised, true, `${source} must stay clean after exact profile compensation`);
+          }
+        } else {
+          for (const [source, copy] of Object.entries(recovered.latch)) {
+            assert.equal(copy?.compromised, true, `${source} must block an uncertain committed profile`);
+            assert.equal(copy?.errorCode, 'profile_branch_rollback_failed',
+              `${source} must identify the uncompensated durable profile transaction`);
+          }
+          assert.equal(recovered.runtime.failedStep, '', 'the integrity latch must own recovery after rollback uncertainty');
+          assert.notEqual(recovered.checkpoint?.nextStep, 'profile',
+            'an uncompensated committed profile must not remain directly retryable');
+        }
+      } finally { await page.close(); }
+    });
+
+    await t.test('reload staleness after an already-committed receipt removes every resumable profile branch without another model call', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      try {
+        await installHarness(page);
+        await runAcceptedReply(page);
+        await waitForSettled(page, 'done');
+        const beforeModelCalls = await page.evaluate(() => window.__modelCalls.length);
+        await page.evaluate(async () => {
+          const key = 'mvuDoctorReferencePipeline:chat-a';
+          const checkpoint = JSON.parse(localStorage.getItem(key));
+          localStorage.setItem(key, JSON.stringify({
+            ...checkpoint,
+            status: 'running', nextStep: 'profile', lastCompletedStep: 'diagnosis',
+            reason: 'synthetic-reload-before-profile-finalization', updatedAt: new Date().toISOString(),
+          }));
+          await window.__emit('chat_loaded');
+          window.__staleAfterNextCommittedReceiptRead('user');
+        });
+        await waitForSettled(page, 'discarded');
+        const evidence = await page.evaluate(() => {
+          const profileKey = 'mvuDoctorReferenceProfileStore:chat-a';
+          const durableRaw = window.__durableGet(profileKey);
+          const mirror = window.MVUDoctorProfileEngine.getStore();
+          const durable = durableRaw ? JSON.parse(durableRaw) : null;
+          const branchProfileCount = (store) => Object.values(store?.branches || {})
+            .reduce((count, branch) => count + Object.keys(branch || {}).length, 0);
+          return {
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            mirror,
+            durable,
+            mirrorBranchProfiles: branchProfileCount(mirror),
+            durableBranchProfiles: branchProfileCount(durable),
+            modelCalls: window.__modelCalls.length,
+            latch: window.__mutationLatchCopies(),
+          };
+        });
+        assert.equal(evidence.runtime.lastResult.status, 'stale');
+        assert.equal(evidence.modelCalls, beforeModelCalls, 'receipt recovery must not call either diagnosis or profile model again');
+        assert.equal(Object.keys(evidence.mirror.profiles || {}).length, 0, 'the recovered committed profile must be compensated');
+        assert.equal(Object.keys(evidence.durable?.profiles || {}).length, 0, 'durable active profiles must match the compensation');
+        assert.equal(Object.keys(evidence.mirror.profileReceipts || {}).length, 0, 'the stale committed receipt must not remain reusable');
+        assert.equal(Object.keys(evidence.durable?.profileReceipts || {}).length, 0, 'the durable stale receipt must be removed');
+        assert.equal(evidence.mirrorBranchProfiles, 0, 'a later swipe restore must not resurrect the stale committed profile');
+        assert.equal(evidence.durableBranchProfiles, 0, 'durable branch history must not retain a resumable stale profile');
+        assert.notEqual(evidence.latch.local?.compromised, true);
+      } finally { await page.close(); }
+    });
+
+    await t.test('reload of a stale applied diagnosis either compensates every side effect or latches without rediagnosing', async () => {
+      const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+      const originalAssistant = '白露：我先替你看一看伤口。';
+      try {
+        await installHarness(page, {
+          mvuPatchMode: 'apply',
+          diagnosisReply: '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":11}]</JSONPatch></UpdateVariable>',
+        });
+        await runAcceptedReply(page, originalAssistant);
+        await waitForSettled(page, 'done');
+        const before = await page.evaluate(() => ({
+          diagnosisCalls: window.__diagnosisRequests.length,
+          modelCalls: window.__modelCalls.length,
+          assistant: window.__context.chat.at(-1).mes,
+          mvu: window.__mvuState(),
+          profiles: Object.keys(window.MVUDoctorProfileEngine.getStore().profiles || {}).length,
+        }));
+        assert.equal(before.mvu.hp, 11);
+        assert.match(before.assistant, /<UpdateVariable>/u);
+        assert.equal(before.profiles, 1);
+
+        await page.evaluate(async () => {
+          const triggeringUser = window.__context.chat.find((message) => message?.is_user);
+          triggeringUser.mes = `${String(triggeringUser.mes || '')}\n\nRELOAD_PREVIOUS_USER_STALE_SENTINEL`;
+          await window.__emit('chat_loaded');
+        });
+        await waitForSettled(page, 'failed');
+        const evidence = await page.evaluate(() => {
+          const profileKey = 'mvuDoctorReferenceProfileStore:chat-a';
+          const durableRaw = window.__durableGet(profileKey);
+          const mirror = window.MVUDoctorProfileEngine.getStore();
+          const durable = durableRaw ? JSON.parse(durableRaw) : null;
+          const branchProfileCount = (store) => Object.values(store?.branches || {})
+            .reduce((count, branch) => count + Object.keys(branch || {}).length, 0);
+          return {
+            runtime: window.MVUDoctorProfileEngine.getRuntime(),
+            checkpoint: JSON.parse(localStorage.getItem('mvuDoctorReferencePipeline:chat-a') || 'null'),
+            mirror,
+            durable,
+            mirrorBranchProfiles: branchProfileCount(mirror),
+            durableBranchProfiles: branchProfileCount(durable),
+            assistant: window.__context.chat.at(-1).mes,
+            mvu: window.__mvuState(),
+            diagnosisCalls: window.__diagnosisRequests.length,
+            modelCalls: window.__modelCalls.length,
+            latch: window.__mutationLatchCopies(),
+          };
+        });
+        assert.equal(evidence.diagnosisCalls, before.diagnosisCalls, 'reload must not invoke Story diagnosis again');
+        assert.equal(evidence.modelCalls, before.modelCalls, 'reload recovery must not invoke the profile model again');
+        assert.equal(Object.keys(evidence.mirror.profiles || {}).length, 0, 'the stale diagnosis-bound active profile must be compensated');
+        assert.equal(Object.keys(evidence.durable?.profiles || {}).length, 0, 'durable active profiles must match the compensation');
+        assert.equal(Object.keys(evidence.mirror.profileReceipts || {}).length, 0, 'the stale profile receipt must not remain reusable');
+        assert.equal(Object.keys(evidence.durable?.profileReceipts || {}).length, 0, 'the durable stale profile receipt must be removed');
+        assert.equal(evidence.mirrorBranchProfiles, 0, 'no swipe branch may resurrect the stale profile');
+        assert.equal(evidence.durableBranchProfiles, 0, 'no durable branch may resurrect the stale profile');
+
+        const diagnosisFullyCompensated = evidence.mvu.hp === 10 && evidence.assistant === originalAssistant;
+        if (diagnosisFullyCompensated) {
+          assert.notEqual(evidence.latch.local?.compromised, true);
+        } else {
+          for (const [source, copy] of Object.entries(evidence.latch)) {
+            assert.equal(copy?.compromised, true, `${source} must block recovery when no durable diagnosis compensation capsule exists`);
+            assert.equal(copy?.errorCode, 'stale_diagnosis_rollback_failed', `${source} must identify the uncompensated diagnosis transaction`);
+          }
+          assert.notEqual(evidence.checkpoint?.nextStep, 'diagnosis', 'an uncompensated applied diagnosis must not become eligible for another diagnosis call');
+          assert.equal(evidence.runtime.failedStep, '', 'the integrity latch, not a retryable diagnosis step, must own recovery');
+        }
       } finally { await page.close(); }
     });
 
@@ -3717,7 +4735,9 @@ test('0.9.8 mature World adapter and Doctor browser smoke', { timeout: 180000 },
         assert.equal(evidence.checkpoint.status, 'complete');
         assert.ok(evidence.checkpoint.supersededGenerationKey);
         assert.equal(evidence.calls.length, 0);
-        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis']);
+        assert.deepEqual(evidence.stages, ['diagnosis', 'diagnosis', 'profile']);
+        assert.equal(evidence.checkpoint.lastCompletedStep, 'profile');
+        assert.equal(evidence.checkpoint.profileTransactionExpected, true);
       } finally { await page.close(); }
     });
 
