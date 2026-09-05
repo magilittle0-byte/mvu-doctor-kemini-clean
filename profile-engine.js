@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const ENGINE_VERSION = '0.9.10';
+  const ENGINE_VERSION = '0.9.11';
   const METADATA_KEY = 'mvuDoctorReferenceProfiles';
   const PROFILE_STORAGE_PREFIX = 'mvuDoctorReferenceProfileStore:';
   const SETTINGS_KEY = 'mvuDoctorReferenceSettings';
@@ -1601,9 +1601,12 @@ ${bindingObligation}
     let wiBlock;
     if (so.diagPickerActive()) wiBlock = (await so.buildDiagSelectedWi()).block;
     else {
-      wiBlock = await so.buildWorldInfo(so.wiContextMode(storySettings));
-      const rules = await so.collectMvuUpdateRules(wiBlock);
-      if (rules.length) wiBlock = [wiBlock, ...rules].filter(Boolean).join('\n\n');
+      // Reuse Story Oracle's raw mechanism-rule recovery. Narrative/world
+      // creation instructions are not variable-update rules. Explicit native
+      // picker selections remain untouched; untagged cards retain its scan.
+      const rules = await so.collectMvuUpdateRules('');
+      wiBlock = rules.length ? rules.join('\n\n')
+        : await so.buildWorldInfo(so.wiContextMode(storySettings));
     }
     const postUpdatePayload = await mvuPayloadAt(target.index);
     if (!hasUsableStatData(postUpdatePayload)) {
@@ -1612,8 +1615,6 @@ ${bindingObligation}
     const postUpdateDigest = JSON.stringify(postUpdatePayload);
     const stat = deepClone(statDataOf(postUpdatePayload));
     const preUpdateEvidence = await previousMvuEvidence(target.index, true);
-    const preUpdatePayload = preUpdateEvidence?.payload ?? null;
-    const preUpdateStat = deepClone(statDataOf(preUpdatePayload) ?? null);
     const triggeringUserEvidence = previousUserEvidence(target.index);
     requireTaskOwner(owner, target, '变量诊断上下文完成');
     const statStr = stat ? JSON.stringify(stat, null, 2) : '';
@@ -1628,51 +1629,14 @@ ${bindingObligation}
       wiBlock, statStr, latestBlock, latestReply, auto: true,
     });
     const hasOriginalUpdate = Boolean(latestBlock);
-    const evidenceAddendum = hasOriginalUpdate
-      ? `【Doctor闭环核对补充】current post-update 只是原更新落地后的观测结果，不是正确答案。必须先依据权威规则、触发输入和最终接受正文独立推导应有变化，再逐路径核对原更新与 current；纠正补丁只叠加在 current 上，不得重放整回合。领取资格、可领取、承诺、意图、尝试和待确认都不等于已经获得、持有、消耗或完成。除非精确路径的权威规则明确要求，禁止改变现有容器类型（对象、数组、字符串、数值）。`
-      : `【Doctor闭环核对补充】本楼没有完整 UpdateVariable。current pre-update 是本轮尚未写入变化时的起点，不是本回合完成后的结果。必须依据权威规则、触发输入和最终接受正文独立推导全部应有变化。领取资格、可领取、承诺、意图、尝试和待确认都不等于已经获得、持有、消耗或完成。除非精确路径的权威规则明确要求，禁止改变现有容器类型（对象、数组、字符串、数值）。`;
-    const systemWithEvidence = `${baseSystemPrompt}\n\n${evidenceAddendum}`;
     const systemPrompt = settings().globalPrompt
-      ? `${systemWithEvidence}\n\n【用户的全局自定义模型适配附加提示词】\n${settings().globalPrompt}`
-      : systemWithEvidence;
-    const baseTask = hasOriginalUpdate
-      ? '【自动诊断】最新一条 AI 回复里带有 <UpdateVariable> 更新。请按本卡 MVU 规则与当前状态核验它：有错就只输出一个修正后的 <UpdateVariable> 区块（仅含需改正的字段）；完全正确则在 <JSONPatch> 里输出空数组（[]）。'
+      ? `${baseSystemPrompt}\n\n【用户的全局自定义模型适配附加提示词】\n${settings().globalPrompt}`
+      : baseSystemPrompt;
+    // Story Oracle already supports a whole-state audit. Request that native
+    // scope, instead of duplicating snapshots and adding a second rule packet.
+    const userMsg = hasOriginalUpdate
+      ? '请审计整个当前 stat_data，而不只是最新一次更新：把当前 stat_data 与完整对话记录进行核对，修正任何偏差，但同样要保守。先诊断并简明、平实地解释每个缺陷，再生成最小纠正补丁；没有缺陷则输出空 JSONPatch（[]）。'
       : '【自动诊断】最新一条 AI 回复的正文里【没有】变量更新区块。请充当变量更新引擎：通读这条回复，依本卡 MVU 规则与当前状态，推导出本回合应当发生的全部变量更新，输出一个 <UpdateVariable> 区块把状态更新到位；若这条回复确实不涉及任何变量变化，则在 <JSONPatch> 里输出空数组（[]）。';
-    let acceptedNarrative;
-    try {
-      acceptedNarrative = typeof so.stripMechanismBlocks === 'function'
-        ? String(so.stripMechanismBlocks(latestReply) || '').trim()
-        : latestReply;
-    } catch { acceptedNarrative = latestReply; }
-    if (!acceptedNarrative) acceptedNarrative = '本楼没有可独立读取的叙事正文，只有变量机制区块。';
-    const currentStateTag = hasOriginalUpdate ? 'current_post_update_stat_data' : 'current_pre_update_stat_data';
-    const auditInstruction = hasOriginalUpdate
-      ? '【核对顺序】先从触发输入、最终正文和权威规则列出本回合每组明确变化，再逐项比较更新前状态、原更新和更新后状态；每组都检查相关配套字段。不得把 current 中已经存在的值当作剧情已完成的证据。只有逐组核对后确实无差异，才输出空 JSONPatch。'
-      : '【核对顺序】先从触发输入、最终正文和权威规则列出本回合每组明确变化，以 current pre-update 为起点生成完整本轮补丁，并同步相关配套字段。只有正文确实没有任何应写入变化，才输出空 JSONPatch。';
-    const userMsg = `${baseTask}
-
-【本楼闭环核对材料】
-<pre_update_stat_data>
-${cropForModel(preUpdateStat ?? '宿主没有提供可读的更新前状态；请依据规则、触发输入和最终正文推导。', 30000)}
-</pre_update_stat_data>
-
-<${currentStateTag}>
-${cropForModel(stat ?? '当前状态不可用。', 30000)}
-</${currentStateTag}>
-
-<original_update_block>
-${cropForModel(latestBlock || '本楼没有完整UpdateVariable区块。', 16000)}
-</original_update_block>
-
-<triggering_user_input>
-${cropForModel(triggeringUserEvidence.content || '宿主没有提供可读的触发用户输入。', 18000)}
-</triggering_user_input>
-
-<accepted_narrative>
-${cropForModel(acceptedNarrative, 40000)}
-</accepted_narrative>
-
-${auditInstruction}`;
     const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }];
     const request = { systemPrompt, userMsg };
     const diagnosisAttempts = [];

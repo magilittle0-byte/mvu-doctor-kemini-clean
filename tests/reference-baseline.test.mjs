@@ -117,7 +117,7 @@ test('native World keeps ownership while Doctor uses the existing task slot and 
   assert.match(profile, /buildWorldActorInstruction,\s*\n/);
 });
 
-test('variable diagnosis restores the mature evidence packet while keeping one official MVU parse and no shadow executor', () => {
+test('variable diagnosis uses native whole-state audit without duplicate evidence while keeping one official MVU parse', () => {
   const profile = read('profile-engine.js');
   const diagnosis = profile.slice(
     profile.indexOf('async function runStoryDiagnosis'),
@@ -128,11 +128,10 @@ test('variable diagnosis restores the mature evidence packet while keeping one o
   assert.match(diagnosis, /MVU固定楼层写后读回与预期不一致/);
   assert.match(diagnosis, /previousMvuEvidence\(target\.index, true/);
   assert.match(profile, /for \(let cursor = Number\(messageId\) - 1; cursor >= 0; cursor -= 1\)/);
-  for (const evidenceTag of ['pre_update_stat_data', 'current_post_update_stat_data', 'original_update_block', 'triggering_user_input', 'accepted_narrative']) {
-    assert.match(diagnosis, new RegExp(evidenceTag));
-  }
-  assert.match(diagnosis, /领取资格、可领取、承诺、意图、尝试和待确认都不等于已经获得、持有、消耗或完成/);
-  assert.match(diagnosis, /禁止改变现有容器类型/);
+  assert.match(diagnosis, /so\.buildDiagnosePromptFrom\(storyCtx, storySettings/);
+  assert.match(diagnosis, /请审计整个当前 stat_data，而不只是最新一次更新/);
+  assert.match(diagnosis, /so\.collectMvuUpdateRules\(''\)/);
+  assert.doesNotMatch(diagnosis, /pre_update_stat_data|current_post_update_stat_data|Doctor闭环核对补充/);
   assert.doesNotMatch(profile, /simulateDiagnosisOperation|auditDiagnosisPatch|appliedDiagnosisBlock|operationReceipts/);
   assert.doesNotMatch(diagnosis, /unsafeCandidate|safeBlock|result\.status = 'partial'/);
 });
@@ -694,7 +693,7 @@ test('legacy settings migration repairs only the exact old Doctor signature and 
 test('manifest and package expose the same reference-baseline version', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(manifest.version, '0.9.10');
+  assert.equal(manifest.version, '0.9.11');
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.js, 'index.js');
   assert.equal(manifest.generate_interceptor, 'mvuDoctorKeminiGenerateInterceptor');

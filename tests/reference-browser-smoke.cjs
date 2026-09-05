@@ -371,7 +371,10 @@ async function installHarness(page, options = {}) {
         .replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/giu, '')
         .replace(/<UpdateVariable>[\s\S]*$/iu, '')
         .replace(/\n{3,}/gu, '\n\n').trim(),
-      buildDiagnosePromptFrom: () => 'diagnose the accepted final',
+      buildDiagnosePromptFrom: (_ctx, _settings, input) => {
+        window.__diagnosisBuilderInput = structuredClone(input);
+        return 'diagnose the accepted final';
+      },
       beginPostReplyCall: () => { const controller = new AbortController(); return { signal: controller.signal, end() {} }; },
       showAutoDiagGenerating: () => null,
       dismissToast() {},
@@ -686,7 +689,7 @@ async function waitForSettled(page, expectedPhase, timeout = 8000) {
   await page.waitForFunction((phase) => window.MVUDoctorProfileEngine.getRuntime().phase === phase, expectedPhase, { timeout });
 }
 
-test('0.9.10 mature World adapter and Doctor browser smoke', { timeout: 300000 }, async (t) => {
+test('0.9.11 mature World adapter and Doctor browser smoke', { timeout: 300000 }, async (t) => {
   const { chromium } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: systemBrowser() });
   try {
@@ -2362,7 +2365,7 @@ test('0.9.10 mature World adapter and Doctor browser smoke', { timeout: 300000 }
       } finally { await page.close(); }
     });
 
-    await t.test('diagnosis restores the five-part evidence packet and applies a residual fix to the current post-state', async () => {
+    await t.test('diagnosis passes current post-state to native builder and applies only the residual fix', async () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
       try {
         await installHarness(page, {
@@ -2424,26 +2427,64 @@ test('0.9.10 mature World adapter and Doctor browser smoke', { timeout: 300000 }
           return {
             systemMessage,
             userMessage,
+            builderInput: structuredClone(window.__diagnosisBuilderInput),
             current: window.__semanticState(3),
             pre: window.__semanticState(0),
             notifications: structuredClone(window.__storyNotifications),
             result: window.MVUDoctorProfileEngine.getRuntime().lastResult,
           };
         });
-        assert.match(evidence.systemMessage, /^diagnose the accepted final/u, 'Story Oracle remains the base diagnostic prompt');
-        assert.match(evidence.systemMessage, /current post-update 只是原更新落地后的观测结果/u);
-        for (const evidenceTag of ['pre_update_stat_data', 'current_post_update_stat_data', 'original_update_block', 'triggering_user_input', 'accepted_narrative']) {
-          assert.match(evidence.userMessage, new RegExp(`<${evidenceTag}>`));
-        }
-        assert.match(evidence.userMessage, /本回合把初始值明确设为10，并获得2点奖励/u);
-        assert.match(evidence.userMessage, /白露确认初始值10，奖励生效后最终值应为12/u);
-        assert.match(evidence.userMessage, /【核对顺序】/u);
+        assert.equal(evidence.systemMessage, 'diagnose the accepted final', 'the native builder result is not wrapped in duplicate instructions');
+        assert.match(evidence.userMessage, /审计整个当前 stat_data/u);
+        assert.doesNotMatch(evidence.userMessage, /pre_update_stat_data|accepted_narrative/u);
+        assert.equal(JSON.parse(evidence.builderInput.statStr).测试状态.属性, 7);
+        assert.match(evidence.builderInput.latestReply, /白露确认初始值10，奖励生效后最终值应为12/u);
+        assert.match(evidence.builderInput.latestBlock, /"value":2/u);
+        assert.equal(evidence.builderInput.auto, true);
         assert.equal(evidence.pre.stat_data.测试状态.属性, 5);
         assert.equal(evidence.current.stat_data.测试状态.属性, 12, 'the correction is residual against post-state, not a replay of the old delta');
         assert.equal(evidence.result.diagnosis.status, 'applied');
         assert.equal(evidence.result.diagnosis.semanticProof, false);
         assert.deepEqual(evidence.notifications.map((entry) => entry.status), ['applied']);
       } finally { await page.close(); }
+    });
+
+    await t.test('diagnosis uses native mechanism rules, preserves explicit picker, and falls back for untagged cards', async () => {
+      for (const mode of ['rules', 'picker', 'fallback']) {
+        const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
+        try {
+          await installHarness(page, { diagnosisReply: '<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>' });
+          await page.evaluate((mode) => {
+            const native = window.StoryOracleAPI.unsafe.eval('get doctor test internals');
+            window.__diagnosisSelectionCalls = [];
+            native.diagPickerActive = () => mode === 'picker';
+            native.buildDiagSelectedWi = async () => {
+              window.__diagnosisSelectionCalls.push('picker');
+              return { block: 'EXPLICIT_SELECTED_ENTRY' };
+            };
+            native.collectMvuUpdateRules = async (existing) => {
+              window.__diagnosisSelectionCalls.push(`rules:${existing}`);
+              return mode === 'rules' ? ['NATIVE_RULE_A', 'NATIVE_RULE_B'] : [];
+            };
+            native.buildWorldInfo = async () => {
+              window.__diagnosisSelectionCalls.push('scan');
+              return 'UNTAGGED_CARD_RULES';
+            };
+          }, mode);
+          await runAcceptedReply(page);
+          await waitForSettled(page, 'done');
+          const result = await page.evaluate(() => ({
+            calls: window.__diagnosisSelectionCalls,
+            block: window.__diagnosisBuilderInput.wiBlock,
+          }));
+          const expected = {
+            rules: { calls: ['rules:'], block: 'NATIVE_RULE_A\n\nNATIVE_RULE_B' },
+            picker: { calls: ['picker'], block: 'EXPLICIT_SELECTED_ENTRY' },
+            fallback: { calls: ['rules:', 'scan'], block: 'UNTAGGED_CARD_RULES' },
+          };
+          assert.deepEqual(result, expected[mode]);
+        } finally { await page.close(); }
+      }
     });
 
     await t.test('diagnosis without an inline update treats current state as the unapplied starting point', async () => {
@@ -2459,13 +2500,15 @@ test('0.9.10 mature World adapter and Doctor browser smoke', { timeout: 300000 }
           return {
             systemMessage: String(request.find((message) => message.role === 'system')?.content || ''),
             userMessage: String(request.find((message) => message.role === 'user')?.content || ''),
+            builderInput: structuredClone(window.__diagnosisBuilderInput),
           };
         });
-        assert.match(evidence.systemMessage, /^diagnose the accepted final/u);
-        assert.match(evidence.systemMessage, /current pre-update 是本轮尚未写入变化时的起点/u);
-        assert.match(evidence.userMessage, /<current_pre_update_stat_data>/u);
-        assert.doesNotMatch(evidence.userMessage, /<current_post_update_stat_data>/u);
-        assert.match(evidence.userMessage, /<accepted_narrative>[\s\S]*本轮没有发生需要写入变量的变化/u);
+        assert.equal(evidence.systemMessage, 'diagnose the accepted final');
+        assert.match(evidence.userMessage, /没有.*变量更新区块/u);
+        assert.match(evidence.userMessage, /推导出本回合应当发生的全部变量更新/u);
+        assert.equal(evidence.builderInput.latestBlock, '');
+        assert.equal(evidence.builderInput.auto, true);
+        assert.match(evidence.builderInput.latestReply, /本轮没有发生需要写入变量的变化/u);
       } finally { await page.close(); }
     });
 
@@ -2659,11 +2702,13 @@ test('0.9.10 mature World adapter and Doctor browser smoke', { timeout: 300000 }
           return {
             systemMessage: String(request.find((message) => message.role === 'system')?.content || ''),
             userMessage: String(request.find((message) => message.role === 'user')?.content || ''),
+            builderInput: structuredClone(window.__diagnosisBuilderInput),
           };
         });
-        assert.match(request.systemMessage, /^diagnose the accepted final/u);
-        assert.match(request.userMessage, /<accepted_narrative>[\s\S]*本楼没有可独立读取的叙事正文，只有变量机制区块/u);
-        assert.equal((request.userMessage.match(/只有机制更新/gu) || []).length, 1, 'the mechanism block appears only in original_update_block, not duplicated as narrative');
+        assert.equal(request.systemMessage, 'diagnose the accepted final');
+        assert.doesNotMatch(request.userMessage, /accepted_narrative|只有机制更新/u);
+        assert.equal(request.builderInput.latestReply, '<UpdateVariable><Analysis>只有机制更新。</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>');
+        assert.equal(request.builderInput.latestBlock, request.builderInput.latestReply, 'the unchanged mechanism-only reply is delegated to the native builder, not expanded into a second narrative packet');
       } finally { await page.close(); }
     });
 
