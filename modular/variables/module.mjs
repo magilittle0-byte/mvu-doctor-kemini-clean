@@ -1,5 +1,5 @@
 import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths } from './core.mjs';
-import { adaptDiagnosisPrompt, currentNarrative, EVIDENCE_INSTRUCTION } from './prompt.mjs';
+import { composeDiagnosisMessages, currentNarrative } from './prompt.mjs';
 
 export function createVariableModule({ host, store, story }) {
   let lastReview = null;
@@ -75,16 +75,17 @@ export function createVariableModule({ host, store, story }) {
     const narrative = currentNarrative(so, ctx, settings, target);
     const worldContext = await readWorldContext(so, settings, rules); assert();
     const contextHash = await digest(worldContext);
-    // Retain the original diagnosis contract and its card/transcript builder.
-    // auto=false avoids the unsupported presence-of-tag == application claim.
-    const nativePrompt = so.buildDiagnosePromptFrom(ctx, { ...settings, includeCard: true, diagnoseSystemPrompt: adaptDiagnosisPrompt(so.resolveModePrompt(settings, 'diagnose')) }, {
-      wiBlock: worldContext, statStr: JSON.stringify(before.stat_data), latestBlock: originalBlock, latestReply: narrative, auto: false,
+    // Retain the native contract, card and transcript builders, while keeping
+    // complete world background separate from the field-definition contract.
+    const substitute = text => { try { return ctx.substituteParams(text); } catch { return text; } };
+    const baseMessages = composeDiagnosisMessages({
+      instruction: substitute(so.resolveModePrompt(settings, 'diagnose')), worldContext,
+      card: substitute(so.buildCardSection(ctx)),
+      history: so.buildTranscript({ ...ctx, chat: ctx.chat.slice(0, target.index) }, settings, false),
+      rules, originalBlock, previous: previous?.payload?.stat_data, current: before.stat_data,
+      narrative, userText: target.userText, protectedPaths: policy.protected, globalPrompt: modelConfig.globalPrompt,
     });
-    const prompt = `${nativePrompt}\n\n【明确由前端/脚本拥有的精确路径】\n${JSON.stringify(policy.protected)}\n\n【更新前MVU；缺失时不能臆造】\n${previous ? JSON.stringify(previous.payload.stat_data) : '本轮没有可用的前态'}\n\n【本轮用户输入】\n${target.userText}\n\n【最终接受的本轮正文（原生正则投影，原更新已单独提供）】\n${narrative}${modelConfig.globalPrompt ? `\n\n【全局自定义模型适配附加提示词】\n${modelConfig.globalPrompt}` : ''}`;
-    const baseMessages = [
-      { role: 'system', content: prompt },
-      { role: 'user', content: EVIDENCE_INSTRUCTION },
-    ];
+    const prompt = baseMessages.map(message => message.content).join('\n\n');
     const assertBaseline = async () => {
       assert();
       if (await modelFingerprint(so.getSettings(), host.settings()) !== configHash) throw fault('model_config_changed', '模型配置已变化，旧候选已作废');
@@ -98,8 +99,8 @@ export function createVariableModule({ host, store, story }) {
       await assertBaseline();
       phase('checking', attempt === 1 ? '正在对照正文、规则和变量检查本轮状态' : `正在自动修复第${attempt - 1}次检查的问题`);
       let raw = '', prepared = null, writeAttempted = false;
+      const messages = retry ? [...baseMessages, { role: 'assistant', content: retry.raw }, { role: 'user', content: retry.feedback }] : baseMessages;
       try {
-        const messages = retry ? [...baseMessages, { role: 'assistant', content: retry.raw }, { role: 'user', content: retry.feedback }] : baseMessages;
         const maxTokens = Math.max(Number(settings.maxTokens) || 4096, 4096);
         if (settings.mode === 'direct') {
           if (!settings.endpoint || !settings.model) throw fault('model_unconfigured', '变量模型连接尚未配置');
@@ -135,7 +136,7 @@ export function createVariableModule({ host, store, story }) {
           patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
           semanticProof: false, officialStateChanged: stateChanged, raw: String(raw), attempts, readback: false, startedAt,
         };
-        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), prompt, raw: String(raw), policy, attempts: clone(attempts) };
+        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, messages: clone(messages), raw: String(raw), policy, attempts: clone(attempts) };
         // Save recovery evidence before writing any MVU. It remains local to
         // this browser; public status never exposes narrative or credentials.
         prepared = record;
@@ -166,7 +167,7 @@ export function createVariableModule({ host, store, story }) {
         if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'mvu_readback', 'mvu_save_readback'].includes(error.code)
           || /^(?:store_|host_)/u.test(String(error.code || ''))) throw error;
         attempts.push({ attempt, result: 'failed', code: error.code || 'model_transport' });
-        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), prompt, raw: String(raw), policy, attempts: clone(attempts) };
+        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, messages: clone(messages), raw: String(raw), policy, attempts: clone(attempts) };
         retry = raw ? { raw: String(raw), feedback: error.feedback || `本次返回尚不能完成变量修复（${error.code || 'model_transport'}）。只修复格式或官方无法执行的部分，仍须完成原任务的全部必要修复。返回唯一完整UpdateVariable和JSONPatch。` } : null;
       }
     }

@@ -1,10 +1,10 @@
-# MVU 模块医生（Kemini Clean 0.10.6 候选）
+# MVU 模块医生（Kemini Clean 0.10.7 候选）
 
 **尚未完成真实门禁，未锁定，不是已可用版本。** 当前仅启用独立的 MVU 变量修复模块。人物档案与世界引擎按顺序稍后制作，旧业务入口不加载。正文预设、MVU和数据库仍各自运行。
 
 变量模块调用原版 Story Oracle 的规则收集与模型连接，以及官方 MVU 的解析和写入。新适配负责最终正文绑定、当前状态差额、明确字段权限、取消和宿主存档读回。它不把空补丁或快速检查通过当作真实功能验收。详见 [来源映射](docs/modular/PHASE1_SOURCE_MAP.md)、[模块合同](docs/modular/MODULE_CONTRACT.md) 和 [阶段进度](docs/modular/PROGRESS.md)。
 
-0.10.5首轮未提前发放装备，但第二轮遗漏已交互新角色的人际关系记录，整版已拒绝。0.10.6明确选择原版支持的整个状态审计，逐条核对已触发却被原更新遗漏的字段，保留事件条件、原身份与字段权限。见[触发字段核对](docs/modular/PHASE1_TRIGGERED_FIELDS_AUDIT.md)、[本轮任务适配](docs/modular/PHASE1_FINAL_DIAGNOSIS_TASK.md)、[空补丁管线修复](docs/modular/PHASE1_EMPTY_PATCH_PIPELINE.md)。本候选仍须重新通过真实十二回合，不能据快速检查锁定。
+0.10.6真实首轮仍漏修并误报类型，已经拒绝。0.10.7修正字段所有权主语识别，恢复原版对MVU补全/合并结果的说明，分别提供世界背景、字段规则和完整实际状态，原始操作保留在复核记录。新候选通过原生profile使用当前正文模型进行变量验收；一次只读比较修对了三项错误，尚不能证明完整可用。见[权限修正](docs/modular/PHASE1_OWNERSHIP_SUBJECT_FIX.md)、[资料分工](docs/modular/PHASE1_CONTEXT_OWNERSHIP.md)、[后态语义](docs/modular/PHASE1_POSTSTATE_NORMALIZATION.md)、[原生模型连接](docs/modular/PHASE1_NATIVE_MODEL_PROFILE.md)。仍须全新聊天完整十二轮后才能锁定。
 
 以下为旧版历史，旧入口源码保留供核对，原 manifest/package 已保存到 `legacy/0.9.11/`。
 

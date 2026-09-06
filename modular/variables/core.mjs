@@ -1,5 +1,5 @@
 // Stage 1 only. No profile creation, world evolution, or local MVU executor.
-export const MODULE_VERSION = '1.0.0-candidate.7';
+export const MODULE_VERSION = '1.0.0-candidate.8';
 export const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 export function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -94,6 +94,19 @@ function mentions(sentence, key) {
   return new RegExp(`(?:^|[^A-Za-z0-9_])${escapedRegex(key)}(?:$|[^A-Za-z0-9_])`, 'u').test(sentence);
 }
 
+function ownershipSubjects(sentence) {
+  // Only declarative ownership clauses. A calculation's inputs, and an AI
+  // action in another clause, do not inherit the output field's ownership.
+  const plain = sentence.replace(/【[^】]+】/gu, ' ').replace(/（[^）]*）|\([^)]*\)/gu, '');
+  return plain.split(/[，,]/u).flatMap(clause => {
+    if (/前端不|不由(?:前端|脚本)/u.test(clause)) return [];
+    if (!/托管|掌控|自动(?:计算|合成|完成)|重置由(?:前端|脚本)处理/u.test(clause)) return [];
+    const owner = clause.match(/(?:均|也)?(?:完全)?(?:交)?由(?:前端|脚本)|(?:前端|脚本)(?:托管|掌控)/u);
+    if (!owner) return [];
+    return [clause.slice(0, owner.index).replace(/^\s*-\s*/u, '').trim()];
+  });
+}
+
 // Compile only explicit field-ownership declarations in a path/check rule
 // document. This does not classify free narrative or infer story outcomes.
 // A leaf name is never blocked outside its declared object (enemies can have
@@ -128,15 +141,28 @@ export function compileOwnership(rules, state) {
           if (parent && typeof parent === 'object') for (const key of Object.keys(parent)) candidates.set(pointer([...path.slice(0, -1), key]), [...path.slice(0, -1), key]);
         }
       }
-      let matched = false;
-      for (const [key, path] of candidates) {
-        if (mentions(sentence.replace(/【[^】]+】/gu, ' '), path.at(-1))) {
-          protectedPaths.set(key, { path: key, rule: sentence.trim() }); matched = true;
+      for (const subject of ownershipSubjects(sentence)) {
+        let matched = false;
+        for (const [key, path] of candidates) {
+          if (mentions(subject, path.at(-1))) {
+            protectedPaths.set(key, { path: key, rule: sentence.trim() }); matched = true;
+          }
         }
-      }
-      // A check applying to every declared leaf can omit the leaf names.
-      if (!matched && /【(?:完全)?禁止修改】\s*由前端|此变量.*交由前端/u.test(sentence)) {
-        for (const path of expanded) protectedPaths.set(pointer(path), { path: pointer(path), rule: sentence.trim() });
+        // An explicit sibling output can be one container above declared
+        // scalar leaves (e.g. bonuses.STR's check also names actual values).
+        // Only fall back when the nearest scope had no named match.
+        if (!matched) for (const path of expanded) {
+          const parentPath = path.slice(0, -2), parent = at(state, parentPath);
+          if (path.length < 3 || !parent || typeof parent !== 'object') continue;
+          for (const key of Object.keys(parent)) if (mentions(subject, key)) {
+            const owned = pointer([...parentPath, key]);
+            protectedPaths.set(owned, { path: owned, rule: sentence.trim() }); matched = true;
+          }
+        }
+        // Anonymous ownership applies only to the declared paths.
+        if (!matched && (!subject || /此变量/u.test(sentence))) {
+          for (const path of expanded) protectedPaths.set(pointer(path), { path: pointer(path), rule: sentence.trim() });
+        }
       }
     }
   }

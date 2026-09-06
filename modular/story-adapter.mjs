@@ -11,7 +11,7 @@ export function storyAdapter(api = globalThis.StoryOracleAPI) {
   if (!api?.isCompatible?.(1) || typeof api?.unsafe?.eval !== 'function') throw fault('reference_contract', '故事神谕接口不兼容');
   // Literal, trusted adapter code only. Model text never reaches this hook.
   const internals = api.unsafe.eval(`({ getSettings, getMvu, diagPickerActive, buildDiagSelectedWi,
-    buildWorldInfo, wiContextMode, collectMvuUpdateRules, extractUpdateBlock, buildDiagnosePromptFrom, resolveModePrompt, buildTranscriptTurns,
+    buildWorldInfo, wiContextMode, collectMvuUpdateRules, extractUpdateBlock, buildDiagnosePromptFrom, resolveModePrompt, buildTranscriptTurns, buildTranscript, buildCardSection,
     callDirect, resolveEndpointUrl, callProfile, refreshMessageBar, mvuIsBusy })`);
   if (Object.values(internals).some(fn => typeof fn !== 'function')) throw fault('reference_contract', '故事神谕诊断接口缺失');
   return Object.freeze(internals);

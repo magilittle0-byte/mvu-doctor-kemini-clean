@@ -34,6 +34,23 @@ test('ownership follows exact declared paths, Chinese adjacency and ancestor wri
   assert.equal(checkOwnership([{ op: 'replace', path: '/玩家/当前敌人/等级', value: 3 }], policy).length, 0);
   assert.equal(checkOwnership([{ op: 'delta', path: '/玩家/头部/EXP_当前', value: 5 }], policy).length, 0);
 });
+test('ownership protects declared outputs without freezing calculation inputs or AI clauses', () => {
+  const scoped = `rules:
+  玩家.头部.信誉:
+    check:
+      - 【禁止修改】态度（如冷淡、友好等）由前端脚本根据信誉值自动计算更新，AI无需修改态度。
+  玩家.职业.\${名称|品质|职业等级}:
+    check:
+      - 转职时更新名称、品质，职业等级重置由前端处理。
+  玩家.属性.加成.\${STR|AGI}:
+    check:
+      - 【禁止修改】由前端根据装备、职业等自动计算。实际值也由前端自动合成。`;
+  const input = { 玩家: { 头部: { 信誉: 3, 态度: '中立' }, 职业: { 名称: '', 品质: '', 职业等级: 1 }, 属性: { 加成: { STR: 0, AGI: 0 }, 实际: { STR: 5, AGI: 5 } }, 敌人: { 态度: '中立', 职业等级: 2, 实际: { STR: 8 } } } };
+  const policy = compileOwnership(scoped, input);
+  assert.deepEqual(policy.protected.map(v => v.path).sort(), ['/玩家/头部/态度', '/玩家/职业/职业等级', '/玩家/属性/加成/STR', '/玩家/属性/加成/AGI', '/玩家/属性/实际'].sort());
+  for (const path of ['/玩家/头部/信誉', '/玩家/职业/名称', '/玩家/职业/品质', '/玩家/敌人/态度', '/玩家/敌人/职业等级', '/玩家/敌人/实际/STR']) assert.equal(checkOwnership([{ op: 'replace', path, value: 4 }], policy).length, 0, path);
+  assert.ok(checkOwnership([{ op: 'replace', path: '/玩家/属性/实际/STR', value: 6 }], policy).length);
+});
 test('format recovery keeps a unique patch; errors and conflicting blocks fail', () => {
   assert.equal(parsePatch('说明\n```json\n[{"op":"delta","path":"/coins","value":5,},]\n```').operations[0].value, 5);
   assert.throws(() => parsePatch('[HTTP Error] connection failed'), { code: 'model_transport' });
@@ -65,7 +82,8 @@ function harness(overrides = {}) {
     wiContextMode: () => 'st', buildWorldInfo: async () => 'Synthetic world rules',
     resolveModePrompt: settings => settings.diagnoseSystemPrompt || nativePrompt,
     buildTranscriptTurns: (ctx, settings, keepMechanism) => { assert.equal(settings.contextDepth, 1); assert.equal(keepMechanism, false); assert.equal(ctx.chat.length, 1); return [{ role: 'assistant', text: ctx.chat[0].mes }]; },
-    extractUpdateBlock: () => '', buildDiagnosePromptFrom: (_ctx, s, args) => { assert.equal(args.auto, false); return s.diagnoseSystemPrompt; },
+    extractUpdateBlock: () => '', buildCardSection: () => 'Synthetic card facts',
+    buildTranscript: (ctx, s, keepMechanism) => { assert.equal(keepMechanism, false); assert.equal(ctx.chat.length, target.index); assert.equal(ctx.chat.some(row => row.mes === target.content), false); return 'Synthetic prior story'; },
     callProfile: async (...args) => { calls.push(args); return overrides.reply?.() ?? '[{"op":"delta","path":"/coins","value":5}]'; },
     refreshMessageBar: () => {},
   };
@@ -80,9 +98,13 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   const sent = h.calls[0][1][0].content;
   assert.doesNotMatch(sent, /只要该条目已存在于状态中，就绝不要把它判为错误/);
   assert.doesNotMatch(sent, /如果效果已经在那里，那么该操作就是成功的/);
+  const normalization = nativePrompt.split('\n').find(line => line.startsWith('- 当前状态已经反映了最新更新实际造成的一切结果。'));
+  assert.ok(sent.includes(normalization), 'native schema completion and merge semantics are retained verbatim');
+  assert.doesNotMatch(sent, /1\. 诊断。逐项核对最新更新在当前状态中体现出的效果/);
+  assert.match(sent, /逐项阅读本卡全部字段的check规则/);
   const messages = h.calls[0][1];
   assert.deepEqual(messages.map(message => message.role), ['system', 'user']);
-  assert.equal(messages[1].content, EVIDENCE_INSTRUCTION);
+  assert.ok(messages[1].content.endsWith(EVIDENCE_INSTRUCTION));
   assert.equal(messages.map(message => message.content).join('\n').split('【本轮变量核对任务】').length - 1, 1);
   assert.doesNotMatch(sent, /【本轮变量核对任务】/);
   assert.match(messages[1].content, /物品存在、约定归属和实际交付是不同状态/);
@@ -102,7 +124,7 @@ test('uses current7 and prior5 evidence; delegates residual+5 once to official M
   assert.equal(h.parsed.length, 1); assert.equal(h.parsed[0].input.stat_data.coins, 7);
   assert.equal(parsePatch(h.parsed[0].block).operations[0].value, 5);
   assert.deepEqual(h.writes[0].options, { type: 'message', message_id: 2 }); assert.equal(h.saves[0].stat_data.coins, 12);
-  assert.match(h.calls[0][1][0].content, /"coins":5/); assert.match(h.calls[0][1][0].content, /领取奖励/);
+  assert.match(h.calls[0][1][1].content, /"coins":\s*5/); assert.match(h.calls[0][1][1].content, /领取奖励/);
   await h.module.run(h.target); assert.equal(h.calls.length, 1, 'valid settled receipt prevents duplicate work');
 });
 test('uses native current-reply projection without changing raw target or saved context depth', async () => {
@@ -116,8 +138,8 @@ test('uses native current-reply projection without changing raw target or saved 
     return [{ role: 'assistant', text: '已经到达车站。' }];
   };
   await h.module.run(h.target);
-  assert.match(h.calls[0][1][0].content, /已经到达车站/);
-  assert.doesNotMatch(h.calls[0][1][0].content, /RAW_FUTURE_PLAN|raw patch/);
+  assert.match(h.calls[0][1][1].content, /已经到达车站/);
+  assert.doesNotMatch(h.calls[0][1][1].content, /RAW_FUTURE_PLAN|raw patch/);
   assert.equal(h.target.content, raw); assert.equal(h.settings.contextDepth, 30);
 });
 test('empty native current-reply projection stops before any model request or write', async () => {
@@ -129,10 +151,9 @@ test('native world context is retained alongside recovered MVU rules and dynamic
   const h = harness({ reply: () => '[]' }); let scans = 0;
   h.so.buildWorldInfo = async mode => { assert.equal(mode, 'st'); return `World acquisition conditions; dynamic scan ${++scans}`; };
   h.so.collectMvuUpdateRules = async existing => { assert.ok(existing === '' || existing.startsWith('World acquisition')); return ['coins tracks actual acquired money']; };
-  h.so.buildDiagnosePromptFrom = (_ctx, s, args) => `${s.diagnoseSystemPrompt}\n${args.wiBlock}`;
   const record = await h.module.run(h.target);
-  assert.match(h.calls[0][1][0].content, /World acquisition conditions; dynamic scan 1/);
-  assert.match(h.calls[0][1][0].content, /coins tracks actual acquired money/);
+  assert.match(h.calls[0][1][1].content, /World acquisition conditions; dynamic scan 1/);
+  assert.match(h.calls[0][1][1].content, /coins tracks actual acquired money/);
   assert.match(record.contextHash, /^[a-f0-9]{64}$/);
   assert.equal(await h.module.validateReceipt(h.target, record), true);
   assert.equal(scans, 1, 'receipt validation does not substitute a new dynamic scan for the recorded request');
@@ -143,9 +164,44 @@ test('native selected world entries remain authoritative without automatic scan 
   h.so.buildDiagSelectedWi = async () => ({ block: 'Explicit selected field and world rules' });
   h.so.buildWorldInfo = async () => assert.fail('selected mode must not scan');
   h.so.collectMvuUpdateRules = async () => assert.fail('selected mode must not add entries');
-  h.so.buildDiagnosePromptFrom = (_ctx, s, args) => `${s.diagnoseSystemPrompt}\n${args.wiBlock}`;
   await h.module.run(h.target);
-  assert.match(h.calls[0][1][0].content, /Explicit selected field and world rules/);
+  assert.match(h.calls[0][1][1].content, /Explicit selected field and world rules/);
+});
+test('world background and field rules stay distinct; current structured state ends data and global override stays system', async () => {
+  const h = harness({ reply: () => '[]' });
+  h.host.settings = () => ({ maxAttempts: 3, globalPrompt: 'GLOBAL_SYNTHETIC_OVERRIDE' });
+  await h.module.run(h.target);
+  const messages = h.calls[0][1], system = messages[0].content, data = messages[1].content;
+  assert.match(system, /GLOBAL_SYNTHETIC_OVERRIDE/);
+  assert.doesNotMatch(system, /Synthetic world rules|Synthetic card facts/);
+  assert.doesNotMatch(data, /GLOBAL_SYNTHETIC_OVERRIDE/);
+  assert.match(data, /<背景设定>[\s\S]*Synthetic world rules[\s\S]*Synthetic card facts[\s\S]*<\/背景设定>/);
+  assert.ok(data.indexOf('=== 本卡MVU字段规则') > data.indexOf('</背景设定>'));
+  assert.ok(data.indexOf('【本轮MVU处理状态】') >= 0);
+  assert.ok(data.indexOf('=== 当前变量状态') > data.indexOf('【本轮MVU处理状态】'));
+  assert.ok(data.indexOf('=== 当前变量状态') > data.indexOf('【更新前MVU'));
+  assert.ok(data.includes(JSON.stringify({ coins: 7 }, null, 2)));
+  assert.equal(data.split(h.target.content).length - 1, 1, 'current narrative is not duplicated in history');
+  assert.deepEqual(h.module.review().messages, messages, 'review retains the actual sent role boundary');
+});
+test('the model reads official object state while the original pre-normalization operation remains reviewable', async () => {
+  const h = harness({ reply: () => '[]' });
+  const original = '<UpdateVariable><JSONPatch>[{"op":"insert","path":"/effects","value":"PRE_NORMALIZED_RECORD"}]</JSONPatch></UpdateVariable>';
+  const raw = `获得实际效果。${original}`;
+  h.target.content = raw;
+  h.so.extractUpdateBlock = () => original;
+  h.so.buildTranscriptTurns = () => [{ role: 'assistant', text: '获得实际效果。' }];
+  h.change({ stat_data: { effects: { 稳定: '已由官方框架归一化。' } } });
+  await h.module.run(h.target);
+  const sent = h.calls[0][1].map(message => message.content).join('\n');
+  assert.doesNotMatch(sent, /PRE_NORMALIZED_RECORD/);
+  assert.match(sent, /"effects":\s*\{\s*"稳定"/);
+  assert.match(sent, /本轮含内联更新记录/);
+  assert.match(sent, /不能仅凭存在更新块认定成功/);
+  assert.doesNotMatch(sent, /内联更新已由官方MVU处理/);
+  assert.equal(h.module.review().originalBlock, original);
+  assert.equal(h.target.content, raw);
+  assert.equal(h.parsed.length, 1);
 });
 test('late model response after variable edit is discarded without parse or write', async () => {
   const h = harness({ reply() { h.change({ stat_data: { coins: 8 } }); return '[]'; } });
