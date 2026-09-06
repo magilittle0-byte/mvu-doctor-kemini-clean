@@ -1,5 +1,5 @@
 // Stage 1 only. No profile creation, world evolution, or local MVU executor.
-export const MODULE_VERSION = '1.0.0-candidate.8';
+export const MODULE_VERSION = '1.0.0-candidate.9';
 export const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 export function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -82,7 +82,7 @@ export function parsePatch(raw) {
   return { operations, block: `<UpdateVariable>\n<JSONPatch>\n${JSON.stringify(operations)}\n</JSONPatch>\n</UpdateVariable>` };
 }
 
-function expandPath(path) {
+export function expandPath(path) {
   const match = path.match(/\$\{([^{}]+)\}/u);
   if (!match) return [path.split('.')];
   return match[1].split('|').flatMap(part => expandPath(path.replace(match[0], part)));

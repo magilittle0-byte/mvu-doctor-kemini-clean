@@ -1,6 +1,6 @@
 import { clone, canonical, digest, fault, equal, usable } from './variables/core.mjs';
 
-export function createHost(getContext = () => globalThis.SillyTavern?.getContext?.()) {
+export function createHost(getContext = () => globalThis.SillyTavern?.getContext?.(), getProxies = async () => (await import('/scripts/openai.js')).proxies) {
   function context() { const ctx = getContext(); if (!ctx) throw fault('host_missing', '酒馆尚未就绪'); return ctx; }
   function scope() {
     const ctx = context();
@@ -79,6 +79,28 @@ export function createHost(getContext = () => globalThis.SillyTavern?.getContext
     ctx.extensionSettings.mvuDoctorModular = { ...settings(), ...values };
     ctx.saveSettingsDebounced?.();
   }
+  async function modelRouteHash(settings) {
+    // Read the same native objects used by ConnectionManagerRequestService.
+    // Only the digest leaves this function; credentials never enter receipts.
+    if (settings.mode === 'direct') return digest({
+      endpoint: settings.endpoint, rawUrl: settings.directRawUrl,
+      viaBackend: settings.directViaBackend, credential: settings.apiKey,
+    });
+    try {
+      const ctx = context(), service = ctx.ConnectionManagerRequestService;
+      const profile = clone(service.getProfile(settings.profileId));
+      const api = service.validateProfile(profile);
+      const manager = ctx.getPresetManager(api.selected);
+      const preset = profile.preset ? manager?.getCompletionPresetByName(profile.preset) : null;
+      const defaults = api.selected === 'openai' ? ctx.chatCompletionSettings : ctx.textCompletionSettings;
+      if (!defaults || (profile.preset && !manager)) throw new Error('missing native settings');
+      const proxy = api.selected === 'openai' && profile.proxy
+        ? (await getProxies()).find(entry => entry.name === profile.proxy) : null;
+      return await digest(clone({ profile, api, preset: preset ?? null, defaults, proxy: proxy ?? null, requestDefaults: service.defaultSendRequestParams }));
+    } catch {
+      throw fault('model_config_unavailable', '无法读取当前实际连接配置，旧候选不会写入；请检查所选连接是否仍可用');
+    }
+  }
   async function saveChat(target, expected) {
     assertTarget(target);
     const ctx = context();
@@ -116,5 +138,5 @@ export function createHost(getContext = () => globalThis.SillyTavern?.getContext
       signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
-  return Object.freeze({ context, scope, capture, latestIndex, messageText, assertTarget, previousMvu, contextSnapshot, settings, updateSettings, saveChat, readback, delay });
+  return Object.freeze({ context, scope, capture, latestIndex, messageText, assertTarget, previousMvu, contextSnapshot, settings, updateSettings, modelRouteHash, saveChat, readback, delay });
 }

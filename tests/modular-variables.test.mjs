@@ -8,6 +8,7 @@ import { createVariableModule } from '../modular/variables/module.mjs';
 import { createHost } from '../modular/host.mjs';
 import { createRuntime } from '../modular/runtime.mjs';
 import { adaptDiagnosisPrompt, EVIDENCE_INSTRUCTION } from '../modular/variables/prompt.mjs';
+import { planVariableGroups, checkGroupScope } from '../modular/variables/groups.mjs';
 
 const nativeSource = fs.readFileSync(new URL('../vendor/story-oracle-v1.35.4/index.js', import.meta.url), 'utf8');
 const nativePrompt = vm.runInNewContext(nativeSource.slice(nativeSource.indexOf('const DIAGNOSE_SYSTEM_PROMPT ='), nativeSource.indexOf('const LOREBOOK_SYSTEM_PROMPT =')) + '\nDIAGNOSE_SYSTEM_PROMPT');
@@ -60,9 +61,15 @@ test('format recovery keeps a unique patch; errors and conflicting blocks fail',
 
 function harness(overrides = {}) {
   let current = { stat_data: { coins: 7 } }, stale = false, saveFailure = false;
+  const profile = { id: 'synthetic-model', api: 'custom', model: 'original', preset: 'synthetic-preset', proxy: 'synthetic-proxy', 'api-url': 'https://synthetic.invalid' };
+  const preset = { temperature: 0.7 }, defaults = { top_p: 0.9 }, proxies = [{ name: 'synthetic-proxy', url: 'https://proxy.invalid', password: 'synthetic-password' }];
+  const routeContext = { chatCompletionSettings: defaults, getPresetManager: () => ({ getCompletionPresetByName: () => preset }),
+    ConnectionManagerRequestService: { getProfile(id) { if (profile.id !== id) throw Error('missing'); return profile; }, validateProfile: () => ({ selected: 'openai', source: 'custom' }) } };
+  const routeHost = createHost(() => routeContext, async () => proxies);
   const values = new Map(), calls = [], parsed = [], writes = [], saves = [];
   const target = { scopeKey: 'chat-a', identity: 'reply-a', index: 2, swipeId: 0, content: '获奖7枚金币。', userText: '领取奖励。' };
   const host = {
+    modelRouteHash: routeHost.modelRouteHash,
     assertTarget() { if (stale) throw fault('stale_target', 'changed'); },
     previousMvu: async () => ({ index: 0, payload: { stat_data: { coins: 5 } } }),
     contextSnapshot: () => ({ chat: [{ mes: '开场' }, { is_user: true, mes: target.userText }, { is_user: false, mes: target.content }] }),
@@ -89,7 +96,7 @@ function harness(overrides = {}) {
   };
   const store = { read: async key => clone(values.get(key) ?? null), write: async (key, value) => { values.set(key, clone(value)); await overrides.onStore?.(key, value); } };
   const module = createVariableModule({ host, store, story: () => so });
-  return { module, host, store, so, mvu, target, values, calls, parsed, writes, saves, settings,
+  return { module, host, store, so, mvu, target, values, calls, parsed, writes, saves, settings, profile, preset, defaults, proxies, routeContext,
     change: value => { current = value; }, stale: () => { stale = true; }, failSave: value => { saveFailure = value; }, current: () => clone(current) };
 }
 test('native prompt override removes conflicting stored-equals-correct instructions and keeps output contract', async () => {
@@ -104,7 +111,10 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   assert.match(sent, /逐项阅读本卡全部字段的check规则/);
   const messages = h.calls[0][1];
   assert.deepEqual(messages.map(message => message.role), ['system', 'user']);
-  assert.ok(messages[1].content.endsWith(EVIDENCE_INSTRUCTION));
+  const baseMessages = h.module.review().baseMessages;
+  assert.ok(baseMessages[1].content.endsWith(EVIDENCE_INSTRUCTION));
+  assert.ok(messages[1].content.startsWith(baseMessages[1].content), 'group scope does not replace or truncate frozen context');
+  assert.match(messages[1].content.slice(baseMessages[1].content.length), /\/coins/);
   assert.equal(messages.map(message => message.content).join('\n').split('【本轮变量核对任务】').length - 1, 1);
   assert.doesNotMatch(sent, /【本轮变量核对任务】/);
   assert.match(messages[1].content, /物品存在、约定归属和实际交付是不同状态/);
@@ -216,6 +226,93 @@ test('a changed model configuration cannot reuse an in-flight candidate', async 
   const h = harness({ reply() { h.settings.profileId = 'changed'; return '[]'; } });
   await assert.rejects(h.module.run(h.target), { code: 'model_config_changed' }); assert.equal(h.writes.length, 0);
 });
+
+test('group planning covers declared missing fields, empty records and unmentioned stored data without overlap', () => {
+  const rules = `rules:
+  actor.relations:
+    check:
+      - Register newly encountered people.
+  actor.relations.known:
+    check:
+      - Existing record.
+  actor.\${time|missing}:
+    check:
+      - Maintain current scene.
+  actor.items.0:
+    check:
+      - Item.`;
+  const groups = planVariableGroups(rules, { actor: { time: 1, relations: {}, items: ['a', 'b'], extra: 4 }, 'a/b~c': {} }, { history: { old: true } }, 2);
+  const paths = groups.flatMap(group => group.paths);
+  assert.deepEqual(new Set(paths), new Set(['/actor/relations', '/actor/time', '/actor/missing', '/actor/items', '/actor/extra', '/a~1b~0c', '/history']));
+  assert.ok(groups.every(group => group.paths.length <= 2));
+  for (const a of paths) for (const b of paths) if (a !== b) assert.equal(a.startsWith(b + '/'), false);
+});
+test('group scope rejects ancestor replacement and cross-group move but accepts bounded merge inserts', () => {
+  const group = { paths: ['/actor/coins', '/actor/items'] };
+  assert.equal(checkGroupScope([{ op: 'insert', path: '/actor', value: { coins: 9, items: [] } }], group).length, 0);
+  assert.equal(checkGroupScope([{ op: 'replace', path: '/actor', value: { coins: 9 } }], group).length, 1);
+  assert.equal(checkGroupScope([{ op: 'insert', path: '/actor', value: { relations: {} } }], group).length, 1);
+  assert.equal(checkGroupScope([{ op: 'move', from: '/other/items/0', to: '/actor/items/-' }], group).length, 1);
+  assert.equal(checkGroupScope([{ op: 'replace', path: '/actor/coinship', value: 8 }], group).length, 1);
+});
+
+test('declared missing roots and malformed parent containers remain repairable within one group', () => {
+  const rules = `rules:
+  absent:
+    check:
+      - Register the required root.
+  actor.stats.hp:
+    check:
+      - Maintain hit points.
+  actor.stats.mp:
+    check:
+      - Maintain magic points.`;
+  const groups = planVariableGroups(rules, { actor: { stats: 'wrong shape', coins: 1 } }, {}, 1);
+  const paths = groups.flatMap(group => group.paths);
+  assert.deepEqual(new Set(paths), new Set(['/absent', '/actor/stats', '/actor/coins']));
+  assert.equal(checkGroupScope([{ op: 'replace', path: '/actor/stats', value: { hp: 10, mp: 5 } }], groups.find(group => group.paths.includes('/actor/stats'))).length, 0);
+});
+
+test('rule changes during a response or immediately before write discard all old results', async () => {
+  for (const stage of ['response', 'committing']) {
+    let rules = 'coins tracks actual acquired money';
+    const h = harness({
+      reply() { if (stage === 'response') rules += ' Changed rule.'; return '[{"op":"delta","path":"/coins","value":5}]'; },
+      onStore(_key, value) { if (stage === 'committing' && value.status === 'committing') rules += ' Changed rule.'; },
+    });
+    h.so.collectMvuUpdateRules = async () => [rules];
+    await assert.rejects(h.module.run(h.target), { code: 'variable_rules_changed' });
+    assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+    if (stage === 'response') assert.equal(h.parsed.length, 0);
+    else assert.equal(h.values.get('variables:chat-a:reply-a').status, 'abandoned');
+  }
+});
+test('same profile ID cannot hide model, endpoint, preset, fallback sampler or proxy changes', async () => {
+  for (const change of [h => { h.profile.model = 'changed'; }, h => { h.profile['api-url'] += '/changed'; }, h => { h.preset.temperature = 0.2; }, h => { h.defaults.top_p = 0.5; }, h => { h.proxies[0].url += '/changed'; }, h => { h.proxies[0].password += '-changed'; }]) {
+    const h = harness({ reply() { change(h); return '[]'; } });
+    await assert.rejects(h.module.run(h.target), { code: 'model_config_changed' });
+    assert.equal(h.calls.length, 1); assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
+  }
+});
+test('resolved connection changes invalidate a settled receipt and force a new model request', async () => {
+  const h = harness({ reply: () => '[]' }); const receipt = await h.module.run(h.target);
+  h.profile.model = 'new-model';
+  assert.equal(await h.module.validateReceipt(h.target, receipt), false);
+  const next = await h.module.run(h.target);
+  assert.equal(h.calls.length, 2); assert.notEqual(next.configHash, receipt.configHash);
+  assert.doesNotMatch(JSON.stringify(next), /synthetic-password|synthetic\.invalid|proxy\.invalid/);
+});
+test('unreadable native connection stops before transport or MVU parsing', async () => {
+  const h = harness(); h.routeContext.ConnectionManagerRequestService.getProfile = () => { throw Error('synthetic secret must not escape'); };
+  await assert.rejects(h.module.run(h.target), error => error.code === 'model_config_unavailable' && !error.message.includes('synthetic secret'));
+  assert.equal(h.calls.length, 0); assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
+});
+test('direct endpoint, raw URL mode, backend forwarding and credentials change the route digest', async () => {
+  const host = createHost(() => ({})); const base = { mode: 'direct', endpoint: 'https://synthetic.invalid', directRawUrl: false, directViaBackend: false, apiKey: 'synthetic-token' };
+  const initial = await host.modelRouteHash(base);
+  for (const update of [{ endpoint: 'https://changed.invalid' }, { directRawUrl: true }, { directViaBackend: true }, { apiKey: 'changed-token' }]) assert.notEqual(await host.modelRouteHash({ ...base, ...update }), initial);
+  assert.match(initial, /^[a-f0-9]{64}$/);
+});
 test('prewrite drift abandons prepared intent and does not create a false recovery conflict', async () => {
   let changed = false;
   const h = harness({ onStore(_key, value) { if (value.status === 'committing' && !changed) { changed = true; h.change({ stat_data: { coins: 9 } }); } } });
@@ -259,6 +356,40 @@ test('official metadata-only changes are saved without claiming a state repair',
 test('unexecutable patch retries without converting a parser no-op into success', async () => {
   const h = harness(); h.mvu.parseMessage = async (_block, input) => input;
   await assert.rejects(h.module.run(h.target), { code: 'patch_no_effect' }); assert.equal(h.calls.length, 3); assert.equal(h.writes.length, 0);
+});
+
+test('multiple groups finish against one baseline before one official parse and durable save', async () => {
+  let h;
+  const source = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`v${i}`, i]));
+  h = harness({ reply() {
+    assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
+    return JSON.stringify([{ op: 'replace', path: h.calls.length === 1 ? '/v0' : '/v8', value: 20 }]);
+  }, officialResult: (_block, input) => ({ ...input, stat_data: { ...input.stat_data, v0: 20, v8: 20 } }) });
+  h.change({ stat_data: source }); const receipt = await h.module.run(h.target);
+  assert.equal(receipt.groupCount, 2); assert.equal(receipt.groups.length, 2); assert.equal(h.calls.length, 2);
+  assert.equal(h.parsed.length, 1); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
+  assert.equal(parsePatch(h.parsed[0].block).operations.length, 2);
+  assert.deepEqual(h.current().stat_data, { ...source, v0: 20, v8: 20 });
+  assert.ok(receipt.groups.every(group => !Object.hasOwn(group, 'messages')), 'do not persist the whole context again for each group');
+});
+test('later group failure retains earlier response in memory but never partially applies it', async () => {
+  const h = harness({ reply: () => h.calls.length === 1 ? '[{"op":"replace","path":"/v0","value":20}]' : '[HTTP Error] synthetic failure' });
+  const source = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`v${i}`, i])); h.change({ stat_data: source });
+  await assert.rejects(h.module.run(h.target), { code: 'model_transport' });
+  assert.equal(h.calls.length, 4, 'one successful group plus three attempts for the failing group');
+  assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+  assert.deepEqual(h.current().stat_data, source);
+});
+test('cross-group write is retried within the same group and cannot reach official MVU', async () => {
+  const h = harness({ reply: () => '[{"op":"replace","path":"/unassigned","value":9}]' });
+  await assert.rejects(h.module.run(h.target), { code: 'field_group_scope' });
+  assert.equal(h.calls.length, 3); assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
+});
+test('a model change between groups discards all earlier group results', async () => {
+  const h = harness({ reply() { if (h.calls.length === 2) h.profile.model = 'changed'; return '[]'; } });
+  h.change({ stat_data: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`v${i}`, i])) });
+  await assert.rejects(h.module.run(h.target), { code: 'model_config_changed' });
+  assert.equal(h.calls.length, 2); assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
 });
 
 test('host binds scope, active swipe and preceding user, rejects later input', async () => {

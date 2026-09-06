@@ -1,9 +1,10 @@
 import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths } from './core.mjs';
 import { composeDiagnosisMessages, currentNarrative } from './prompt.mjs';
+import { planVariableGroups, checkGroupScope, groupInstruction } from './groups.mjs';
 
 export function createVariableModule({ host, store, story }) {
   let lastReview = null;
-  const modelFingerprint = (settings, own) => digest({ mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, diagnosisPrompt: settings.diagnoseSystemPrompt || '', applyRegex: settings.applyRegex, contextDepth: settings.contextDepth, includeHiddenFloors: settings.includeHiddenFloors, worldInfoMode: settings.worldInfoMode, globalPrompt: own.globalPrompt });
+  const modelFingerprint = async (settings, own) => digest({ routeHash: await host.modelRouteHash(settings), mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, diagnosisPrompt: settings.diagnoseSystemPrompt || '', applyRegex: settings.applyRegex, contextDepth: settings.contextDepth, includeHiddenFloors: settings.includeHiddenFloors, worldInfoMode: settings.worldInfoMode, globalPrompt: own.globalPrompt });
   async function readRules(so, settings) {
     if (so.diagPickerActive()) return (await so.buildDiagSelectedWi()).block;
     const collected = await so.collectMvuUpdateRules('');
@@ -88,31 +89,77 @@ export function createVariableModule({ host, store, story }) {
     const prompt = baseMessages.map(message => message.content).join('\n\n');
     const assertBaseline = async () => {
       assert();
-      if (await modelFingerprint(so.getSettings(), host.settings()) !== configHash) throw fault('model_config_changed', '模型配置已变化，旧候选已作废');
+      let currentConfigHash;
+      try { currentConfigHash = await modelFingerprint(so.getSettings(), host.settings()); }
+      catch (error) {
+        if (error.code !== 'model_config_unavailable') throw error;
+        throw fault('model_config_changed', '原连接配置已无法读取，旧候选已作废');
+      }
+      if (currentConfigHash !== configHash) throw fault('model_config_changed', '模型配置已变化，旧候选已作废');
+      let currentRuleHash;
+      try { currentRuleHash = await digest(await readRules(so, so.getSettings())); }
+      catch { throw fault('variable_rules_changed', '本卡变量规则已无法读取，旧候选已作废'); }
+      if (currentRuleHash !== ruleHash) throw fault('variable_rules_changed', '本卡变量规则已变化，旧候选已作废，需按新规则重新检查');
       if (!equal(await read(), before)) throw fault('stale_mvu', '模型运行期间变量已被更新，旧补丁作废，需读取新快照重查');
       const freshPrevious = await host.previousMvu(target, mvu); assert();
       if (!equal(previous, freshPrevious)) throw fault('stale_previous_mvu', '更新前证据已变化，旧补丁作废');
     };
     let retry = null, lastError = null;
     const attempts = [];
+    const groups = planVariableGroups(rules, before.stat_data, previous?.payload?.stat_data);
+    if (!groups.length) throw fault('group_plan_empty', '没有取得可核对的变量范围，未开始写入');
+    const groupResults = new Map();
+    let currentGroup = null;
     for (let attempt = 1; attempt <= modelConfig.maxAttempts; attempt++) {
       await assertBaseline();
       phase('checking', attempt === 1 ? '正在对照正文、规则和变量检查本轮状态' : `正在自动修复第${attempt - 1}次检查的问题`);
       let raw = '', prepared = null, writeAttempted = false;
-      const messages = retry ? [...baseMessages, { role: 'assistant', content: retry.raw }, { role: 'user', content: retry.feedback }] : baseMessages;
+      let messages = baseMessages;
       try {
         const maxTokens = Math.max(Number(settings.maxTokens) || 4096, 4096);
-        if (settings.mode === 'direct') {
-          if (!settings.endpoint || !settings.model) throw fault('model_unconfigured', '变量模型连接尚未配置');
-          const body = { model: settings.model, messages, max_tokens: maxTokens };
-          if (settings.sendTemperature) body.temperature = settings.temperature;
-          raw = await so.callDirect(so.resolveEndpointUrl(settings), settings.apiKey, body, signal);
-        } else {
-          if (!settings.profileId) throw fault('model_unconfigured', '变量模型未选择连接配置');
-          raw = await so.callProfile(settings.profileId, messages, maxTokens, settings.sendTemperature ? { temperature: settings.temperature } : {}, signal);
+        for (const [index, group] of groups.entries()) {
+          if (groupResults.get(group.id)?.valid) continue;
+          currentGroup = group;
+          await assertBaseline();
+          phase('checking', `正在核对第${index + 1}/${groups.length}组变量；全部完成后统一保存`);
+          messages = clone(baseMessages);
+          messages.at(-1).content += '\n\n' + groupInstruction(group, index, groups.length);
+          const priorRaw = retry?.groupId === group.id ? retry.raw : retry && !retry.groupId ? groupResults.get(group.id)?.raw : '';
+          if (priorRaw) messages.push({ role: 'assistant', content: priorRaw }, { role: 'user', content: retry.feedback });
+          raw = '';
+          if (settings.mode === 'direct') {
+            if (!settings.endpoint || !settings.model) throw fault('model_unconfigured', '变量模型连接尚未配置');
+            const body = { model: settings.model, messages, max_tokens: maxTokens };
+            if (settings.sendTemperature) body.temperature = settings.temperature;
+            raw = await so.callDirect(so.resolveEndpointUrl(settings), settings.apiKey, body, signal);
+          } else {
+            if (!settings.profileId) throw fault('model_unconfigured', '变量模型未选择连接配置');
+            raw = await so.callProfile(settings.profileId, messages, maxTokens, settings.sendTemperature ? { temperature: settings.temperature } : {}, signal);
+          }
+          await assertBaseline();
+          const groupPatch = parsePatch(raw);
+          const scopeErrors = checkGroupScope(groupPatch.operations, group);
+          if (scopeErrors.length) {
+            const error = fault('field_group_scope', '本组补丁越过分配范围，全部变量尚未写入');
+            error.feedback = `本组只能修改${JSON.stringify(group.paths)}及其后代；越界操作：${JSON.stringify(scopeErrors)}。请重新返回本组完整必要补丁，其他组由各自任务处理。`;
+            throw error;
+          }
+          const ownershipErrors = checkOwnership(groupPatch.operations, policy);
+          if (ownershipErrors.length) {
+            const error = fault('field_ownership', '本组尝试修改只读或前端托管字段，全部变量尚未写入');
+            error.feedback = `本组触及不归你修改的字段：${JSON.stringify(ownershipErrors)}。前端计算字段不直接写，也不能为达到同一派生总值而绕道改基础值或自定义加成。源字段必须有独立的正文/规则错误才能修正，其他必要修复仍须完成。返回本组完整纠正补丁。`;
+            throw error;
+          }
+          groupResults.set(group.id, { group: clone(group), raw: String(raw), operations: groupPatch.operations, messages: clone(messages), valid: true });
         }
+        currentGroup = null;
         await assertBaseline();
-        const parsed = parsePatch(raw);
+        // Like the database's unified group commit, no official execution or
+        // durable write occurs until every disjoint group has a valid result.
+        const complete = groups.map(group => groupResults.get(group.id));
+        if (complete.some(result => !result?.valid)) throw fault('group_incomplete', '仍有分组没有完成，未写入变量');
+        raw = complete.map((result, index) => `分组 ${index + 1}/${groups.length}\n${result.raw}`).join('\n\n');
+        const parsed = parsePatch(JSON.stringify(complete.flatMap(result => result.operations)));
         const violations = checkOwnership(parsed.operations, policy);
         if (violations.length) {
           const error = fault('field_ownership', '模型尝试修改只读或前端托管字段，候选未写入');
@@ -134,9 +181,10 @@ export function createVariableModule({ host, store, story }) {
           target: clone(target), ruleHash, contextHash, configHash, status: 'prepared',
           before: clone(before), candidate: clone(candidate), beforeHash: currentFingerprint, afterHash: await digest(candidate),
           patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
-          semanticProof: false, officialStateChanged: stateChanged, raw: String(raw), attempts, readback: false, startedAt,
+          semanticProof: false, officialStateChanged: stateChanged, raw: String(raw), groupCount: groups.length,
+          groups: complete.map(({ messages: _messages, ...result }) => clone(result)), attempts, readback: false, startedAt,
         };
-        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, messages: clone(messages), raw: String(raw), policy, attempts: clone(attempts) };
+        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone(complete), raw: String(raw), policy, attempts: clone(attempts) };
         // Save recovery evidence before writing any MVU. It remains local to
         // this browser; public status never exposes narrative or credentials.
         prepared = record;
@@ -164,11 +212,12 @@ export function createVariableModule({ host, store, story }) {
         // A write or durable save may have partially completed. Never call the
         // model again against the old baseline; recovery inspects that receipt.
         if (writeAttempted) throw error;
-        if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'mvu_readback', 'mvu_save_readback'].includes(error.code)
+        if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'variable_rules_changed', 'mvu_readback', 'mvu_save_readback'].includes(error.code)
           || /^(?:store_|host_)/u.test(String(error.code || ''))) throw error;
-        attempts.push({ attempt, result: 'failed', code: error.code || 'model_transport' });
-        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, messages: clone(messages), raw: String(raw), policy, attempts: clone(attempts) };
-        retry = raw ? { raw: String(raw), feedback: error.feedback || `本次返回尚不能完成变量修复（${error.code || 'model_transport'}）。只修复格式或官方无法执行的部分，仍须完成原任务的全部必要修复。返回唯一完整UpdateVariable和JSONPatch。` } : null;
+        attempts.push({ attempt, groupId: currentGroup?.id || null, result: 'failed', code: error.code || 'model_transport' });
+        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone([...groupResults.values()]), failedGroup: clone(currentGroup), raw: String(raw), policy, attempts: clone(attempts) };
+        retry = raw ? { groupId: currentGroup?.id || null, raw: String(raw), feedback: error.feedback || `本次返回尚不能完成变量修复（${error.code || 'model_transport'}）。只修复格式或官方无法执行的部分，仍须完成本组的全部必要修复。返回唯一完整UpdateVariable和JSONPatch。` } : null;
+        if (!currentGroup) for (const result of groupResults.values()) result.valid = false;
       }
     }
     throw lastError || fault('variable_failed', '变量检查未完成');

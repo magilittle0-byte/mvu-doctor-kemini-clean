@@ -26,7 +26,9 @@ export function createRuntime({ host, store, variables, disableNative = () => {}
       if (token !== epoch) return;
       setState({ status: receipt.status, detail: receipt.status === 'model_nochange'
         ? '模型未提出需要修改的变量；已核对存档读回。尚不代表已完成独立真实验收。'
-        : '变量修复已写入，宿主存档读回一致。', busy: false });
+        : receipt.operationCount === 0
+          ? '模型未提出修复；官方MVU完成了派生更新，宿主存档读回一致。仍需独立核对是否漏检。'
+          : '模型修复已写入，宿主存档读回一致；尚不代表已完成独立真实验收。', busy: false });
       for (const consumer of consumers.values()) {
         // Future modules receive isolated copies; their failure cannot rewrite
         // the variable result. No profile/world consumer is registered in P1.

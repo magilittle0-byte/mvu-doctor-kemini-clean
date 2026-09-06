@@ -29,7 +29,8 @@ export function createUi({ host, version }) {
   };
   const labels = { idle: '等待正文', waiting: '正文生成中', waiting_mvu: '等待MVU', checking: '检查中', parsing: '解析修复', saving: '保存中', applied: '已修复', recovered: '已恢复', model_nochange: '模型判定无需修改', cancelled: '已取消', failed: '未完成', outdated: '记录已过期' };
   function render(state) {
-    box.dataset.state = state.status; query('status').textContent = labels[state.status] || state.status;
+    box.dataset.state = state.status;
+    query('status').textContent = state.status === 'applied' && state.result?.operationCount === 0 ? '派生更新已保存' : labels[state.status] || state.status;
     query('detail').textContent = state.detail || '';
     query('cancel').disabled = !state.busy; query('retry').disabled = Boolean(state.busy || state.status === 'waiting');
   }
