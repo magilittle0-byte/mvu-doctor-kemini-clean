@@ -56,7 +56,7 @@ function harness(overrides = {}) {
   };
   const mvu = {
     getMvuData: async () => clone(current),
-    parseMessage: async (block, input) => { parsed.push({ block, input: clone(input) }); return { ...input, stat_data: { coins: 12 } }; },
+    parseMessage: async (block, input) => { parsed.push({ block, input: clone(input) }); return overrides.officialResult ? overrides.officialResult(block, input) : parsePatch(block).operations.length ? { ...input, stat_data: { coins: 12 } } : clone(input); },
     replaceMvuData: async (value, options) => { writes.push({ value: clone(value), options }); current = clone(value); },
   };
   const settings = { mode: 'profile', profileId: 'synthetic-model', maxTokens: 4096 };
@@ -169,8 +169,27 @@ test('failed durable save never reports success; retry verifies pending candidat
 test('no-change is a model conclusion with real save check, not semantic acceptance', async () => {
   const h = harness({ reply: () => '[]' }); const receipt = await h.module.run(h.target);
   assert.equal(receipt.status, 'model_nochange'); assert.equal(receipt.semanticProof, false); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 1);
+  assert.equal(h.parsed.length, 1); assert.equal(receipt.officialStateChanged, false);
   assert.equal(await h.module.validateReceipt(h.target, receipt), true);
   h.change({ stat_data: { coins: 99 } }); assert.equal(await h.module.validateReceipt(h.target, receipt), false);
+});
+test('empty model patch still persists official derived-state updates once without altering source fields', async () => {
+  const h = harness({ reply: () => '[]', officialResult: (_block, input) => ({ ...input, stat_data: { ...input.stat_data, derivedTotal: 14 } }) });
+  h.change({ stat_data: { coins: 7, derivedTotal: 0 } });
+  const receipt = await h.module.run(h.target);
+  assert.equal(receipt.status, 'applied'); assert.equal(receipt.operationCount, 0); assert.equal(receipt.officialStateChanged, true);
+  assert.equal(h.parsed.length, 1); assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
+  assert.deepEqual(h.current().stat_data, { coins: 7, derivedTotal: 14 });
+  assert.deepEqual(h.saves[0], h.current()); assert.equal(receipt.afterHash, await digest(h.current()));
+  assert.equal(receipt.readback, true); assert.equal(receipt.semanticProof, false);
+  await h.module.run(h.target); assert.equal(h.parsed.length, 1, 'settled receipt does not replay official handlers');
+});
+test('official metadata-only changes are saved without claiming a state repair', async () => {
+  const h = harness({ reply: () => '[]', officialResult: (_block, input) => ({ ...input, display_data: clone(input.stat_data) }) });
+  const receipt = await h.module.run(h.target);
+  assert.equal(receipt.status, 'model_nochange'); assert.equal(receipt.officialStateChanged, false);
+  assert.equal(h.writes.length, 1); assert.equal(h.parsed.length, 1);
+  assert.deepEqual(h.current().stat_data, { coins: 7 }); assert.deepEqual(h.saves[0], h.current());
 });
 test('unexecutable patch retries without converting a parser no-op into success', async () => {
   const h = harness(); h.mvu.parseMessage = async (_block, input) => input;

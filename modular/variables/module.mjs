@@ -118,28 +118,29 @@ export function createVariableModule({ host, store, story }) {
           error.feedback = `修复补丁触及不归你修改的字段：${JSON.stringify(violations)}。请按原规则重新生成完整纠正补丁：前端计算字段不直接写，也不能为达到同一派生总值而绕道改基础值或自定义加成。源字段必须有独立的正文/规则错误才能修正，已登记的同一加成不能换个字段再次计入。其他已经定位的错误仍须完整修复，不得用空数组掩盖。`;
           throw error;
         }
-        let candidate = before;
-        if (parsed.operations.length) {
-          phase('parsing', '正在通过官方MVU解析候选修复');
-          candidate = clone(await mvu.parseMessage(parsed.block, clone(before)));
-          await assertBaseline();
-          if (!usable(candidate)) throw fault('official_parse', '官方MVU未返回可用候选');
-          if (equal(before.stat_data, candidate.stat_data)) throw fault('patch_no_effect', '非空修复经官方MVU解析后没有改变状态，不能算修复成功');
-        }
+        // Story Oracle's autoApplyFix sends empty patches through this same
+        // official pipeline: card-owned event handlers may still derive data.
+        phase('parsing', '正在通过官方MVU解析候选并完成前端计算');
+        const candidate = clone(await mvu.parseMessage(parsed.block, clone(before)));
+        await assertBaseline();
+        if (!usable(candidate)) throw fault('official_parse', '官方MVU未返回可用候选');
+        const stateChanged = !equal(before.stat_data, candidate.stat_data);
+        const payloadChanged = !equal(before, candidate);
+        if (parsed.operations.length && !stateChanged) throw fault('patch_no_effect', '非空修复经官方MVU解析后没有改变状态，不能算修复成功');
         attempts.push({ attempt, result: 'parsed', operationCount: parsed.operations.length });
         const record = {
           moduleVersion: MODULE_VERSION, scopeKey: target.scopeKey, identity: target.identity,
           target: clone(target), ruleHash, contextHash, configHash, status: 'prepared',
           before: clone(before), candidate: clone(candidate), beforeHash: currentFingerprint, afterHash: await digest(candidate),
           patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
-          semanticProof: false, raw: String(raw), attempts, readback: false, startedAt,
+          semanticProof: false, officialStateChanged: stateChanged, raw: String(raw), attempts, readback: false, startedAt,
         };
         lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), prompt, raw: String(raw), policy, attempts: clone(attempts) };
         // Save recovery evidence before writing any MVU. It remains local to
         // this browser; public status never exposes narrative or credentials.
         prepared = record;
         await store.write(key, record); await assertBaseline();
-        if (parsed.operations.length) {
+        if (payloadChanged) {
           phase('saving', '正在写入修复并核对实际读回');
           record.status = 'committing';
           await store.write(key, record); await assertBaseline();
@@ -150,9 +151,9 @@ export function createVariableModule({ host, store, story }) {
           await host.saveChat(target, candidate); assert();
           if (!equal(await read(), candidate)) throw fault('mvu_save_readback', '保存后变量已变化；未报告成功');
           so.refreshMessageBar(target.index);
-          record.status = 'applied';
+          record.status = stateChanged ? 'applied' : 'model_nochange';
         }
-        if (!parsed.operations.length) { await host.saveChat(target, candidate); record.status = 'model_nochange'; }
+        if (!payloadChanged) { await host.saveChat(target, candidate); record.status = 'model_nochange'; }
         record.readback = true; record.durationMs = Date.now() - startedAt;
         await store.write(key, record); await store.write(`latest:variables:${target.scopeKey}`, record); assert();
         return record;
