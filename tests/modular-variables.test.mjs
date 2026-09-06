@@ -62,6 +62,7 @@ function harness(overrides = {}) {
   const settings = { mode: 'profile', profileId: 'synthetic-model', maxTokens: 4096 };
   const so = { getMvu: async () => mvu, mvuIsBusy: () => false, getSettings: () => settings,
     diagPickerActive: () => false, collectMvuUpdateRules: async () => ['coins tracks actual acquired money'],
+    wiContextMode: () => 'st', buildWorldInfo: async () => 'Synthetic world rules',
     resolveModePrompt: settings => settings.diagnoseSystemPrompt || nativePrompt,
     buildTranscriptTurns: (ctx, settings, keepMechanism) => { assert.equal(settings.contextDepth, 1); assert.equal(keepMechanism, false); assert.equal(ctx.chat.length, 1); return [{ role: 'assistant', text: ctx.chat[0].mes }]; },
     extractUpdateBlock: () => '', buildDiagnosePromptFrom: (_ctx, s, args) => { assert.equal(args.auto, false); return s.diagnoseSystemPrompt; },
@@ -114,6 +115,28 @@ test('empty native current-reply projection stops before any model request or wr
   const h = harness(); h.so.buildTranscriptTurns = () => [];
   await assert.rejects(h.module.run(h.target), { code: 'narrative_missing' });
   assert.equal(h.calls.length, 0); assert.equal(h.writes.length, 0);
+});
+test('native world context is retained alongside recovered MVU rules and dynamic expansion is separate from rule hash', async () => {
+  const h = harness({ reply: () => '[]' }); let scans = 0;
+  h.so.buildWorldInfo = async mode => { assert.equal(mode, 'st'); return `World acquisition conditions; dynamic scan ${++scans}`; };
+  h.so.collectMvuUpdateRules = async existing => { assert.ok(existing === '' || existing.startsWith('World acquisition')); return ['coins tracks actual acquired money']; };
+  h.so.buildDiagnosePromptFrom = (_ctx, s, args) => `${s.diagnoseSystemPrompt}\n${args.wiBlock}`;
+  const record = await h.module.run(h.target);
+  assert.match(h.calls[0][1][0].content, /World acquisition conditions; dynamic scan 1/);
+  assert.match(h.calls[0][1][0].content, /coins tracks actual acquired money/);
+  assert.match(record.contextHash, /^[a-f0-9]{64}$/);
+  assert.equal(await h.module.validateReceipt(h.target, record), true);
+  assert.equal(scans, 1, 'receipt validation does not substitute a new dynamic scan for the recorded request');
+});
+test('native selected world entries remain authoritative without automatic scan or rule additions', async () => {
+  const h = harness({ reply: () => '[]' });
+  h.so.diagPickerActive = () => true;
+  h.so.buildDiagSelectedWi = async () => ({ block: 'Explicit selected field and world rules' });
+  h.so.buildWorldInfo = async () => assert.fail('selected mode must not scan');
+  h.so.collectMvuUpdateRules = async () => assert.fail('selected mode must not add entries');
+  h.so.buildDiagnosePromptFrom = (_ctx, s, args) => `${s.diagnoseSystemPrompt}\n${args.wiBlock}`;
+  await h.module.run(h.target);
+  assert.match(h.calls[0][1][0].content, /Explicit selected field and world rules/);
 });
 test('late model response after variable edit is discarded without parse or write', async () => {
   const h = harness({ reply() { h.change({ stat_data: { coins: 8 } }); return '[]'; } });

@@ -3,11 +3,19 @@ import { adaptDiagnosisPrompt, currentNarrative } from './prompt.mjs';
 
 export function createVariableModule({ host, store, story }) {
   let lastReview = null;
-  const modelFingerprint = (settings, own) => digest({ mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, diagnosisPrompt: settings.diagnoseSystemPrompt || '', applyRegex: settings.applyRegex, contextDepth: settings.contextDepth, includeHiddenFloors: settings.includeHiddenFloors, globalPrompt: own.globalPrompt });
+  const modelFingerprint = (settings, own) => digest({ mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, diagnosisPrompt: settings.diagnoseSystemPrompt || '', applyRegex: settings.applyRegex, contextDepth: settings.contextDepth, includeHiddenFloors: settings.includeHiddenFloors, worldInfoMode: settings.worldInfoMode, globalPrompt: own.globalPrompt });
   async function readRules(so, settings) {
     if (so.diagPickerActive()) return (await so.buildDiagSelectedWi()).block;
     const collected = await so.collectMvuUpdateRules('');
     return collected.length ? collected.join('\n\n') : so.buildWorldInfo(so.wiContextMode(settings));
+  }
+  async function readWorldContext(so, settings, rules) {
+    if (so.diagPickerActive()) return rules;
+    // Restore runAutoDiagnose's original full-context assembly. The raw MVU
+    // rules above retain their separate ownership/stable-rule responsibility.
+    const world = await so.buildWorldInfo(so.wiContextMode(settings));
+    const missing = await so.collectMvuUpdateRules(world);
+    return [world, ...missing].filter(Boolean).join('\n\n');
   }
   async function validateReceipt(target, receipt) {
     host.assertTarget(target);
@@ -65,10 +73,12 @@ export function createVariableModule({ host, store, story }) {
     }
     const originalBlock = so.extractUpdateBlock(target.content);
     const narrative = currentNarrative(so, ctx, settings, target);
+    const worldContext = await readWorldContext(so, settings, rules); assert();
+    const contextHash = await digest(worldContext);
     // Retain the original diagnosis contract and its card/transcript builder.
     // auto=false avoids the unsupported presence-of-tag == application claim.
     const nativePrompt = so.buildDiagnosePromptFrom(ctx, { ...settings, includeCard: true, diagnoseSystemPrompt: adaptDiagnosisPrompt(so.resolveModePrompt(settings, 'diagnose')) }, {
-      wiBlock: rules, statStr: JSON.stringify(before.stat_data), latestBlock: originalBlock, latestReply: narrative, auto: false,
+      wiBlock: worldContext, statStr: JSON.stringify(before.stat_data), latestBlock: originalBlock, latestReply: narrative, auto: false,
     });
     const prompt = `${nativePrompt}\n\n【明确由前端/脚本拥有的精确路径】\n${JSON.stringify(policy.protected)}\n\n【更新前MVU；缺失时不能臆造】\n${previous ? JSON.stringify(previous.payload.stat_data) : '本轮没有可用的前态'}\n\n【本轮用户输入】\n${target.userText}\n\n【最终接受的本轮正文（原生正则投影，原更新已单独提供）】\n${narrative}${modelConfig.globalPrompt ? `\n\n【全局自定义模型适配附加提示词】\n${modelConfig.globalPrompt}` : ''}`;
     const baseMessages = [
@@ -119,7 +129,7 @@ export function createVariableModule({ host, store, story }) {
         attempts.push({ attempt, result: 'parsed', operationCount: parsed.operations.length });
         const record = {
           moduleVersion: MODULE_VERSION, scopeKey: target.scopeKey, identity: target.identity,
-          target: clone(target), ruleHash, configHash, status: 'prepared',
+          target: clone(target), ruleHash, contextHash, configHash, status: 'prepared',
           before: clone(before), candidate: clone(candidate), beforeHash: currentFingerprint, afterHash: await digest(candidate),
           patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
           semanticProof: false, raw: String(raw), attempts, readback: false, startedAt,
