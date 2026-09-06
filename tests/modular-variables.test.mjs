@@ -1,10 +1,16 @@
 // Controlled checks of production functions; not real Tavern acceptance.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
 import { clone, digest, fault, parsePatch, compileOwnership, checkOwnership } from '../modular/variables/core.mjs';
 import { createVariableModule } from '../modular/variables/module.mjs';
 import { createHost } from '../modular/host.mjs';
 import { createRuntime } from '../modular/runtime.mjs';
+import { adaptDiagnosisPrompt } from '../modular/variables/prompt.mjs';
+
+const nativeSource = fs.readFileSync(new URL('../vendor/story-oracle-v1.35.4/index.js', import.meta.url), 'utf8');
+const nativePrompt = vm.runInNewContext(nativeSource.slice(nativeSource.indexOf('const DIAGNOSE_SYSTEM_PROMPT ='), nativeSource.indexOf('const LOREBOOK_SYSTEM_PROMPT =')) + '\nDIAGNOSE_SYSTEM_PROMPT');
 
 const rules = `rules:
   玩家.头部.\${等级|EXP_当前|EXP_升级所需}:
@@ -56,7 +62,8 @@ function harness(overrides = {}) {
   const settings = { mode: 'profile', profileId: 'synthetic-model', maxTokens: 4096 };
   const so = { getMvu: async () => mvu, mvuIsBusy: () => false, getSettings: () => settings,
     diagPickerActive: () => false, collectMvuUpdateRules: async () => ['coins tracks actual acquired money'],
-    extractUpdateBlock: () => '', buildDiagnosePromptFrom: (_ctx, _s, args) => { assert.equal(args.auto, false); return 'native'; },
+    resolveModePrompt: settings => settings.diagnoseSystemPrompt || nativePrompt,
+    extractUpdateBlock: () => '', buildDiagnosePromptFrom: (_ctx, s, args) => { assert.equal(args.auto, false); return s.diagnoseSystemPrompt; },
     callProfile: async (...args) => { calls.push(args); return overrides.reply?.() ?? '[{"op":"delta","path":"/coins","value":5}]'; },
     refreshMessageBar: () => {},
   };
@@ -65,6 +72,19 @@ function harness(overrides = {}) {
   return { module, host, store, so, mvu, target, values, calls, parsed, writes, saves, settings,
     change: value => { current = value; }, stale: () => { stale = true; }, failSave: value => { saveFailure = value; }, current: () => clone(current) };
 }
+test('native prompt override removes conflicting stored-equals-correct instructions and keeps output contract', async () => {
+  const h = harness({ reply: () => '[]' }); const originalSettings = clone(h.settings);
+  await h.module.run(h.target);
+  const sent = h.calls[0][1][0].content;
+  assert.doesNotMatch(sent, /只要该条目已存在于状态中，就绝不要把它判为错误/);
+  assert.doesNotMatch(sent, /如果效果已经在那里，那么该操作就是成功的/);
+  assert.equal(sent.split('【变量模块证据合同】').length - 1, 1);
+  assert.ok(sent.includes(nativePrompt.slice(nativePrompt.indexOf('输出规则：'))));
+  assert.match(sent, /尚未交付的物品不得.*放入可用背包/);
+  assert.deepEqual(h.settings, originalSettings, 'per-call override does not mutate saved user configuration');
+  const custom = '使用本卡专用字段格式。';
+  assert.ok(adaptDiagnosisPrompt(custom).startsWith(custom), 'native custom prompt is retained');
+});
 test('uses current7 and prior5 evidence; delegates residual+5 once to official MVU for final12', async () => {
   const h = harness(); const receipt = await h.module.run(h.target);
   assert.equal(receipt.status, 'applied'); assert.equal(receipt.readback, true); assert.equal(receipt.semanticProof, false);

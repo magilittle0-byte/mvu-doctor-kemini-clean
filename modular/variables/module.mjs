@@ -1,17 +1,9 @@
 import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths } from './core.mjs';
-
-export const EVIDENCE_INSTRUCTION = `本次是正文生成后的变量核对，不续写故事。
-当前MVU是需要审计的实际写入结果，并不是剧情已经发生的证明。原更新块也可能错写或漏写。
-先按角色规则区分前端/脚本计算、玩家操作和正文应更新的字段。前端托管字段只读；同名字段在不同主体下可能有不同所有者，必须看完整路径。
-再对照更新前状态、本轮用户输入和最终正文，检查当前状态的每个相关字段：已发生的获得/消耗/移动/伤势等、尚未实施的计划/待领取奖励、规则要求的初始化，各自分开。看到奖励列表或背包里已经存在一个条目，不等于正文确认玩家已经领取。
-角色规则要求在当前事件补全的变量应按规则补全；禁止把尚未选择的行动、NPC尝试或未裁决结果写成玩家已经执行。原有卡片身份、天赋与已确认设定不重新创作。
-没有内联更新块时也先核对前后状态，不能假设MVU没有执行过额外解析。已有更新块也不能假设其中每一项已正确执行。
-只针对当前状态补足差额，不再执行原始增量；已生效的派生加成不能重复累加。
-在Analysis中简短说明每个缺陷的当前值、对应正文事实/规则和修复后值。只输出一份最小UpdateVariable/JSONPatch；有问题就修复全部已定位问题，无问题返回空数组。`;
+import { adaptDiagnosisPrompt } from './prompt.mjs';
 
 export function createVariableModule({ host, store, story }) {
   let lastReview = null;
-  const modelFingerprint = (settings, own) => digest({ mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, globalPrompt: own.globalPrompt });
+  const modelFingerprint = (settings, own) => digest({ mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, diagnosisPrompt: settings.diagnoseSystemPrompt || '', globalPrompt: own.globalPrompt });
   async function readRules(so, settings) {
     if (so.diagPickerActive()) return (await so.buildDiagSelectedWi()).block;
     const collected = await so.collectMvuUpdateRules('');
@@ -74,10 +66,10 @@ export function createVariableModule({ host, store, story }) {
     const originalBlock = so.extractUpdateBlock(target.content);
     // Retain the original diagnosis contract and its card/transcript builder.
     // auto=false avoids the unsupported presence-of-tag == application claim.
-    const nativePrompt = so.buildDiagnosePromptFrom(ctx, { ...settings, includeCard: true }, {
+    const nativePrompt = so.buildDiagnosePromptFrom(ctx, { ...settings, includeCard: true, diagnoseSystemPrompt: adaptDiagnosisPrompt(so.resolveModePrompt(settings, 'diagnose')) }, {
       wiBlock: rules, statStr: JSON.stringify(before.stat_data), latestBlock: originalBlock, latestReply: target.content, auto: false,
     });
-    const prompt = `${nativePrompt}\n\n【本模块的证据与执行边界】\n${EVIDENCE_INSTRUCTION}\n\n【明确由前端/脚本拥有的精确路径】\n${JSON.stringify(policy.protected)}\n\n【更新前MVU；缺失时不能臆造】\n${previous ? JSON.stringify(previous.payload.stat_data) : '本轮没有可用的前态'}\n\n【本轮用户输入】\n${target.userText}\n\n【最终接受的本轮正文】\n${target.content}${modelConfig.globalPrompt ? `\n\n【全局自定义模型适配附加提示词】\n${modelConfig.globalPrompt}` : ''}`;
+    const prompt = `${nativePrompt}\n\n【明确由前端/脚本拥有的精确路径】\n${JSON.stringify(policy.protected)}\n\n【更新前MVU；缺失时不能臆造】\n${previous ? JSON.stringify(previous.payload.stat_data) : '本轮没有可用的前态'}\n\n【本轮用户输入】\n${target.userText}\n\n【最终接受的本轮正文】\n${target.content}${modelConfig.globalPrompt ? `\n\n【全局自定义模型适配附加提示词】\n${modelConfig.globalPrompt}` : ''}`;
     const baseMessages = [
       { role: 'system', content: prompt },
       { role: 'user', content: '请检查本轮相关状态是否与实际正文及本卡规则一致。完整修正确定的错写和漏写，保留已经正确的值，输出唯一的纠正补丁。' },
