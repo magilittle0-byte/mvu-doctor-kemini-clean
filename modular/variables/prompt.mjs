@@ -5,6 +5,8 @@ const OLD_AUTHORITY = '至关重要——当前状态才是事实依据，而非
 const NEXT_SECTION = '什么才算真正的缺陷';
 const NATIVE_UPDATE_AUDIT = '1. 诊断。逐项核对最新更新在当前状态中体现出的效果。对每一项，说明它是否正确生效。然后只列出真正的缺陷（依照上面的定义），每一条都对应当前状态中的一个具体数值。';
 const NATIVE_NORMALIZATION = '- 当前状态已经反映了最新更新实际造成的一切结果。MVU 是有容错能力的：它可能把一次局部插入补全为完整 schema、从轻微的 JSON 格式错误中恢复，或采用合并而非整体覆盖。因此你必须依据状态所“显示”的结果来判断，而不是依据某个操作“看起来会”造成什么。';
+const NATIVE_FACTS_ONLY = '- 不要编造剧情事实。只使用对话记录与角色信息中确实陈述过的内容；不要添加文本里没有的细节（日期、地名、事件）。';
+const INITIALIZATION_AUTHORITY = '- 不得编造已经发生的剧情事实、玩家行动、情绪、承诺或成功结果。区分事实登记与规则授权的初始化：本卡check若明确要求在某个已发生的前提下自动生成、设定或初始化条目，就必须依据权威世界设定和当前剧情补齐这些条目及规定字段，不能另加“正文必须先逐字写完所有条目”的前提。此时允许设计尚缺的初始定义（目标、条件、说明、奖励等），但保持本卡规定的初始状态；定义任务不等于已经完成任务，登记条件不等于已经兑现条件。已确认的设定不随机重写，没有这种初始化规则的字段仍只登记有事实依据的变化。';
 const RULE_AUDIT = '1. 诊断。逐项阅读本卡全部字段的check规则，核对每项触发条件与当前状态，包括空容器和原更新完全没提到的字段。在Analysis用字段路径和简短结论记录已核对的触发状态：已发生且正确、已发生但缺失或错写、未发生却被提前写入、未触发而无需变化。同类未触发字段可合并。先按规则找到本轮应该维护的字段，再对照最新更新及当前值定位真正的缺陷；不要把复述已有更新当作完整核对。';
 const AUTHORITY = `至关重要——分清“实际写入了什么”和“本轮确实发生了什么”：
 ${NATIVE_NORMALIZATION}
@@ -34,7 +36,8 @@ export function adaptDiagnosisPrompt(base) {
   const start = prompt.indexOf(OLD_AUTHORITY), end = prompt.indexOf(NEXT_SECTION, start);
   if (start >= 0 && end > start) prompt = prompt.slice(0, start) + AUTHORITY + prompt.slice(end);
   prompt = prompt.replace(NATIVE_UPDATE_AUDIT, RULE_AUDIT);
-  // The native output contract and saved user override remain intact.
+  prompt = prompt.replace(NATIVE_FACTS_ONLY, INITIALIZATION_AUTHORITY);
+  // Keep the native output format and unrelated saved user override intact.
   // The per-turn evidence task is sent once in the native final user slot.
   return prompt;
 }

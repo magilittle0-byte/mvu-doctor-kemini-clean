@@ -122,7 +122,15 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   assert.match(messages[1].content, /请审计整个当前 stat_data，而不只是最新一次更新/);
   assert.match(messages[1].content, /包括原更新块完全没有提到的条目/);
   assert.match(messages[1].content, /按本卡允许的正文称谓定位，不编造真名/);
-  assert.ok(sent.includes(nativePrompt.slice(nativePrompt.indexOf('输出规则：'))));
+  const nativeOutput = nativePrompt.slice(nativePrompt.indexOf('输出规则：'));
+  const factsOnly = nativeOutput.split('\n').find(line => line.startsWith('- 不要编造剧情事实。'));
+  assert.ok(factsOnly);
+  assert.doesNotMatch(sent, /不要添加文本里没有的细节/);
+  assert.match(sent, /不得编造已经发生的剧情事实、玩家行动、情绪、承诺或成功结果/);
+  assert.match(sent, /本卡check若明确要求在某个已发生的前提下自动生成、设定或初始化条目/);
+  assert.match(sent, /定义任务不等于已经完成任务，登记条件不等于已经兑现条件/);
+  assert.match(sent, /没有这种初始化规则的字段仍只登记有事实依据的变化/);
+  for (const unchangedPart of nativeOutput.split(factsOnly)) assert.ok(sent.includes(unchangedPart), 'every other native output rule and format is retained verbatim');
   assert.match(sent, /尚未交付的物品不得.*放入可用背包/);
   assert.deepEqual(h.settings, originalSettings, 'per-call override does not mutate saved user configuration');
   const custom = '使用本卡专用字段格式。';

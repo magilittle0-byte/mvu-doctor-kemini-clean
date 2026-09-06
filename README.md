@@ -1,10 +1,10 @@
-# MVU 模块医生（Kemini Clean 0.10.9 候选）
+# MVU 模块医生（Kemini Clean 0.10.10 候选）
 
 **尚未完成真实门禁，未锁定，不是已可用版本。** 当前仅启用独立的 MVU 变量修复模块。人物档案与世界引擎按顺序稍后制作，旧业务入口不加载。正文预设、MVU和数据库仍各自运行。
 
 变量模块调用原版 Story Oracle 的规则收集与模型连接，以及官方 MVU 的解析和写入。新适配负责最终正文绑定、当前状态差额、明确字段权限、取消和宿主存档读回。它不把空补丁或快速检查通过当作真实功能验收。详见 [来源映射](docs/modular/PHASE1_SOURCE_MAP.md)、[模块合同](docs/modular/MODULE_CONTRACT.md) 和 [阶段进度](docs/modular/PROGRESS.md)。
 
-0.10.8真实首轮完成三项正确修复及存档读回，但把一条操作说明标题也编入变量范围，已拒绝。0.10.9要求顶层变量来自前后态或官方schema，保留缺失字段和错误容器的修复能力；分组仍读取完整材料，全部成功才统一交给官方MVU解析并保存。见[顶层范围来源](docs/modular/PHASE1_GROUP_ROOT_AUTHORITY.md)、[分组来源](docs/modular/PHASE1_GROUPED_VARIABLE_CHECK.md)、[连接校验](docs/modular/PHASE1_RESOLVED_CONNECTION_HASH.md)、[规则基线](docs/modular/PHASE1_RULE_BASELINE_GUARD.md)。仍须全新聊天完整十二轮后才能锁定。
+0.10.9真实首轮独立通过，第二轮漏掉规则要求的初始化条目，已拒绝并停止后续回合。0.10.10仅在原生诊断提示词的适配层澄清：不得编造已经发生的事实，但前提已成立、且本卡明确要求生成的初始定义应完整填写；定义任务不等于完成任务。未引入额外字段解析器或模型调用。见[初始化边界来源](docs/modular/PHASE1_RULE_AUTHORIZED_INITIALIZATION.md)。分组、原生解析、原子提交和保存读回保持原有实现；仍须全新聊天完整十二轮后才能锁定。
 
 以下为旧版历史，旧入口源码保留供核对，原 manifest/package 已保存到 `legacy/0.9.11/`。
 

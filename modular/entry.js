@@ -5,7 +5,7 @@ import { createRuntime } from './runtime.mjs';
 import { loadStory, disableNativeDiagnosis } from './story-adapter.mjs';
 import { createUi } from './ui.mjs';
 
-export const VERSION = '0.10.9';
+export const VERSION = '0.10.10';
 const root = new URL('../', import.meta.url);
 async function boot() {
   if (globalThis.MVUDoctorModular) return;
