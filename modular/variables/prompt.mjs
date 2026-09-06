@@ -12,22 +12,24 @@ const AUTHORITY = `至关重要——分清“实际写入了什么”和“本�
 
 `;
 
-export const EVIDENCE_INSTRUCTION = `本次是正文生成后的变量核对，不续写故事。
+export const EVIDENCE_INSTRUCTION = `【本轮变量核对任务】
+本次是正文生成后的变量核对，不续写故事。
 先按当前卡的完整路径区分玩家操作、前端计算与正文应更新的字段；前端托管字段只读，同名字段在不同主体下可能有不同所有者。
 角色卡与用户已确认的身份、天赋和设定保持不变。规则中的条件句必须保留条件，示例、规划、选项、NPC尝试和未裁决结果不能充当已完成事实。
 依更新前MVU、本轮明确输入与最终正文逐项判断本轮应有状态，再与当前MVU比较；原更新块只作为待检查的操作记录，不能反过来证明剧情发生。
+物品存在、约定归属和实际交付是不同状态。可用背包与装备栏表示已经取得、可以取用；“已为你准备/具现，完成条件后前去领取”仍未交付，不能从装备栏移到背包来保留一次提前发放。按前态保留已持有物品；正文真正取得、交付或消耗之后，才完整更新相应库存。仅当本卡明确设有待领账册时才在那里记录未交付权益。
 只补足当前状态的差额，不重放原增量，不重复累加派生加成；有无内联更新块都要看当前真实状态。
 同一加成只保存在它的权威来源中。前端会合算已登记的天赋、装备、职业等来源，不能为使派生总值立即匹配而把同一来源再抄入基础值或自定义加成。源字段确有独立错误时只修正那个来源。
-在Analysis简短列出每个实际缺陷的当前值、已满足的事件条件或规则依据、正确值；尚未满足条件的字段保持未发生，已经错误兑现的字段须修正。不得为了补全字段而提前发生事件。
+在Analysis简短列出每个实际缺陷的当前值、对应已完成事件或尚未满足的条件、正确值；规则本身不能充当事件完成证据。尚未满足条件的字段保持未发生，已经错误兑现的字段须修正。不得为了补全字段而提前发生事件。
 只输出唯一的最小UpdateVariable/JSONPatch，完整修复所有已定位问题；没有实际缺陷则返回空数组。`;
 
 export function adaptDiagnosisPrompt(base) {
   let prompt = String(base || '');
   const start = prompt.indexOf(OLD_AUTHORITY), end = prompt.indexOf(NEXT_SECTION, start);
   if (start >= 0 && end > start) prompt = prompt.slice(0, start) + AUTHORITY + prompt.slice(end);
-  // Native user overrides remain present; the module's evidence contract has
-  // one location, instead of appending contradictory rules after the story.
-  return `${prompt}\n\n【变量模块证据合同】\n${EVIDENCE_INSTRUCTION}`;
+  // The native output contract and saved user override remain intact.
+  // The per-turn evidence task is sent once in the native final user slot.
+  return prompt;
 }
 
 export function currentNarrative(so, ctx, settings, target) {

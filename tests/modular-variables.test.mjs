@@ -7,7 +7,7 @@ import { clone, digest, fault, parsePatch, compileOwnership, checkOwnership } fr
 import { createVariableModule } from '../modular/variables/module.mjs';
 import { createHost } from '../modular/host.mjs';
 import { createRuntime } from '../modular/runtime.mjs';
-import { adaptDiagnosisPrompt } from '../modular/variables/prompt.mjs';
+import { adaptDiagnosisPrompt, EVIDENCE_INSTRUCTION } from '../modular/variables/prompt.mjs';
 
 const nativeSource = fs.readFileSync(new URL('../vendor/story-oracle-v1.35.4/index.js', import.meta.url), 'utf8');
 const nativePrompt = vm.runInNewContext(nativeSource.slice(nativeSource.indexOf('const DIAGNOSE_SYSTEM_PROMPT ='), nativeSource.indexOf('const LOREBOOK_SYSTEM_PROMPT =')) + '\nDIAGNOSE_SYSTEM_PROMPT');
@@ -80,7 +80,13 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   const sent = h.calls[0][1][0].content;
   assert.doesNotMatch(sent, /只要该条目已存在于状态中，就绝不要把它判为错误/);
   assert.doesNotMatch(sent, /如果效果已经在那里，那么该操作就是成功的/);
-  assert.equal(sent.split('【变量模块证据合同】').length - 1, 1);
+  const messages = h.calls[0][1];
+  assert.deepEqual(messages.map(message => message.role), ['system', 'user']);
+  assert.equal(messages[1].content, EVIDENCE_INSTRUCTION);
+  assert.equal(messages.map(message => message.content).join('\n').split('【本轮变量核对任务】').length - 1, 1);
+  assert.doesNotMatch(sent, /【本轮变量核对任务】/);
+  assert.match(messages[1].content, /物品存在、约定归属和实际交付是不同状态/);
+  assert.match(messages[1].content, /正文真正取得、交付或消耗之后，才完整更新相应库存/);
   assert.ok(sent.includes(nativePrompt.slice(nativePrompt.indexOf('输出规则：'))));
   assert.match(sent, /尚未交付的物品不得.*放入可用背包/);
   assert.deepEqual(h.settings, originalSettings, 'per-call override does not mutate saved user configuration');

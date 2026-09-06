@@ -1,10 +1,10 @@
-# MVU 模块医生（Kemini Clean 0.10.4 候选）
+# MVU 模块医生（Kemini Clean 0.10.5 候选）
 
 **尚未完成真实门禁，未锁定，不是已可用版本。** 当前仅启用独立的 MVU 变量修复模块。人物档案与世界引擎按顺序稍后制作，旧业务入口不加载。正文预设、MVU和数据库仍各自运行。
 
 变量模块调用原版 Story Oracle 的规则收集与模型连接，以及官方 MVU 的解析和写入。新适配负责最终正文绑定、当前状态差额、明确字段权限、取消和宿主存档读回。它不把空补丁或快速检查通过当作真实功能验收。详见 [来源映射](docs/modular/PHASE1_SOURCE_MAP.md)、[模块合同](docs/modular/MODULE_CONTRACT.md) 和 [阶段进度](docs/modular/PROGRESS.md)。
 
-0.10.0至0.10.2真实首轮存在待领物误写和重复加成；0.10.3恢复原版世界规则取材后，首轮暴露空补丁跳过官方派生重算，仍未通过。0.10.4恢复每份候选均经官方MVU解析一次，按实际结果保存派生状态。见[空补丁管线修复](docs/modular/PHASE1_EMPTY_PATCH_PIPELINE.md)、[世界规则取材](docs/modular/PHASE1_WORLD_CONTEXT_RESTORE.md)、[正文投影修复](docs/modular/PHASE1_NARRATIVE_PROJECTION_FIX.md)。本候选仍须重新通过真实十二回合，不能据快速检查锁定。
+0.10.4已恢复官方派生计算，但真实首轮仍把未领装备移入可用背包，已拒绝。0.10.5将唯一证据合同移到原生最后一条诊断任务，明确区分约定归属与实际交付，保留已有取材、官方解析和存档读回。见[本轮任务适配](docs/modular/PHASE1_FINAL_DIAGNOSIS_TASK.md)、[空补丁管线修复](docs/modular/PHASE1_EMPTY_PATCH_PIPELINE.md)、[世界规则取材](docs/modular/PHASE1_WORLD_CONTEXT_RESTORE.md)。本候选仍须重新通过真实十二回合，不能据快速检查锁定。
 
 以下为旧版历史，旧入口源码保留供核对，原 manifest/package 已保存到 `legacy/0.9.11/`。
 

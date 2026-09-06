@@ -1,5 +1,5 @@
 import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths } from './core.mjs';
-import { adaptDiagnosisPrompt, currentNarrative } from './prompt.mjs';
+import { adaptDiagnosisPrompt, currentNarrative, EVIDENCE_INSTRUCTION } from './prompt.mjs';
 
 export function createVariableModule({ host, store, story }) {
   let lastReview = null;
@@ -83,7 +83,7 @@ export function createVariableModule({ host, store, story }) {
     const prompt = `${nativePrompt}\n\n【明确由前端/脚本拥有的精确路径】\n${JSON.stringify(policy.protected)}\n\n【更新前MVU；缺失时不能臆造】\n${previous ? JSON.stringify(previous.payload.stat_data) : '本轮没有可用的前态'}\n\n【本轮用户输入】\n${target.userText}\n\n【最终接受的本轮正文（原生正则投影，原更新已单独提供）】\n${narrative}${modelConfig.globalPrompt ? `\n\n【全局自定义模型适配附加提示词】\n${modelConfig.globalPrompt}` : ''}`;
     const baseMessages = [
       { role: 'system', content: prompt },
-      { role: 'user', content: '请检查本轮相关状态是否与实际正文及本卡规则一致。完整修正确定的错写和漏写，保留已经正确的值，输出唯一的纠正补丁。' },
+      { role: 'user', content: EVIDENCE_INSTRUCTION },
     ];
     const assertBaseline = async () => {
       assert();
