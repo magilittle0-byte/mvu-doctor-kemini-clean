@@ -267,10 +267,26 @@ test('declared missing roots and malformed parent containers remain repairable w
   actor.stats.mp:
     check:
       - Maintain magic points.`;
-  const groups = planVariableGroups(rules, { actor: { stats: 'wrong shape', coins: 1 } }, {}, 1);
+  const groups = planVariableGroups(rules, { actor: { stats: 'wrong shape', coins: 1 } }, {}, 1, [{ type: 'object', properties: { absent: { type: 'object', properties: {} } } }]);
   const paths = groups.flatMap(group => group.paths);
   assert.deepEqual(new Set(paths), new Set(['/absent', '/actor/stats', '/actor/coins']));
   assert.equal(checkGroupScope([{ op: 'replace', path: '/actor/stats', value: { hp: 10, mp: 5 } }], groups.find(group => group.paths.includes('/actor/stats'))).length, 0);
+});
+
+test('general check instructions never become top-level variables without structural authority', () => {
+  const rules = `rules:
+  operation_rules:
+    check:
+      - Use precise paths.
+  absent:
+    check:
+      - Maintain required data.
+  actor.coins:
+    check:
+      - Track acquired money.`;
+  const paths = planVariableGroups(rules, { actor: { coins: 1 } }, {}, 8, [{ type: 'object', properties: { absent: { type: 'number' } } }]).flatMap(group => group.paths);
+  assert.deepEqual(new Set(paths), new Set(['/absent', '/actor/coins']));
+  assert.deepEqual(planVariableGroups(rules, { actor: { coins: 1 } }, {}, 8, ['zod-owned']).flatMap(group => group.paths), ['/actor/coins']);
 });
 
 test('rule changes during a response or immediately before write discard all old results', async () => {

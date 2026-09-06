@@ -106,7 +106,7 @@ export function createVariableModule({ host, store, story }) {
     };
     let retry = null, lastError = null;
     const attempts = [];
-    const groups = planVariableGroups(rules, before.stat_data, previous?.payload?.stat_data);
+    const groups = planVariableGroups(rules, before.stat_data, previous?.payload?.stat_data, 8, [before.schema, previous?.payload?.schema]);
     if (!groups.length) throw fault('group_plan_empty', '没有取得可核对的变量范围，未开始写入');
     const groupResults = new Map();
     let currentGroup = null;

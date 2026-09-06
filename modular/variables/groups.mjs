@@ -5,16 +5,15 @@ import { expandPath, pointer, pointerParts } from './core.mjs';
 const within = (path, parent) => parent === '' || path === parent || path.startsWith(`${parent}/`);
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 
-export function planVariableGroups(rules, current, previous, maxPaths = 8) {
+export function planVariableGroups(rules, current, previous, maxPaths = 8, schemas = []) {
   const declared = [];
-  const roots = new Set([...Object.keys(current || {}), ...Object.keys(previous || {})]);
+  const roots = new Set([...Object.keys(current || {}), ...Object.keys(previous || {}),
+    ...schemas.flatMap(schema => schema?.type === 'object' && plain(schema.properties) ? Object.keys(schema.properties) : [])]);
   const lines = String(rules || '').split(/\r?\n/u);
-  for (const [index, line] of lines.entries()) {
+  for (const line of lines) {
     const match = line.match(/^ {2}([^#\s][^:：]*):\s*$/u);
-    if (!match) continue;
-    const section = [];
-    for (let i = index + 1; i < lines.length && (!lines[i].trim() || /^ {3}/u.test(lines[i])); i++) section.push(lines[i]);
-    if (!match[1].includes('.') && !roots.has(match[1]) && !section.some(line => /^ {4}check:\s*$/u.test(line))) continue;
+    // A check block may describe the update protocol rather than a field.
+    if (!match || (!match[1].includes('.') && !roots.has(match[1]))) continue;
     declared.push(...expandPath(match[1]).map(pointer));
   }
   // Array indices can shift during insert/remove, so one group owns an array.
