@@ -1,9 +1,9 @@
 import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths } from './core.mjs';
-import { adaptDiagnosisPrompt } from './prompt.mjs';
+import { adaptDiagnosisPrompt, currentNarrative } from './prompt.mjs';
 
 export function createVariableModule({ host, store, story }) {
   let lastReview = null;
-  const modelFingerprint = (settings, own) => digest({ mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, diagnosisPrompt: settings.diagnoseSystemPrompt || '', globalPrompt: own.globalPrompt });
+  const modelFingerprint = (settings, own) => digest({ mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, diagnosisPrompt: settings.diagnoseSystemPrompt || '', applyRegex: settings.applyRegex, contextDepth: settings.contextDepth, includeHiddenFloors: settings.includeHiddenFloors, globalPrompt: own.globalPrompt });
   async function readRules(so, settings) {
     if (so.diagPickerActive()) return (await so.buildDiagSelectedWi()).block;
     const collected = await so.collectMvuUpdateRules('');
@@ -64,12 +64,13 @@ export function createVariableModule({ host, store, story }) {
       if (!equal(before, existing.before)) throw fault('pending_commit_conflict', '上次写入被中断，当前变量与写前/候选均不同；已保留现场，未覆盖');
     }
     const originalBlock = so.extractUpdateBlock(target.content);
+    const narrative = currentNarrative(so, ctx, settings, target);
     // Retain the original diagnosis contract and its card/transcript builder.
     // auto=false avoids the unsupported presence-of-tag == application claim.
     const nativePrompt = so.buildDiagnosePromptFrom(ctx, { ...settings, includeCard: true, diagnoseSystemPrompt: adaptDiagnosisPrompt(so.resolveModePrompt(settings, 'diagnose')) }, {
-      wiBlock: rules, statStr: JSON.stringify(before.stat_data), latestBlock: originalBlock, latestReply: target.content, auto: false,
+      wiBlock: rules, statStr: JSON.stringify(before.stat_data), latestBlock: originalBlock, latestReply: narrative, auto: false,
     });
-    const prompt = `${nativePrompt}\n\n【明确由前端/脚本拥有的精确路径】\n${JSON.stringify(policy.protected)}\n\n【更新前MVU；缺失时不能臆造】\n${previous ? JSON.stringify(previous.payload.stat_data) : '本轮没有可用的前态'}\n\n【本轮用户输入】\n${target.userText}\n\n【最终接受的本轮正文】\n${target.content}${modelConfig.globalPrompt ? `\n\n【全局自定义模型适配附加提示词】\n${modelConfig.globalPrompt}` : ''}`;
+    const prompt = `${nativePrompt}\n\n【明确由前端/脚本拥有的精确路径】\n${JSON.stringify(policy.protected)}\n\n【更新前MVU；缺失时不能臆造】\n${previous ? JSON.stringify(previous.payload.stat_data) : '本轮没有可用的前态'}\n\n【本轮用户输入】\n${target.userText}\n\n【最终接受的本轮正文（原生正则投影，原更新已单独提供）】\n${narrative}${modelConfig.globalPrompt ? `\n\n【全局自定义模型适配附加提示词】\n${modelConfig.globalPrompt}` : ''}`;
     const baseMessages = [
       { role: 'system', content: prompt },
       { role: 'user', content: '请检查本轮相关状态是否与实际正文及本卡规则一致。完整修正确定的错写和漏写，保留已经正确的值，输出唯一的纠正补丁。' },
@@ -104,7 +105,7 @@ export function createVariableModule({ host, store, story }) {
         const violations = checkOwnership(parsed.operations, policy);
         if (violations.length) {
           const error = fault('field_ownership', '模型尝试修改只读或前端托管字段，候选未写入');
-          error.feedback = `修复补丁触及不归你修改的字段：${JSON.stringify(violations)}。请按原规则重新生成完整纠正补丁：前端计算字段不直接写，其他已经定位的错误仍须完整修复，不得用空数组掩盖。`;
+          error.feedback = `修复补丁触及不归你修改的字段：${JSON.stringify(violations)}。请按原规则重新生成完整纠正补丁：前端计算字段不直接写，也不能为达到同一派生总值而绕道改基础值或自定义加成。源字段必须有独立的正文/规则错误才能修正，已登记的同一加成不能换个字段再次计入。其他已经定位的错误仍须完整修复，不得用空数组掩盖。`;
           throw error;
         }
         let candidate = before;

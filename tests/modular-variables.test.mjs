@@ -48,7 +48,7 @@ function harness(overrides = {}) {
   const host = {
     assertTarget() { if (stale) throw fault('stale_target', 'changed'); },
     previousMvu: async () => ({ index: 0, payload: { stat_data: { coins: 5 } } }),
-    contextSnapshot: () => ({ chat: [{ mes: target.content }] }),
+    contextSnapshot: () => ({ chat: [{ mes: '开场' }, { is_user: true, mes: target.userText }, { is_user: false, mes: target.content }] }),
     settings: () => ({ maxAttempts: 3, globalPrompt: '' }),
     async saveChat(_target, candidate) { saves.push(clone(candidate)); if (saveFailure) throw fault('host_mvu_durable_mismatch', 'failed'); },
     async readback() { if (saveFailure) throw fault('host_mvu_durable_mismatch', 'failed'); },
@@ -63,6 +63,7 @@ function harness(overrides = {}) {
   const so = { getMvu: async () => mvu, mvuIsBusy: () => false, getSettings: () => settings,
     diagPickerActive: () => false, collectMvuUpdateRules: async () => ['coins tracks actual acquired money'],
     resolveModePrompt: settings => settings.diagnoseSystemPrompt || nativePrompt,
+    buildTranscriptTurns: (ctx, settings, keepMechanism) => { assert.equal(settings.contextDepth, 1); assert.equal(keepMechanism, false); assert.equal(ctx.chat.length, 1); return [{ role: 'assistant', text: ctx.chat[0].mes }]; },
     extractUpdateBlock: () => '', buildDiagnosePromptFrom: (_ctx, s, args) => { assert.equal(args.auto, false); return s.diagnoseSystemPrompt; },
     callProfile: async (...args) => { calls.push(args); return overrides.reply?.() ?? '[{"op":"delta","path":"/coins","value":5}]'; },
     refreshMessageBar: () => {},
@@ -93,6 +94,26 @@ test('uses current7 and prior5 evidence; delegates residual+5 once to official M
   assert.deepEqual(h.writes[0].options, { type: 'message', message_id: 2 }); assert.equal(h.saves[0].stat_data.coins, 12);
   assert.match(h.calls[0][1][0].content, /"coins":5/); assert.match(h.calls[0][1][0].content, /领取奖励/);
   await h.module.run(h.target); assert.equal(h.calls.length, 1, 'valid settled receipt prevents duplicate work');
+});
+test('uses native current-reply projection without changing raw target or saved context depth', async () => {
+  const h = harness({ reply: () => '[]' });
+  h.settings.contextDepth = 30;
+  h.target.content = '<plan>RAW_FUTURE_PLAN</plan>已经到达车站。<UpdateVariable>raw patch</UpdateVariable>';
+  const raw = h.target.content;
+  h.so.buildTranscriptTurns = (ctx, settings, keepMechanism) => {
+    assert.equal(ctx.chat.length, 1); assert.equal(ctx.chat[0].mes, raw);
+    assert.equal(settings.contextDepth, 1); assert.equal(keepMechanism, false);
+    return [{ role: 'assistant', text: '已经到达车站。' }];
+  };
+  await h.module.run(h.target);
+  assert.match(h.calls[0][1][0].content, /已经到达车站/);
+  assert.doesNotMatch(h.calls[0][1][0].content, /RAW_FUTURE_PLAN|raw patch/);
+  assert.equal(h.target.content, raw); assert.equal(h.settings.contextDepth, 30);
+});
+test('empty native current-reply projection stops before any model request or write', async () => {
+  const h = harness(); h.so.buildTranscriptTurns = () => [];
+  await assert.rejects(h.module.run(h.target), { code: 'narrative_missing' });
+  assert.equal(h.calls.length, 0); assert.equal(h.writes.length, 0);
 });
 test('late model response after variable edit is discarded without parse or write', async () => {
   const h = harness({ reply() { h.change({ stat_data: { coins: 8 } }); return '[]'; } });

@@ -1,5 +1,6 @@
 // Minimal adaptation through Story Oracle's native diagnoseSystemPrompt slot.
 // The reference file and its context/output builders remain unchanged.
+import { fault } from './core.mjs';
 const OLD_AUTHORITY = '至关重要——当前状态才是事实依据，而非更新区块：';
 const NEXT_SECTION = '什么才算真正的缺陷';
 const AUTHORITY = `至关重要——分清“实际写入了什么”和“本轮确实发生了什么”：
@@ -16,6 +17,7 @@ export const EVIDENCE_INSTRUCTION = `本次是正文生成后的变量核对，�
 角色卡与用户已确认的身份、天赋和设定保持不变。规则中的条件句必须保留条件，示例、规划、选项、NPC尝试和未裁决结果不能充当已完成事实。
 依更新前MVU、本轮明确输入与最终正文逐项判断本轮应有状态，再与当前MVU比较；原更新块只作为待检查的操作记录，不能反过来证明剧情发生。
 只补足当前状态的差额，不重放原增量，不重复累加派生加成；有无内联更新块都要看当前真实状态。
+同一加成只保存在它的权威来源中。前端会合算已登记的天赋、装备、职业等来源，不能为使派生总值立即匹配而把同一来源再抄入基础值或自定义加成。源字段确有独立错误时只修正那个来源。
 在Analysis简短列出每个实际缺陷的当前值、已满足的事件条件或规则依据、正确值；尚未满足条件的字段保持未发生，已经错误兑现的字段须修正。不得为了补全字段而提前发生事件。
 只输出唯一的最小UpdateVariable/JSONPatch，完整修复所有已定位问题；没有实际缺陷则返回空数组。`;
 
@@ -26,4 +28,14 @@ export function adaptDiagnosisPrompt(base) {
   // Native user overrides remain present; the module's evidence contract has
   // one location, instead of appending contradictory rules after the story.
   return `${prompt}\n\n【变量模块证据合同】\n${EVIDENCE_INSTRUCTION}`;
+}
+
+export function currentNarrative(so, ctx, settings, target) {
+  const row = ctx.chat?.[target.index];
+  if (!row || row.is_user || row.is_system || String(row.mes || '').trim() !== target.content) throw fault('narrative_target', '当前正文投影没有绑定到精确助手楼层');
+  // Reuse the same host regex processing that Story Oracle already applies
+  // to the transcript. Raw target content stays intact for identity checks.
+  const turns = so.buildTranscriptTurns({ ...ctx, chat: [row] }, { ...settings, contextDepth: 1 }, false);
+  if (turns.length !== 1 || turns[0].role !== 'assistant' || !String(turns[0].text || '').trim()) throw fault('narrative_missing', '原生正文投影为空，未使用原始规划或变量块冒充正文');
+  return String(turns[0].text).trim();
 }
