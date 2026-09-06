@@ -87,6 +87,9 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   assert.doesNotMatch(sent, /【本轮变量核对任务】/);
   assert.match(messages[1].content, /物品存在、约定归属和实际交付是不同状态/);
   assert.match(messages[1].content, /正文真正取得、交付或消耗之后，才完整更新相应库存/);
+  assert.match(messages[1].content, /请审计整个当前 stat_data，而不只是最新一次更新/);
+  assert.match(messages[1].content, /包括原更新块完全没有提到的条目/);
+  assert.match(messages[1].content, /按本卡允许的正文称谓定位，不编造真名/);
   assert.ok(sent.includes(nativePrompt.slice(nativePrompt.indexOf('输出规则：'))));
   assert.match(sent, /尚未交付的物品不得.*放入可用背包/);
   assert.deepEqual(h.settings, originalSettings, 'per-call override does not mutate saved user configuration');
