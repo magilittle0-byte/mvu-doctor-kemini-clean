@@ -1,5 +1,41 @@
 import { clone, canonical, digest, fault, equal, usable } from './variables/core.mjs';
 
+// Read the official Zod command receipt before its cleanup event clears it.
+// No local patch interpreter: schema normalization stays entirely with MVU.
+export async function parseOfficialCandidate({ mvu, eventSource, block, before, assertCurrent = () => {} }) {
+  assertCurrent();
+  const event = mvu.events?.COMMAND_PARSED;
+  if (!event || typeof eventSource?.makeFirst !== 'function' || typeof eventSource?.removeListener !== 'function') throw fault('official_receipt_unavailable', '无法取得官方MVU执行收据，未写入变量');
+  const token = globalThis.crypto.randomUUID();
+  const message = `${block}\n<!-- mvu-doctor-parse:${token} -->`;
+  let started = null, receipt = null, duplicates = false;
+  const captureStart = (data, commands, source) => {
+    if (source !== message) return;
+    if (started) { duplicates = true; return; }
+    started = { data, commands, count: Array.isArray(commands) ? commands.length : -1 };
+  };
+  const captureEnd = (data, commands, source) => {
+    if (source !== message) return;
+    if (receipt) { duplicates = true; return; }
+    if (!started || started.data !== data || started.commands !== commands || !Array.isArray(commands)) return;
+    receipt = { parsedCount: started.count, unexecuted: clone(commands) };
+  };
+  const startEvent = `${event}_for_zod`, endEvent = `${event}_ended_for_zod`;
+  try {
+    eventSource.makeFirst(startEvent, captureStart);
+    eventSource.makeFirst(endEvent, captureEnd);
+    const candidate = clone(await mvu.parseMessage(message, clone(before)));
+    assertCurrent();
+    // Zod must have completed its cleanup. An absent hook or foreign event
+    // cannot stand in for confirmation of this call's official execution.
+    if (!receipt || duplicates || receipt.parsedCount < 0 || started.commands.length !== 0) throw fault('official_receipt_unavailable', '本次官方MVU执行收据不完整，未写入变量');
+    return { candidate, receipt };
+  } finally {
+    eventSource.removeListener(startEvent, captureStart);
+    eventSource.removeListener(endEvent, captureEnd);
+  }
+}
+
 export function createHost(getContext = () => globalThis.SillyTavern?.getContext?.(), getProxies = async () => (await import('/scripts/openai.js')).proxies) {
   function context() { const ctx = getContext(); if (!ctx) throw fault('host_missing', '酒馆尚未就绪'); return ctx; }
   function scope() {
@@ -63,6 +99,9 @@ export function createHost(getContext = () => globalThis.SillyTavern?.getContext
     assertTarget(target);
     const ctx = context();
     return { ...ctx, chat: clone(ctx.chat.slice(0, target.index + 1)) };
+  }
+  async function parseMvuCandidate(target, mvu, block, before) {
+    return parseOfficialCandidate({ mvu, eventSource: context().eventSource, block, before, assertCurrent: () => assertTarget(target) });
   }
   function settings() {
     const ctx = context();
@@ -138,5 +177,5 @@ export function createHost(getContext = () => globalThis.SillyTavern?.getContext
       signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
-  return Object.freeze({ context, scope, capture, latestIndex, messageText, assertTarget, previousMvu, contextSnapshot, settings, updateSettings, modelRouteHash, saveChat, readback, delay });
+  return Object.freeze({ context, scope, capture, latestIndex, messageText, assertTarget, previousMvu, contextSnapshot, parseMvuCandidate, settings, updateSettings, modelRouteHash, saveChat, readback, delay });
 }

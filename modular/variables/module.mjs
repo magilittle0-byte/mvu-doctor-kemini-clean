@@ -169,10 +169,17 @@ export function createVariableModule({ host, store, story }) {
         // Story Oracle's autoApplyFix sends empty patches through this same
         // official pipeline: card-owned event handlers may still derive data.
         phase('parsing', '正在通过官方MVU解析候选并完成前端计算');
-        const candidate = clone(await mvu.parseMessage(parsed.block, clone(before)));
+        const { candidate, receipt: execution } = await host.parseMvuCandidate(target, mvu, parsed.block, before);
         await assertBaseline();
         if (!usable(candidate)) throw fault('official_parse', '官方MVU未返回可用候选');
         const stateChanged = !equal(before.stat_data, candidate.stat_data);
+        if (execution.parsedCount !== parsed.operations.length) throw fault('official_command_count', '官方解析命令数与本批补丁不一致，未写入变量');
+        const rejected = execution.unexecuted;
+        if (rejected.length) {
+          const error = fault(stateChanged ? 'patch_outcome' : 'patch_no_effect', '修复未完整地在官方MVU候选中生效，全部变量尚未写入');
+          error.feedback = `官方MVU完成Schema处理后，以下命令未产生实际修复：${JSON.stringify(rejected)}。当前变量仍是原快照，本批没有保存。对照规则与当前值：已一致的冗余操作可去除；仍有事实差额的字段必须改用合法值或操作完成修复，不要重复相同无效命令，也不要以空补丁隐藏未修复的事实差额。重新返回本组完整必要补丁。`;
+          throw error;
+        }
         const payloadChanged = !equal(before, candidate);
         if (parsed.operations.length && !stateChanged) throw fault('patch_no_effect', '非空修复经官方MVU解析后没有改变状态，不能算修复成功');
         attempts.push({ attempt, result: 'parsed', operationCount: parsed.operations.length });
@@ -181,7 +188,7 @@ export function createVariableModule({ host, store, story }) {
           target: clone(target), ruleHash, contextHash, configHash, status: 'prepared',
           before: clone(before), candidate: clone(candidate), beforeHash: currentFingerprint, afterHash: await digest(candidate),
           patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
-          semanticProof: false, officialStateChanged: stateChanged, raw: String(raw), groupCount: groups.length,
+          semanticProof: false, officialStateChanged: stateChanged, executionReceipt: clone(execution), raw: String(raw), groupCount: groups.length,
           groups: complete.map(({ messages: _messages, ...result }) => clone(result)), attempts, readback: false, startedAt,
         };
         lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone(complete), raw: String(raw), policy, attempts: clone(attempts) };
@@ -212,7 +219,7 @@ export function createVariableModule({ host, store, story }) {
         // A write or durable save may have partially completed. Never call the
         // model again against the old baseline; recovery inspects that receipt.
         if (writeAttempted) throw error;
-        if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'variable_rules_changed', 'mvu_readback', 'mvu_save_readback'].includes(error.code)
+        if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'variable_rules_changed', 'mvu_readback', 'mvu_save_readback', 'official_receipt_unavailable'].includes(error.code)
           || /^(?:store_|host_)/u.test(String(error.code || ''))) throw error;
         attempts.push({ attempt, groupId: currentGroup?.id || null, result: 'failed', code: error.code || 'model_transport' });
         lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone([...groupResults.values()]), failedGroup: clone(currentGroup), raw: String(raw), policy, attempts: clone(attempts) };

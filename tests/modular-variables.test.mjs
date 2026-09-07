@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { clone, digest, fault, parsePatch, compileOwnership, checkOwnership } from '../modular/variables/core.mjs';
 import { createVariableModule } from '../modular/variables/module.mjs';
-import { createHost } from '../modular/host.mjs';
+import { createHost, parseOfficialCandidate } from '../modular/host.mjs';
 import { createRuntime } from '../modular/runtime.mjs';
 import { adaptDiagnosisPrompt, EVIDENCE_INSTRUCTION } from '../modular/variables/prompt.mjs';
 import { planVariableGroups, checkGroupScope } from '../modular/variables/groups.mjs';
@@ -96,6 +96,48 @@ test('format recovery keeps a unique patch; errors and conflicting blocks fail',
   assert.throws(() => parsePatch('[{"op":"run","path":"/x"}]'), { code: 'patch_operation' });
 });
 
+function receiptEvents() {
+  const listeners = new Map();
+  return {
+    listeners,
+    makeFirst(event, listener) { const items = listeners.get(event) || []; listeners.set(event, [listener, ...items.filter(item => item !== listener)]); },
+    removeListener(event, listener) { listeners.set(event, (listeners.get(event) || []).filter(item => item !== listener)); },
+    async emit(event, ...args) { for (const listener of [...(listeners.get(event) || [])]) await listener(...args); },
+  };
+}
+test('official receipts retain normalized results without interpreting model values', async () => {
+  const h = harness({ reply: () => '[{"op":"replace","path":"/effects","value":"normalized by schema"}]',
+    officialResult: (_block, input) => ({ ...input, stat_data: { effects: { canonical: 'schema value', defaultField: 1 } } }),
+  });
+  h.change({ stat_data: { effects: 'old' } });
+  const record = await h.module.run(h.target);
+  assert.equal(record.status, 'applied'); assert.equal(h.calls.length, 1);
+  assert.deepEqual(h.current().stat_data.effects, { canonical: 'schema value', defaultField: 1 });
+  assert.deepEqual(record.executionReceipt, { parsedCount: 1, unexecuted: [] });
+});
+test('official receipt binds both event identities and removes only its listeners on every exit', async () => {
+  for (const mode of ['valid', 'missing', 'replaced-array', 'duplicate', 'not-cleaned', 'throw']) {
+    const events = receiptEvents(), unrelated = () => {};
+    events.makeFirst('commands_for_zod', unrelated);
+    const mvu = { events: { COMMAND_PARSED: 'commands' }, async parseMessage(message, data) {
+      const commands = [{ type: 'set', full_match: 'synthetic command' }];
+      await events.emit('commands_for_zod', {}, [], 'foreign request');
+      await events.emit('commands_ended_for_zod', {}, [], 'foreign request');
+      await events.emit('commands_for_zod', data, commands, message);
+      if (mode === 'throw') throw fault('parse_failure', 'synthetic');
+      commands.length = 0;
+      if (mode === 'not-cleaned') commands.push({ type: 'set' });
+      if (mode !== 'missing') await events.emit('commands_ended_for_zod', data, mode === 'replaced-array' ? [] : commands, message);
+      if (mode === 'duplicate') await events.emit('commands_ended_for_zod', data, commands, message);
+      return { stat_data: { value: 2 } };
+    } };
+    const run = () => parseOfficialCandidate({ mvu, eventSource: events, before: { stat_data: { value: 1 } }, block: 'synthetic patch' });
+    if (mode === 'valid') assert.deepEqual((await run()).receipt, { parsedCount: 1, unexecuted: [] });
+    else await assert.rejects(run(), { code: mode === 'throw' ? 'parse_failure' : 'official_receipt_unavailable' });
+    assert.deepEqual(events.listeners.get('commands_for_zod'), [unrelated], mode);
+    assert.deepEqual(events.listeners.get('commands_ended_for_zod'), [], mode);
+  }
+});
 function harness(overrides = {}) {
   let current = { stat_data: { coins: 7 } }, stale = false, saveFailure = false;
   const profile = { id: 'synthetic-model', api: 'custom', model: 'original', preset: 'synthetic-preset', proxy: 'synthetic-proxy', 'api-url': 'https://synthetic.invalid' };
@@ -103,7 +145,7 @@ function harness(overrides = {}) {
   const routeContext = { chatCompletionSettings: defaults, getPresetManager: () => ({ getCompletionPresetByName: () => preset }),
     ConnectionManagerRequestService: { getProfile(id) { if (profile.id !== id) throw Error('missing'); return profile; }, validateProfile: () => ({ selected: 'openai', source: 'custom' }) } };
   const routeHost = createHost(() => routeContext, async () => proxies);
-  const values = new Map(), calls = [], parsed = [], writes = [], saves = [];
+  const values = new Map(), calls = [], parsed = [], writes = [], saves = [], eventSource = receiptEvents();
   const target = { scopeKey: 'chat-a', identity: 'reply-a', index: 2, swipeId: 0, content: '获奖7枚金币。', userText: '领取奖励。' };
   const host = {
     modelRouteHash: routeHost.modelRouteHash,
@@ -114,10 +156,22 @@ function harness(overrides = {}) {
     async saveChat(_target, candidate) { saves.push(clone(candidate)); if (saveFailure) throw fault('host_mvu_durable_mismatch', 'failed'); },
     async readback() { if (saveFailure) throw fault('host_mvu_durable_mismatch', 'failed'); },
     delay: async () => {},
+    parseMvuCandidate: (_target, mvu, block, before) => parseOfficialCandidate({ mvu, block, before, eventSource, assertCurrent: () => host.assertTarget() }),
   };
   const mvu = {
+    events: { COMMAND_PARSED: 'synthetic_commands' },
     getMvuData: async () => clone(current),
-    parseMessage: async (block, input) => { parsed.push({ block, input: clone(input) }); return overrides.officialResult ? overrides.officialResult(block, input) : parsePatch(block).operations.length ? { ...input, stat_data: { coins: 12 } } : clone(input); },
+    parseMessage: async (block, input) => {
+      parsed.push({ block, input: clone(input) });
+      const operations = parsePatch(block).operations, commands = operations.map(op => ({ type: op.op, full_match: JSON.stringify(op) }));
+      await eventSource.emit('synthetic_commands_for_zod', input, commands, block);
+      const result = overrides.officialResult ? overrides.officialResult(block, input) : operations.length ? { ...input, stat_data: { coins: 12 } } : clone(input);
+      const remaining = overrides.unexecuted?.(operations) || [];
+      commands.splice(0, commands.length, ...remaining.map(op => ({ type: op.op, full_match: JSON.stringify(op) })));
+      await eventSource.emit('synthetic_commands_ended_for_zod', input, commands, block);
+      commands.length = 0;
+      return result;
+    },
     replaceMvuData: async (value, options) => { writes.push({ value: clone(value), options }); current = clone(value); },
   };
   const settings = { mode: 'profile', profileId: 'synthetic-model', maxTokens: 4096 };
@@ -258,6 +312,36 @@ test('the model reads official object state while the original pre-normalization
   assert.equal(h.target.content, raw);
   assert.equal(h.parsed.length, 1);
 });
+test('a partially dropped official patch cannot write or claim success', async () => {
+  const h = harness({
+    reply: () => JSON.stringify([{ op: 'delta', path: '/coins', value: 5 }, { op: 'replace', path: '/mode', value: 'mixed-invalid' }]),
+    officialResult: (_block, input) => ({ ...input, stat_data: { coins: 12, mode: 'unset' } }),
+    unexecuted: operations => [operations[1]],
+  });
+  h.change({ stat_data: { coins: 7, mode: 'unset' } });
+  await assert.rejects(h.module.run(h.target), { code: 'patch_outcome' });
+  assert.equal(h.calls.length, 3); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+  assert.deepEqual(h.current().stat_data, { coins: 7, mode: 'unset' });
+  assert.match(h.calls[1][1].at(-1).content, /\/mode/);
+  assert.match(h.calls[1][1].at(-1).content, /mixed-invalid/);
+  assert.equal([...h.values.values()].some(value => value.readback === true), false);
+});
+
+test('outcome retry starts from unchanged baseline and persists only the repaired official candidate', async () => {
+  let responses = 0;
+  const h = harness({
+    reply: () => JSON.stringify([{ op: 'delta', path: '/coins', value: 5 }, { op: 'replace', path: '/mode', value: ++responses === 1 ? 'mixed-invalid' : 'allowed' }]),
+    officialResult: (block, input) => ({ ...input, stat_data: { coins: 12, mode: parsePatch(block).operations[1].value === 'allowed' ? 'allowed' : 'unset', derived: 24 } }),
+    unexecuted: operations => operations[1].value === 'allowed' ? [] : [operations[1]],
+  });
+  h.change({ stat_data: { coins: 7, mode: 'unset' } });
+  const record = await h.module.run(h.target);
+  assert.equal(h.calls.length, 2); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
+  assert.ok(h.parsed.every(entry => entry.input.stat_data.coins === 7));
+  assert.deepEqual(h.current().stat_data, { coins: 12, mode: 'allowed', derived: 24 });
+  assert.equal(record.status, 'applied'); assert.equal(record.readback, true);
+});
+
 test('late model response after variable edit is discarded without parse or write', async () => {
   const h = harness({ reply() { h.change({ stat_data: { coins: 8 } }); return '[]'; } });
   await assert.rejects(h.module.run(h.target), { code: 'stale_mvu' });
@@ -376,10 +460,18 @@ test('direct endpoint, raw URL mode, backend forwarding and credentials change t
 });
 test('prewrite drift abandons prepared intent and does not create a false recovery conflict', async () => {
   let changed = false;
-  const h = harness({ onStore(_key, value) { if (value.status === 'committing' && !changed) { changed = true; h.change({ stat_data: { coins: 9 } }); } } });
+  const h = harness({
+    // The fresh diagnosis must target12 from9; the prior fixture repeated+5
+    // while its fake official parser returned12, hiding a wrong postcondition.
+    reply: () => JSON.stringify([{ op: 'delta', path: '/coins', value: changed ? 3 : 5 }]),
+    onStore(_key, value) { if (value.status === 'committing' && !changed) { changed = true; h.change({ stat_data: { coins: 9 } }); } },
+  });
   await assert.rejects(h.module.run(h.target), { code: 'stale_mvu' }); assert.equal(h.writes.length, 0);
   assert.equal(h.values.get('variables:chat-a:reply-a').status, 'abandoned');
   await h.module.run(h.target); assert.equal(h.writes.length, 1);
+  assert.equal(h.parsed.at(-1).input.stat_data.coins, 9);
+  assert.equal(parsePatch(h.parsed.at(-1).block).operations[0].value, 3);
+  assert.equal(h.current().stat_data.coins, 12);
 });
 test('failed durable save never reports success; retry verifies pending candidate without replay', async () => {
   const h = harness(); h.failSave(true);
@@ -415,7 +507,7 @@ test('official metadata-only changes are saved without claiming a state repair',
   assert.deepEqual(h.current().stat_data, { coins: 7 }); assert.deepEqual(h.saves[0], h.current());
 });
 test('unexecutable patch retries without converting a parser no-op into success', async () => {
-  const h = harness(); h.mvu.parseMessage = async (_block, input) => input;
+  const h = harness({ officialResult: (_block, input) => input, unexecuted: operations => operations });
   await assert.rejects(h.module.run(h.target), { code: 'patch_no_effect' }); assert.equal(h.calls.length, 3); assert.equal(h.writes.length, 0);
 });
 
