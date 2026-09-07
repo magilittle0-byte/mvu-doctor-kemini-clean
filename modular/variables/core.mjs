@@ -1,5 +1,5 @@
 // Stage 1 only. No profile creation, world evolution, or local MVU executor.
-export const MODULE_VERSION = '1.0.0-candidate.11';
+export const MODULE_VERSION = '1.0.0-candidate.12';
 export const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 export function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -123,7 +123,6 @@ export function compileOwnership(rules, state) {
   }
   for (const section of sections) {
     const expanded = expandPath(section.declared);
-    if (!expanded.some(path => at(state, path) !== undefined)) continue;
     const sentences = lines.slice(section.start, section.end)
       .filter(line => /^\s*- /u.test(line)).flatMap(line => line.split(/[。；;]/u));
     for (const sentence of sentences) {
@@ -132,7 +131,9 @@ export function compileOwnership(rules, state) {
       const candidates = new Map();
       for (const path of expanded) {
         const value = at(state, path);
-        if (value === undefined) continue;
+        // Keep explicitly declared leaves in the candidate set even when the
+        // current snapshot is missing them. Ownership must survive an absent
+        // field; state presence is evidence for values, not permission.
         candidates.set(pointer(path), path);
         if (value && typeof value === 'object' && !Array.isArray(value)) {
           for (const key of Object.keys(value)) candidates.set(pointer([...path, key]), [...path, key]);

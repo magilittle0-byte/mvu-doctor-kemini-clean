@@ -52,6 +52,43 @@ test('ownership protects declared outputs without freezing calculation inputs or
   for (const path of ['/玩家/头部/信誉', '/玩家/职业/名称', '/玩家/职业/品质', '/玩家/敌人/态度', '/玩家/敌人/职业等级', '/玩家/敌人/实际/STR']) assert.equal(checkOwnership([{ op: 'replace', path, value: 4 }], policy).length, 0, path);
   assert.ok(checkOwnership([{ op: 'replace', path: '/玩家/属性/实际/STR', value: 6 }], policy).length);
 });
+test('ownership protects missing declared leaves without blocking undeclared same-name fields', () => {
+  const rules = `rules:
+  玩家.属性.实际.\${STR|AGI}:
+    check:
+      - 由前端根据装备和职业自动合成，禁止修改。
+  玩家.关系.\${亲密度|信任}:
+    check:
+      - 此变量由前端脚本托管，禁止修改。`;
+  const state = { 玩家: { 属性: { 实际: { STR: 5 } }, 关系: {} }, 敌人: { 属性: { 实际: { AGI: 4 } } } };
+  const policy = compileOwnership(rules, state);
+  assert.ok(policy.protected.some(v => v.path === '/玩家/属性/实际/STR'));
+  assert.ok(policy.protected.some(v => v.path === '/玩家/属性/实际/AGI'));
+  assert.ok(policy.protected.some(v => v.path === '/玩家/关系/亲密度'));
+  assert.ok(policy.protected.some(v => v.path === '/玩家/关系/信任'));
+  assert.ok(checkOwnership([{ op: 'replace', path: '/玩家/属性/实际', value: { AGI: 9 } }], policy).length);
+  assert.ok(checkOwnership([{ op: 'insert', path: '/玩家', value: { 属性: { 实际: { AGI: 9 } } } }], policy).length);
+  assert.ok(checkOwnership([{ op: 'move', from: '/玩家/关系/亲密度', to: '/玩家/关系/信任' }], policy).length);
+  assert.equal(checkOwnership([{ op: 'replace', path: '/敌人/属性/实际/AGI', value: 9 }], policy).length, 0);
+});
+test('named ownership protects a missing expanded leaf and an entirely missing declaration root', () => {
+  const rules = `rules:
+  玩家.属性.实际.\${STR|AGI}:
+    check:
+      - AGI由前端自动合成，禁止修改。
+  玩家.装备.槽位:
+    check:
+      - 槽位由前端脚本托管，禁止修改。`;
+  const state = { 玩家: { 属性: { 实际: { STR: 5 } } } };
+  const policy = compileOwnership(rules, state);
+  assert.equal(policy.protected.some(v => v.path === '/玩家/属性/实际/AGI'), true);
+  assert.equal(policy.protected.some(v => v.path === '/玩家/装备/槽位'), true);
+
+  const protectedToWritable = checkOwnership([{ op: 'move', from: '/玩家/属性/实际/AGI', to: '/敌人/属性/实际/AGI' }], policy);
+  assert.deepEqual(protectedToWritable.map(v => v.ownerPath), ['/玩家/属性/实际/AGI']);
+  const writableToProtected = checkOwnership([{ op: 'move', from: '/敌人/装备/槽位', to: '/玩家/装备/槽位' }], policy);
+  assert.deepEqual(writableToProtected.map(v => v.ownerPath), ['/玩家/装备/槽位']);
+});
 test('format recovery keeps a unique patch; errors and conflicting blocks fail', () => {
   assert.equal(parsePatch('说明\n```json\n[{"op":"delta","path":"/coins","value":5,},]\n```').operations[0].value, 5);
   assert.throws(() => parsePatch('[HTTP Error] connection failed'), { code: 'model_transport' });
