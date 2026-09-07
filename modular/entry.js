@@ -6,7 +6,7 @@ import { loadStory, disableNativeDiagnosis } from './story-adapter.mjs';
 import { createUi } from './ui.mjs';
 import { loadModuleLock } from './lock.mjs';
 
-export const VERSION = '0.10.18';
+export const VERSION = '0.10.19';
 const root = new URL('../', import.meta.url);
 async function boot() {
   if (globalThis.MVUDoctorModular) return;

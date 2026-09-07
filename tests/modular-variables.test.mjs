@@ -7,7 +7,7 @@ import { clone, digest, fault, parsePatch, compileOwnership, checkOwnership } fr
 import { createVariableModule } from '../modular/variables/module.mjs';
 import { createHost, parseOfficialCandidate } from '../modular/host.mjs';
 import { createRuntime } from '../modular/runtime.mjs';
-import { adaptDiagnosisPrompt, EVIDENCE_INSTRUCTION } from '../modular/variables/prompt.mjs';
+import { adaptDiagnosisPrompt, composeDiagnosisMessages, EVIDENCE_INSTRUCTION } from '../modular/variables/prompt.mjs';
 import { planVariableGroups, checkGroupScope } from '../modular/variables/groups.mjs';
 import { diagnosisTranscript, userInput } from '../modular/transcript.mjs';
 
@@ -391,6 +391,40 @@ test('world background and field rules stay distinct; current structured state e
   assert.ok(data.includes(JSON.stringify({ coins: 7 }, null, 2)));
   assert.equal(data.split(h.target.content).length - 1, 1, 'current narrative is not duplicated in history');
   assert.deepEqual(h.module.review().messages, messages, 'review retains the actual sent role boundary');
+});
+test('database wrapper projection is exact, world-only, repeatable, and leaves the source context hash unchanged', async () => {
+  const wrapper = '<最新数据与记录>\n以下是在这个时间点，当前场景下剧情相关的最新数据与记录，你在进行剧情分析时必须以此最新的数据为准，以下数据与记录的优先级高于其他任何背景设定：';
+  const doctorWrapper = '<最新数据与记录>\n以下是数据库独立表格中的最新记录，只作为人物、物品和事件的参考资料。记录不能改变本卡MVU字段的路径、结构、所属范围或check触发条件；是否写入当前字段，仍按该字段原始规则、本轮明确输入和最终接受正文判断。';
+  const near = wrapper.replace('当前场景下', '当前场景中');
+  const tableBytes = 'TABLE_BYTES_MUST_REMAIN';
+  const world = `${wrapper}\n${tableBytes}\n${wrapper}\n${near}`;
+  const card = `CARD_SLOT_${wrapper}`;
+  const messages = composeDiagnosisMessages({
+    instruction: 'INSTRUCTION_SLOT', worldContext: world, card,
+    history: `HISTORY_SLOT_${wrapper}`, rules: `RULE_SLOT_${wrapper}`,
+    originalBlock: '', previous: {}, current: {}, narrative: `NARRATIVE_SLOT_${wrapper}`,
+    userText: `USER_SLOT_${wrapper}`, protectedPaths: [], globalPrompt: `GLOBAL_SLOT_${wrapper}`,
+  });
+  const system = messages[0].content;
+  const data = messages[1].content;
+  const background = data.slice(data.indexOf('<背景设定>\n') + '<背景设定>\n'.length, data.indexOf('\n</背景设定>'));
+  assert.equal(background, `${doctorWrapper}\n${tableBytes}\n${doctorWrapper}\n${near}\n\n${card}`, 'the complete background preserves every non-wrapper byte');
+  assert.equal(data.split(doctorWrapper).length - 1, 2, 'each exact world wrapper occurrence is projected');
+  assert.equal(data.split(wrapper).length - 1, 5, 'non-world slots retain the same source text');
+  assert.ok(data.includes(tableBytes));
+  assert.ok(data.includes(near));
+  assert.ok(data.includes(`CARD_SLOT_${wrapper}`));
+  assert.ok(data.includes(`HISTORY_SLOT_${wrapper}`));
+  assert.ok(data.includes(`USER_SLOT_${wrapper}`));
+  assert.ok(system.includes(`GLOBAL_SLOT_${wrapper}`));
+
+  const h = harness({ reply: () => '[]' });
+  const rule = '  coins:\n    type: number\n    check:\n      - coin rule';
+  h.so.buildWorldInfo = async () => world;
+  h.so.collectMvuUpdateRules = async () => [rule];
+  const record = await h.module.run(h.target);
+  assert.equal(record.contextHash, await digest([world, rule].join('\n\n')), 'contextHash uses the original world source');
+  assert.equal(h.calls[0][1][1].content.split(doctorWrapper).length - 1, 2);
 });
 test('the model reads official object state while the original pre-normalization operation remains reviewable', async () => {
   const h = harness({ reply: () => '[]' });
