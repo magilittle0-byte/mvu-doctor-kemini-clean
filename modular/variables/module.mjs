@@ -1,6 +1,6 @@
 import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths } from './core.mjs';
 import { composeDiagnosisMessages, currentNarrative } from './prompt.mjs';
-import { planVariableGroups, checkGroupScope, groupInstruction } from './groups.mjs';
+import { planVariableGroups, checkGroupScope, groupInstruction, groupRuleMaterial } from './groups.mjs';
 import { userInput } from '../transcript.mjs';
 
 export function createVariableModule({ host, store, story }) {
@@ -124,7 +124,8 @@ export function createVariableModule({ host, store, story }) {
           await assertBaseline();
           phase('checking', `正在核对第${index + 1}/${groups.length}组变量；全部完成后统一保存`);
           messages = clone(baseMessages);
-          messages.at(-1).content += '\n\n' + groupInstruction(group, index, groups.length);
+          messages.at(-1).content += '\n\n' + groupInstruction(group, index, groups.length)
+            + groupRuleMaterial(rules, before.stat_data, group);
           const priorRaw = retry?.groupId === group.id ? retry.raw : retry && !retry.groupId ? groupResults.get(group.id)?.raw : '';
           if (priorRaw) messages.push({ role: 'assistant', content: priorRaw }, { role: 'user', content: retry.feedback });
           raw = '';

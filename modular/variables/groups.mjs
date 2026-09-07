@@ -1,6 +1,6 @@
 // Database spv8.4 grouped-fill boundary adapted from sheet keys to MVU paths.
 // This plans structural coverage only; it does not interpret story semantics.
-import { expandPath, pointer, pointerParts } from './core.mjs';
+import { at, expandPath, pointer, pointerParts } from './core.mjs';
 
 const within = (path, parent) => parent === '' || path === parent || path.startsWith(`${parent}/`);
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -58,6 +58,34 @@ export function checkGroupScope(operations, group) {
     for (const path of paths) if (!group.paths.some(parent => within(path, parent))) errors.push({ index, path, code: 'outside_group' });
   }
   return errors;
+}
+
+// prepareAIInput_ACU places each target sheet's complete trigger contract
+// beside its current rows. Keep MVU declarations verbatim instead of
+// interpreting nested checks or reserializing their multi-line types.
+export function groupRuleMaterial(rules, current, group) {
+  const lines = String(rules || '').split(/\r?\n/u), sections = [];
+  for (const [index, line] of lines.entries()) {
+    const match = line.match(/^ {2}([^#\s][^:：]*):\s*$/u);
+    if (!match) continue;
+    if (sections.length) sections.at(-1).end = index;
+    sections.push({ start: index, end: lines.length, declared: match[1] });
+  }
+  const focus = sections.filter(section => expandPath(section.declared).some(parts => {
+    const path = pointer(parts);
+    return group.paths.some(parent => within(path, parent) || within(parent, path));
+  }));
+  // The complete original rules are always present in the base messages.
+  // An unfamiliar declaration format is not evidence that a field has no rules.
+  if (!focus.length) return '';
+  return '\n\n【本组字段规则原文与当前值】\n'
+    + focus.map(section => lines.slice(section.start, section.end).join('\n')).join('\n\n')
+    + '\n\n【本组写前MVU值】\n'
+    + group.paths.map(path => {
+      const value = at(current, pointerParts(path));
+      return path + ': ' + (value === undefined ? '字段不存在' : JSON.stringify(value));
+    }).join('\n')
+    + '\n\n按这些原始字段声明逐项核对；嵌套字段的条件与父级条件均保留。依原有任务返回本组必要差额，未触发的空字段不因背景有同名记录而变成漏填。';
 }
 
 export function groupInstruction(group, index, total) {
