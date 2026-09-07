@@ -1,7 +1,7 @@
 // Controlled checks for group-local rule material; no host or model calls.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupRuleMaterial } from '../modular/variables/groups.mjs';
+import { groupRuleMaterial, planVariableGroups } from '../modular/variables/groups.mjs';
 
 const rules = [
   '  player.attributes.${STR|AGI}:',
@@ -72,4 +72,62 @@ test('escaped paths and missing current leaves retain their declaration material
   assert.match(material, /missing field check/u);
   assert.match(material, /\/player\/weapon~1name: /u);
   assert.match(material, /\/player\/missing: 字段不存在/u);
+});
+
+test('container ranges are atomic while scalar ranges retain the eight-path limit', () => {
+  const scalarNames = Array.from({ length: 10 }, (_, index) => `s${index}`);
+  const rules = [
+    '  actor.profile:',
+    '    check: profile',
+    '  actor.inventory:',
+    '    check: inventory',
+    '  actor.emptyObject:',
+    '    check: empty object',
+    '  actor.emptyArray:',
+    '    check: empty array',
+    '  actor.previousObject:',
+    '    check: previous object',
+    ...scalarNames.flatMap(name => [`  actor.${name}:`, '    check: scalar']),
+  ].join('\n');
+  const current = {
+    actor: {
+      profile: { name: 'ready', nested: { value: 1 } },
+      inventory: ['item'],
+      emptyObject: {},
+      emptyArray: [],
+      previousObject: 'malformed',
+      ...Object.fromEntries(scalarNames.map((name, index) => [name, index])),
+    },
+  };
+  const previous = {
+    actor: {
+      profile: { name: 'old' },
+      inventory: ['old-item'],
+      emptyObject: {},
+      emptyArray: [],
+      previousObject: { retained: true },
+    },
+  };
+  const groups = planVariableGroups(rules, current, previous, 8);
+  const paths = groups.flatMap(group => group.paths);
+  const expected = new Set([
+    '/actor/profile', '/actor/inventory', '/actor/emptyObject',
+    '/actor/emptyArray', '/actor/previousObject',
+    ...scalarNames.map(name => `/actor/${name}`),
+  ]);
+  assert.deepEqual(new Set(paths), expected, 'every computed range appears exactly once');
+  assert.equal(paths.length, expected.size, 'no path is duplicated across groups');
+  const containerPaths = new Set([
+    '/actor/profile', '/actor/inventory', '/actor/emptyObject',
+    '/actor/emptyArray', '/actor/previousObject',
+  ]);
+  for (const path of containerPaths) {
+    const owner = groups.filter(group => group.paths.includes(path));
+    assert.equal(owner.length, 1, `${path} has one owning group`);
+    assert.deepEqual(owner[0].paths, [path], `${path} is not bundled with another range`);
+  }
+  const scalarGroups = groups.filter(group => group.paths.every(path => !containerPaths.has(path)));
+  assert.ok(scalarGroups.length >= 2, 'ten scalar paths require multiple scalar groups');
+  assert.ok(scalarGroups.every(group => group.paths.length <= 8), 'scalar groups retain the width bound');
+  assert.ok(scalarGroups.every(group => group.paths.every(path => expected.has(path))), 'scalar groups contain only planned paths');
 });

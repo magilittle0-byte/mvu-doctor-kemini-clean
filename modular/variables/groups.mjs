@@ -40,8 +40,19 @@ export function planVariableGroups(rules, current, previous, maxPaths = 8, schem
   }
   includeStored(current, previous, []);
   const width = Math.max(1, Math.floor(Number(maxPaths) || 8));
-  const groups = [];
-  for (let i = 0; i < paths.length; i += width) groups.push({ id: `group-${groups.length + 1}`, paths: paths.slice(i, i + width) });
+  // A container can contain many independent entries/checks. Keep its existing
+  // atomic ownership range, but give it a whole request rather than counting it
+  // as one scalar beside seven unrelated containers. Both snapshots matter:
+  // a currently malformed scalar must not hide a previously structured range.
+  const containers = [], scalars = [];
+  for (const path of paths) {
+    const parts = pointerParts(path);
+    const structured = [at(current, parts), at(previous, parts)].some(value => value !== null && typeof value === 'object');
+    (structured ? containers : scalars).push(path);
+  }
+  const groups = containers.map(path => ({ id: '', paths: [path] }));
+  for (let i = 0; i < scalars.length; i += width) groups.push({ id: '', paths: scalars.slice(i, i + width) });
+  groups.forEach((group, index) => { group.id = `group-${index + 1}`; });
   return groups;
 }
 
