@@ -108,6 +108,18 @@ export function createRuntime({ host, store, variables, disableNative = () => {}
     if (!ticket || ticket.ended || canonical(host.scope()) !== ticket.scope) return;
     ticket.ended = true; scheduleFinal();
   }
+  function deleted(index) {
+    // Native regenerate starts its generation before truncating the old reply.
+    // Preserve only that first expected deletion, never later branch changes.
+    if (ticket?.type === 'regenerate' && !ticket.ended && ticket.received === null
+      && !ticket.initialDeletionConsumed && canonical(host.scope()) === ticket.scope
+      && Number.isInteger(index) && index === ticket.baselineIndex
+      && host.context().chat?.length === ticket.baselineIndex) {
+      ticket.initialDeletionConsumed = true;
+      return;
+    }
+    cancel('消息已删除，旧检查停止写入'); void restore();
+  }
   async function restore() {
     cancel('正在读取当前聊天的模块记录'); result = null;
     const token = epoch, currentScope = host.scope();
@@ -143,7 +155,7 @@ export function createRuntime({ host, store, variables, disableNative = () => {}
     on('MESSAGE_SENT', 'message_sent', () => { if (!ticket) cancel('新用户输入到达，旧检查停止写入'); });
     on('MESSAGE_SWIPED', 'message_swiped', () => { cancel('swipe已切换，旧检查停止写入'); void restore(); });
     on('MESSAGE_EDITED', 'message_edited', () => cancel('正文已编辑，旧检查停止写入'));
-    on('MESSAGE_DELETED', 'message_deleted', () => { cancel('消息已删除，旧检查停止写入'); void restore(); });
+    on('MESSAGE_DELETED', 'message_deleted', deleted);
     on('CHAT_CHANGED', 'chat_id_changed', () => { cancel('聊天已切换'); void restore(); });
     on('CHAT_LOADED', 'chat_loaded', () => { disableNative(); void restore().catch(() => setState({ status: 'failed', detail: '本聊天的医生存档读回失败', busy: false })); });
     void restore().catch(() => setState({ status: 'failed', detail: '医生存档读回失败', busy: false }));

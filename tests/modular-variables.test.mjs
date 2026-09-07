@@ -476,3 +476,69 @@ test('runtime requires generation end, waits500ms, uses fresh final and ignores 
   assert.equal(calls.length, 1); assert.equal(calls[0].content, '最终正文'); assert.deepEqual(delays.slice(0, 2), [500, 150]);
   assert.equal(runtime.snapshot().modules.profiles, 'not_implemented'); assert.equal(runtime.snapshot().modules.world, 'not_implemented');
 });
+
+async function boundRuntimeHarness() {
+  const listeners = new Map(), calls = [], delays = [], writes = [];
+  const ctx = { chatId: 'synthetic-regenerate', characterId: 0, characters: [{ avatar: 'synthetic.png' }], extensionSettings: {},
+    chat: [{ mes: '开场' }, { is_user: true, mes: '行动' }, { mes: '旧正文' }],
+    eventSource: { on: (name, listener) => listeners.set(name, listener) } };
+  const host = { ...createHost(() => ctx), delay: async ms => { delays.push(ms); } };
+  const store = { read: async () => null, write: async (key, value) => { writes.push({ key, value: clone(value) }); } };
+  const variables = { version: 'controlled', run: async value => { calls.push(clone(value)); return { status: 'model_nochange', readback: true }; } };
+  const runtime = createRuntime({ host, store, variables });
+  const settle = () => new Promise(resolve => setTimeout(resolve, 15));
+  runtime.bind(); await settle();
+  return { runtime, calls, delays, writes, settle,
+    emit: (name, ...args) => { assert.ok(listeners.has(name)); listeners.get(name)(...args); },
+    truncate: (index = 2) => { ctx.chat.length = index; },
+    replace: () => { ctx.chat[2] = { mes: '新正文' }; },
+    changeScope: () => { ctx.chatId = 'another-chat'; },
+  };
+}
+
+test('bound regenerate events preserve the native initial deletion and accept the replacement once', async t => {
+  for (const replyType of ['regenerate', 'normal']) await t.test(replyType, async () => {
+    const h = await boundRuntimeHarness();
+    h.emit('generation_started', 'regenerate'); h.truncate(); h.emit('message_deleted', 2);
+    await h.settle();
+    assert.equal(h.runtime.snapshot().status, 'waiting'); assert.equal(h.calls.length, 0);
+    h.replace(); h.emit('message_received', 2, replyType); await h.settle();
+    assert.equal(h.calls.length, 0, 'a received replacement without end is not accepted');
+    h.emit('generation_ended'); h.emit('generation_ended'); await h.settle();
+    assert.equal(h.calls.length, 1); assert.equal(h.calls[0].content, '新正文'); assert.equal(h.calls[0].index, 2);
+    assert.deepEqual(h.delays, [500, 150]);
+    assert.deepEqual(h.writes.map(v => v.value.status), ['accepted', 'settled']);
+    assert.ok(h.writes.every(v => v.value.target.identity === h.calls[0].identity));
+  });
+});
+
+test('bound deletion cancels every event outside the one initial regenerate boundary', async t => {
+  const scenarios = [
+    ['normal', h => h.emit('generation_started', 'normal'), h => { h.truncate(); h.emit('message_deleted', 2); }],
+    ['continue', h => h.emit('generation_started', 'continue'), h => { h.truncate(); h.emit('message_deleted', 2); }],
+    ['wrong index', h => h.emit('generation_started', 'regenerate'), h => { h.truncate(1); h.emit('message_deleted', 1); }],
+    ['host not truncated', h => h.emit('generation_started', 'regenerate'), h => h.emit('message_deleted', 2)],
+    ['missing index', h => h.emit('generation_started', 'regenerate'), h => { h.truncate(); h.emit('message_deleted'); }],
+    ['second deletion', h => { h.emit('generation_started', 'regenerate'); h.truncate(); h.emit('message_deleted', 2); }, h => h.emit('message_deleted', 2)],
+    ['replacement already received', h => { h.emit('generation_started', 'regenerate'); h.replace(); h.emit('message_received', 2, 'regenerate'); }, h => { h.truncate(); h.emit('message_deleted', 2); }],
+    ['generation already ended', h => { h.emit('generation_started', 'regenerate'); h.emit('generation_ended'); }, h => { h.truncate(); h.emit('message_deleted', 2); }],
+    ['scope changed', h => { h.emit('generation_started', 'regenerate'); h.changeScope(); }, h => { h.truncate(); h.emit('message_deleted', 2); }],
+    ['no generation', () => {}, h => { h.truncate(); h.emit('message_deleted', 2); }],
+  ];
+  for (const [name, start, remove] of scenarios) await t.test(name, async () => {
+    const h = await boundRuntimeHarness(); start(h); remove(h); await h.settle();
+    h.replace(); h.emit('message_received', 2, 'regenerate'); h.emit('generation_ended'); await h.settle();
+    assert.equal(h.calls.length, 0); assert.equal(h.writes.length, 0);
+  });
+});
+
+test('bound stop cancels an exempted regeneration and native swipe ordering still runs once', async () => {
+  const h = await boundRuntimeHarness();
+  h.emit('generation_started', 'regenerate'); h.truncate(); h.emit('message_deleted', 2);
+  h.emit('generation_stopped'); h.replace(); h.emit('message_received', 2, 'regenerate'); h.emit('generation_ended'); await h.settle();
+  assert.equal(h.calls.length, 0); assert.equal(h.writes.length, 0);
+  h.emit('message_swiped', 2); h.emit('generation_started', 'swipe'); h.replace();
+  h.emit('message_received', 2, 'swipe'); h.emit('generation_ended'); await h.settle();
+  assert.equal(h.calls.length, 1); assert.equal(h.calls[0].content, '新正文');
+  assert.deepEqual(h.writes.map(v => v.value.status), ['accepted', 'settled']);
+});
