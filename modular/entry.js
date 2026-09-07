@@ -4,20 +4,22 @@ import { createVariableModule } from './variables/module.mjs';
 import { createRuntime } from './runtime.mjs';
 import { loadStory, disableNativeDiagnosis } from './story-adapter.mjs';
 import { createUi } from './ui.mjs';
+import { loadModuleLock } from './lock.mjs';
 
-export const VERSION = '0.10.13';
+export const VERSION = '0.10.14';
 const root = new URL('../', import.meta.url);
 async function boot() {
   if (globalThis.MVUDoctorModular) return;
   const host = createHost();
   while (!globalThis.SillyTavern?.getContext?.()?.eventSource) await host.delay(100);
-  const ui = createUi({ host, version: VERSION });
+  const lock = await loadModuleLock(root, VERSION);
+  const ui = createUi({ host, version: VERSION, lock });
   try {
     const internals = await loadStory(root, host);
     const store = createStore();
     const variables = createVariableModule({ host, store, story: () => internals });
-    const runtime = createRuntime({ host, store, variables, disableNative: () => disableNativeDiagnosis(host.context()), notify: ui.render });
-    globalThis.MVUDoctorModular = Object.freeze({ version: VERSION, ready: true, stage: 1, locked: false,
+    const runtime = createRuntime({ host, store, variables, lock, disableNative: () => disableNativeDiagnosis(host.context()), notify: ui.render });
+    globalThis.MVUDoctorModular = Object.freeze({ version: VERSION, ready: true, stage: 1, locked: lock.locked,
       status: runtime.snapshot, retry: runtime.retry, cancel: runtime.cancel, subscribe: runtime.subscribe,
       // Local inspector access only; these records are never auto-uploaded.
       record: runtime.record, review: variables.review,

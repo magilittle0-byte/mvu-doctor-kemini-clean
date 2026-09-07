@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 export function fingerprint(repo = root) {
-  const paths = ['manifest.json'];
+  const paths = ['manifest.json', 'compatibility/database-user-history.regex.json'];
   for (const directory of ['modular', 'vendor/story-oracle-v1.35.4']) {
     const walk = relative => {
       for (const name of fs.readdirSync(path.join(repo, relative)).sort()) {

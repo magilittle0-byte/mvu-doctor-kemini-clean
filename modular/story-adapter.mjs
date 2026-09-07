@@ -1,5 +1,6 @@
 // Hook-only adaptation. The pinned Story Oracle file remains byte-identical.
 import { fault } from './variables/core.mjs';
+import { diagnosisTranscript } from './transcript.mjs';
 export function disableNativeDiagnosis(ctx) {
   const settings = ctx.extensionSettings.storyOracle ||= {};
   if (settings.autoDiagnoseEnabled !== false) {
@@ -14,7 +15,9 @@ export function storyAdapter(api = globalThis.StoryOracleAPI) {
     buildWorldInfo, wiContextMode, collectMvuUpdateRules, extractUpdateBlock, buildDiagnosePromptFrom, resolveModePrompt, buildTranscriptTurns, buildTranscript, buildCardSection,
     callDirect, resolveEndpointUrl, callProfile, refreshMessageBar, mvuIsBusy })`);
   if (Object.values(internals).some(fn => typeof fn !== 'function')) throw fault('reference_contract', '故事神谕诊断接口缺失');
-  return Object.freeze(internals);
+  const transcriptHelpers = api.unsafe.eval('({ messageVisibleForTranscript, stripMechanismBlocks, regexEngine })');
+  if (typeof transcriptHelpers.messageVisibleForTranscript !== 'function' || typeof transcriptHelpers.stripMechanismBlocks !== 'function') throw fault('reference_contract', '故事神谕历史接口缺失');
+  return Object.freeze({ ...internals, diagnosisTranscript: (ctx, settings) => diagnosisTranscript(ctx, settings, transcriptHelpers) });
 }
 export async function loadStory(root, host) {
   disableNativeDiagnosis(host.context());

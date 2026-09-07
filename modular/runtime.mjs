@@ -1,10 +1,10 @@
 import { clone, canonical, digest, fault } from './variables/core.mjs';
 
-export function createRuntime({ host, store, variables, disableNative = () => {}, notify = () => {} }) {
+export function createRuntime({ host, store, variables, lock = { locked: false }, disableNative = () => {}, notify = () => {} }) {
   let epoch = 0, ticket = null, controller = null, result = null;
-  let state = { status: 'idle', detail: '等待本轮正文完成', busy: false, stage: 1, locked: false };
+  let state = { status: 'idle', detail: '等待本轮正文完成', busy: false, stage: 1, locked: lock.locked === true };
   const inFlight = new Set(), consumers = new Map();
-  const snapshot = () => ({ ...clone(state), inFlight: inFlight.size, modules: { variables: 'candidate', profiles: 'not_implemented', world: 'not_implemented' }, result: result ? { status: result.status, durationMs: result.durationMs, operationCount: result.operationCount, changedPaths: result.changedPaths, readback: result.readback, semanticProof: false, restored: result.restored === true } : null });
+  const snapshot = () => ({ ...clone(state), inFlight: inFlight.size, modules: { variables: state.locked ? 'locked' : 'candidate', profiles: 'not_implemented', world: 'not_implemented' }, result: result ? { status: result.status, durationMs: result.durationMs, operationCount: result.operationCount, changedPaths: result.changedPaths, readback: result.readback, semanticProof: false, restored: result.restored === true } : null });
   const publish = () => notify(snapshot());
   function setState(values) { state = { ...state, ...values }; publish(); }
   function cancel(detail = '本次检查已取消') {
@@ -136,7 +136,7 @@ export function createRuntime({ host, store, variables, disableNative = () => {}
       const valid = await variables.validateReceipt(target, saved);
       if (token !== epoch) return;
       result = valid ? { ...saved, restored: true } : null;
-      setState({ status: valid ? saved.status : 'outdated', detail: valid ? '本聊天的变量记录与当前状态、规则、模型配置及宿主存档一致；模块尚未锁定。' : '旧记录与当前状态或版本不一致，可重新检查本轮。', busy: false });
+      setState({ status: valid ? saved.status : 'outdated', detail: valid ? '本聊天的变量记录与当前状态、规则、模型配置及宿主存档一致。' : '旧记录与当前状态或版本不一致，可重新检查本轮。', busy: false });
     } else setState({ status: pending?.status === 'failed' && target?.identity === pending.target.identity ? 'failed' : 'idle', detail: pending?.status === 'failed' && target?.identity === pending.target.identity ? '本轮上次检查失败，可重试本轮。' : '等待本轮正文完成', busy: false });
   }
   async function retry() {

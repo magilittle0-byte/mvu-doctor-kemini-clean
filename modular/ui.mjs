@@ -1,10 +1,10 @@
-export function createUi({ host, version }) {
+export function createUi({ host, version, lock = { locked: false } }) {
   const box = document.createElement('details');
   box.id = 'mvu-modular-panel';
   box.innerHTML = `<summary>模块医生 <span data-status>正在加载</span></summary>
     <div class="mvu-modular-body"><strong>第一阶段 · MVU变量修复</strong>
     <p data-detail>正在加载诊断组件</p>
-    <p class="mvu-modular-muted">人物档案、世界引擎尚未制作。当前候选尚未完成真实门禁，未锁定。</p>
+    <p class="mvu-modular-muted" data-lock>人物档案、世界引擎尚未制作。当前候选尚未完成真实门禁，未锁定。</p>
     <div class="mvu-modular-actions"><button type="button" data-retry>重试本轮</button><button type="button" data-cancel>取消检查</button></div>
     <details><summary>设置</summary>
       <label><input type="checkbox" data-enabled> 自动检查本轮变量</label>
@@ -17,7 +17,9 @@ export function createUi({ host, version }) {
   const query = key => box.querySelector(`[data-${key}]`);
   const settings = host.settings();
   query('enabled').checked = settings.enabled; query('attempts').value = settings.maxAttempts; query('prompt').value = settings.globalPrompt;
-  query('version').textContent = `Kemini Clean ${version} · 变量模块候选`;
+  query('version').textContent = `Kemini Clean ${version} · ${lock.locked ? '变量模块源码已锁定' : '变量模块候选'}`;
+  if (lock.locked) query('lock').textContent = '变量模块已完成对应配置的真实阶段验收，源码已锁定。人物档案、世界引擎尚未制作。';
+  else if (lock.reason && lock.reason !== 'no_lock_record') query('lock').textContent = '锁定记录未能与当前源码和验收摘要核对，当前按未锁定候选显示。人物档案、世界引擎尚未制作。';
   let runtime;
   query('retry').onclick = () => void runtime?.retry().catch(() => render({ status: 'failed', detail: '当前正文无法绑定，未执行检查' }));
   query('cancel').onclick = () => runtime?.cancel();

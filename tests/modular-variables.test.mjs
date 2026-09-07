@@ -9,9 +9,79 @@ import { createHost, parseOfficialCandidate } from '../modular/host.mjs';
 import { createRuntime } from '../modular/runtime.mjs';
 import { adaptDiagnosisPrompt, EVIDENCE_INSTRUCTION } from '../modular/variables/prompt.mjs';
 import { planVariableGroups, checkGroupScope } from '../modular/variables/groups.mjs';
+import { diagnosisTranscript, userInput } from '../modular/transcript.mjs';
 
 const nativeSource = fs.readFileSync(new URL('../vendor/story-oracle-v1.35.4/index.js', import.meta.url), 'utf8');
 const nativePrompt = vm.runInNewContext(nativeSource.slice(nativeSource.indexOf('const DIAGNOSE_SYSTEM_PROMPT ='), nativeSource.indexOf('const LOREBOOK_SYSTEM_PROMPT =')) + '\nDIAGNOSE_SYSTEM_PROMPT');
+
+test('history retains original user facts when host prompt regex deletes older user messages', () => {
+  const calls = [];
+  const regexEngine = {
+    regex_placement: { USER_INPUT: 1, AI_OUTPUT: 2 },
+    getRegexedString(text, placement, options) {
+      calls.push({ placement, depth: options.depth });
+      if (placement === 1 && options.depth > 0) return '';
+      return text.replace(/<plan>[\s\S]*?<\/plan>/gu, '');
+    },
+  };
+  const source = nativeSource.slice(nativeSource.indexOf('function messageVisibleForTranscript('), nativeSource.indexOf('const REASONING_TAGS ='));
+  const helpers = vm.runInNewContext(source + '\n({ messageVisibleForTranscript, stripMechanismBlocks, regexEngine, buildTranscriptTurns })', { regexEngine, diagnoseMode: false });
+  const ctx = { name1: '玩家', name2: '叙述者', chat: [
+    { is_user: true, mes: '我的通行证是蓝色。<UpdateVariable>历史操作</UpdateVariable>' },
+    { is_user: false, mes: '<plan>不要传入的规划</plan>蓝色通行证已经登记。' },
+    { is_user: true, is_system: true, mes: '隐藏输入不应复活。' },
+    { is_user: false, mes: '那张红色通行证仍在桌上。' },
+    { is_user: true, mes: '收起通行证。' },
+  ] };
+  const settings = { applyRegex: true, contextDepth: 30, includeHiddenFloors: false };
+  assert.equal(helpers.buildTranscriptTurns(ctx, settings, false).some(turn => turn.text.includes('我的通行证是蓝色')), false, 'native projection reproduces the real loss mechanism');
+  calls.length = 0;
+  const result = diagnosisTranscript(ctx, settings, helpers);
+  assert.equal(result, '[用户输入] 玩家: 我的通行证是蓝色。\n\n[助手正文] 叙述者: 蓝色通行证已经登记。\n\n[助手正文] 叙述者: 那张红色通行证仍在桌上。\n\n[用户输入] 玩家: 收起通行证。');
+  assert.deepEqual(calls, [{ placement: 2, depth: 2 }, { placement: 2, depth: 1 }]);
+  assert.doesNotMatch(result, /隐藏输入|规划|历史操作/);
+  assert.equal(diagnosisTranscript(ctx, { ...settings, contextDepth: 0 }, helpers), '');
+  assert.equal(diagnosisTranscript(ctx, { ...settings, contextDepth: 2 }, helpers), '[助手正文] 叙述者: 那张红色通行证仍在桌上。\n\n[用户输入] 玩家: 收起通行证。');
+  calls.length = 0;
+  assert.match(diagnosisTranscript(ctx, { ...settings, includeHiddenFloors: true, contextDepth: -1 }, helpers), /隐藏输入不应复活/);
+  assert.deepEqual(calls, [{ placement: 2, depth: 3 }, { placement: 2, depth: 1 }]);
+  calls.length = 0;
+  assert.match(diagnosisTranscript(ctx, { ...settings, applyRegex: false }, helpers), /<plan>/);
+  assert.equal(calls.length, 0);
+});
+
+test('database input wrapper keeps actual user text separate from recalled instructions', async () => {
+  const text = '只询问通行证的用途。';
+  const wrapped = `以下是用户的本轮输入：\n<本轮用户输入>\n${text}\n</本轮用户输入>\n旧召回指令：展示回忆。<recall>过去的事件</recall>`;
+  assert.equal(userInput(wrapped), text);
+  assert.equal(userInput(text), text);
+  assert.equal(userInput('<本轮用户输入>这是用户自己写的标签</本轮用户输入>'), '<本轮用户输入>这是用户自己写的标签</本轮用户输入>');
+  const incomplete = '以下是用户的本轮输入：<本轮用户输入>未闭合内容';
+  assert.equal(userInput(incomplete), incomplete);
+  const h = harness({ reply: () => '[]' });
+  h.target.userText = wrapped;
+  await h.module.run(h.target);
+  const prompt = h.module.review().baseMessages[1].content;
+  assert.ok(prompt.includes(`【本轮用户输入】\n${text}\n\n【最终接受`));
+  assert.doesNotMatch(prompt, /旧召回指令|<recall>/);
+  assert.equal(h.module.review().target.userText, wrapped, 'identity and recovery still bind the raw saved message');
+});
+
+test('paired database regex retains historical player input while trimming only its recall wrapper', () => {
+  const script = JSON.parse(fs.readFileSync(new URL('../compatibility/database-user-history.regex.json', import.meta.url), 'utf8'));
+  const compiled = new RegExp(script.findRegex.slice(1, -1));
+  const input = '我的通行证是蓝色。\n只询问用途，不主动离开。';
+  const wrapped = `以下是用户的本轮输入：\n<本轮用户输入>\n${input}\n</本轮用户输入>\n旧召回指令<recall>已发生的事件</recall>`;
+  assert.equal(wrapped.replace(compiled, script.replaceString), input);
+  const plain = '原始输入中提到：以下是用户的建议，不是数据库包装。';
+  assert.equal(plain.replace(compiled, script.replaceString), plain);
+  const broken = '以下是用户的本轮输入：<本轮用户输入>缺失结束标签';
+  assert.equal(broken.replace(compiled, script.replaceString), broken);
+  assert.deepEqual(script.placement, [1]);
+  assert.equal(script.minDepth, 2);
+  assert.equal(script.promptOnly, true);
+  assert.equal(script.disabled, false);
+});
 
 const rules = `rules:
   玩家.头部.\${等级|EXP_当前|EXP_升级所需}:
@@ -181,7 +251,7 @@ function harness(overrides = {}) {
     resolveModePrompt: settings => settings.diagnoseSystemPrompt || nativePrompt,
     buildTranscriptTurns: (ctx, settings, keepMechanism) => { assert.equal(settings.contextDepth, 1); assert.equal(keepMechanism, false); assert.equal(ctx.chat.length, 1); return [{ role: 'assistant', text: ctx.chat[0].mes }]; },
     extractUpdateBlock: () => '', buildCardSection: () => 'Synthetic card facts',
-    buildTranscript: (ctx, s, keepMechanism) => { assert.equal(keepMechanism, false); assert.equal(ctx.chat.length, target.index); assert.equal(ctx.chat.some(row => row.mes === target.content), false); return 'Synthetic prior story'; },
+    diagnosisTranscript: (ctx, s) => { assert.equal(ctx.chat.length, target.index); assert.equal(ctx.chat.some(row => row.mes === target.content), false); return 'Synthetic prior story'; },
     callProfile: async (...args) => { calls.push(args); return overrides.reply?.() ?? '[{"op":"delta","path":"/coins","value":5}]'; },
     refreshMessageBar: () => {},
   };

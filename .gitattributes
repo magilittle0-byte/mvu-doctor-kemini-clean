@@ -4,3 +4,5 @@ legacy/** -text
 # Candidate runtime bytes must survive Windows installation unchanged.
 modular/** text eol=lf
 manifest.json text eol=lf
+compatibility/** text eol=lf
+locks/** text eol=lf

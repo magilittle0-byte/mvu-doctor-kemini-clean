@@ -1,6 +1,7 @@
 import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths } from './core.mjs';
 import { composeDiagnosisMessages, currentNarrative } from './prompt.mjs';
 import { planVariableGroups, checkGroupScope, groupInstruction } from './groups.mjs';
+import { userInput } from '../transcript.mjs';
 
 export function createVariableModule({ host, store, story }) {
   let lastReview = null;
@@ -82,9 +83,9 @@ export function createVariableModule({ host, store, story }) {
     const baseMessages = composeDiagnosisMessages({
       instruction: substitute(so.resolveModePrompt(settings, 'diagnose')), worldContext,
       card: substitute(so.buildCardSection(ctx)),
-      history: so.buildTranscript({ ...ctx, chat: ctx.chat.slice(0, target.index) }, settings, false),
+      history: so.diagnosisTranscript({ ...ctx, chat: ctx.chat.slice(0, target.index) }, settings),
       rules, originalBlock, previous: previous?.payload?.stat_data, current: before.stat_data,
-      narrative, userText: target.userText, protectedPaths: policy.protected, globalPrompt: modelConfig.globalPrompt,
+      narrative, userText: userInput(target.userText), protectedPaths: policy.protected, globalPrompt: modelConfig.globalPrompt,
     });
     const prompt = baseMessages.map(message => message.content).join('\n\n');
     const assertBaseline = async () => {
