@@ -274,8 +274,9 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   assert.deepEqual(messages.map(message => message.role), ['system', 'user']);
   const baseMessages = h.module.review().baseMessages;
   assert.ok(baseMessages[1].content.endsWith(EVIDENCE_INSTRUCTION));
-  assert.ok(messages[1].content.startsWith(baseMessages[1].content), 'group scope does not replace or truncate frozen context');
-  assert.match(messages[1].content.slice(baseMessages[1].content.length), /\/coins/);
+  const frozenContext = baseMessages[1].content.slice(0, -EVIDENCE_INSTRUCTION.length).trimEnd();
+  assert.ok(messages[1].content.startsWith(frozenContext), 'group material preserves the exact frozen context prefix');
+  assert.match(messages[1].content, /\/coins/);
   assert.equal(messages.map(message => message.content).join('\n').split('【本轮变量核对任务】').length - 1, 1);
   assert.doesNotMatch(sent, /【本轮变量核对任务】/);
   assert.match(messages[1].content, /物品存在、约定归属和实际交付是不同状态/);
@@ -296,6 +297,34 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   assert.deepEqual(h.settings, originalSettings, 'per-call override does not mutate saved user configuration');
   const custom = '使用本卡专用字段格式。';
   assert.ok(adaptDiagnosisPrompt(custom).startsWith(custom), 'native custom prompt is retained');
+});
+test('group rule material is before the single evidence task in the actual sent user message', async () => {
+  const h = harness({ reply: () => '[]' });
+  h.host.settings = () => ({ maxAttempts: 3, globalPrompt: 'GLOBAL_ADAPTER_ONLY_SYSTEM' });
+  h.so.collectMvuUpdateRules = async () => [[
+    '  coins:',
+    '    type: number',
+    '    check:',
+    '      - coin rule must remain beside its target group',
+  ].join('\n')];
+
+  await h.module.run(h.target);
+  const messages = h.calls[0][1];
+  const system = messages.find(message => message.role === 'system').content;
+  const user = messages.find(message => message.role === 'user').content;
+  const materialAt = user.indexOf('【本组字段规则原文与当前值】');
+  const evidenceAt = user.indexOf('【本轮变量核对任务】');
+
+  assert.ok(materialAt >= 0, 'the sent group contains its original field material');
+  assert.ok(evidenceAt > materialAt, 'the evidence task follows group material');
+  const groupMaterial = user.slice(materialAt, evidenceAt);
+  assert.equal(user.lastIndexOf('【本轮变量核对任务】'), evidenceAt, 'the evidence task is unique');
+  assert.ok(user.endsWith(EVIDENCE_INSTRUCTION), 'the user message ends with the evidence task');
+  assert.match(groupMaterial, /coins:/u);
+  assert.match(groupMaterial, /coin rule must remain beside its target group/u);
+  assert.match(groupMaterial, /\/coins: 7/u, 'the group material includes the write-before value');
+  assert.match(system, /GLOBAL_ADAPTER_ONLY_SYSTEM/u);
+  assert.doesNotMatch(user, /GLOBAL_ADAPTER_ONLY_SYSTEM/u, 'global adapter remains system-only');
 });
 test('uses current7 and prior5 evidence; delegates residual+5 once to official MVU for final12', async () => {
   const h = harness(); const receipt = await h.module.run(h.target);

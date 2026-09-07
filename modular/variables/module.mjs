@@ -80,13 +80,14 @@ export function createVariableModule({ host, store, story }) {
     // Retain the native contract, card and transcript builders, while keeping
     // complete world background separate from the field-definition contract.
     const substitute = text => { try { return ctx.substituteParams(text); } catch { return text; } };
-    const baseMessages = composeDiagnosisMessages({
+    const diagnosisInput = {
       instruction: substitute(so.resolveModePrompt(settings, 'diagnose')), worldContext,
       card: substitute(so.buildCardSection(ctx)),
       history: so.diagnosisTranscript({ ...ctx, chat: ctx.chat.slice(0, target.index) }, settings),
       rules, originalBlock, previous: previous?.payload?.stat_data, current: before.stat_data,
       narrative, userText: userInput(target.userText), protectedPaths: policy.protected, globalPrompt: modelConfig.globalPrompt,
-    });
+    };
+    const baseMessages = composeDiagnosisMessages(diagnosisInput);
     const prompt = baseMessages.map(message => message.content).join('\n\n');
     const assertBaseline = async () => {
       assert();
@@ -123,9 +124,10 @@ export function createVariableModule({ host, store, story }) {
           currentGroup = group;
           await assertBaseline();
           phase('checking', `正在核对第${index + 1}/${groups.length}组变量；全部完成后统一保存`);
-          messages = clone(baseMessages);
-          messages.at(-1).content += '\n\n' + groupInstruction(group, index, groups.length)
-            + groupRuleMaterial(rules, before.stat_data, group);
+          messages = composeDiagnosisMessages({ ...diagnosisInput,
+            groupMaterial: groupInstruction(group, index, groups.length)
+              + groupRuleMaterial(rules, before.stat_data, group),
+          });
           const priorRaw = retry?.groupId === group.id ? retry.raw : retry && !retry.groupId ? groupResults.get(group.id)?.raw : '';
           if (priorRaw) messages.push({ role: 'assistant', content: priorRaw }, { role: 'user', content: retry.feedback });
           raw = '';
