@@ -13,7 +13,8 @@ export function storyAdapter(api = globalThis.StoryOracleAPI) {
   // Literal, trusted adapter code only. Model text never reaches this hook.
   const internals = api.unsafe.eval(`({ getSettings, getMvu, diagPickerActive, buildDiagSelectedWi,
     buildWorldInfo, wiContextMode, collectMvuUpdateRules, extractUpdateBlock, buildDiagnosePromptFrom, resolveModePrompt, buildTranscriptTurns, buildTranscript, buildCardSection,
-    callDirect, resolveEndpointUrl, callProfile, refreshMessageBar, mvuIsBusy })`);
+    callDirect, resolveEndpointUrl, callProfile, refreshMessageBar, mvuIsBusy,
+    observationInstruction: () => DEFAULT_SYSTEM_PROMPT })`);
   if (Object.values(internals).some(fn => typeof fn !== 'function')) throw fault('reference_contract', '故事神谕诊断接口缺失');
   const transcriptHelpers = api.unsafe.eval('({ messageVisibleForTranscript, stripMechanismBlocks, regexEngine })');
   if (typeof transcriptHelpers.messageVisibleForTranscript !== 'function' || typeof transcriptHelpers.stripMechanismBlocks !== 'function') throw fault('reference_contract', '故事神谕历史接口缺失');

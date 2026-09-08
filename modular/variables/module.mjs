@@ -1,5 +1,5 @@
 import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths, lostObjectKeys } from './core.mjs';
-import { composeDiagnosisMessages, currentNarrative } from './prompt.mjs';
+import { composeDiagnosisMessages, composeObservationMessages, appendObservation, currentNarrative } from './prompt.mjs';
 import { planVariableGroups, checkGroupScope, groupInstruction, groupRuleMaterial } from './groups.mjs';
 import { userInput } from '../transcript.mjs';
 
@@ -110,12 +110,46 @@ export function createVariableModule({ host, store, story }) {
       const freshPrevious = await host.previousMvu(target, mvu); assert();
       if (!equal(previous, freshPrevious)) throw fault('stale_previous_mvu', '更新前证据已变化，旧补丁作废');
     };
+    const callModel = async (messages, maxTokens) => {
+      await assertBaseline();
+      let result;
+      if (settings.mode === 'direct') {
+        if (!settings.endpoint || !settings.model) throw fault('model_unconfigured', '变量模型连接尚未配置');
+        const body = { model: settings.model, messages, max_tokens: maxTokens };
+        if (settings.sendTemperature) body.temperature = settings.temperature;
+        result = await so.callDirect(so.resolveEndpointUrl(settings), settings.apiKey, body, signal);
+      } else {
+        if (!settings.profileId) throw fault('model_unconfigured', '变量模型未选择连接配置');
+        result = await so.callProfile(settings.profileId, messages, maxTokens, settings.sendTemperature ? { temperature: settings.temperature } : {}, signal);
+      }
+      await assertBaseline();
+      return result;
+    };
+    const parseGroup = (raw, group) => {
+      const patch = parsePatch(raw);
+      const scopeErrors = checkGroupScope(patch.operations, group);
+      if (scopeErrors.length) {
+        const error = fault('field_group_scope', '本组补丁越过分配范围，全部变量尚未写入');
+        error.feedback = `本组只能修改${JSON.stringify(group.paths)}及其后代；越界操作：${JSON.stringify(scopeErrors)}。请重新返回本组完整必要补丁，其他组由各自任务处理。`;
+        throw error;
+      }
+      const ownershipErrors = checkOwnership(patch.operations, policy);
+      if (ownershipErrors.length) {
+        const error = fault('field_ownership', '本组尝试修改只读或前端托管字段，全部变量尚未写入');
+        error.feedback = `本组触及不归你修改的字段：${JSON.stringify(ownershipErrors)}。前端计算字段不直接写，也不能为达到同一派生总值而绕道改基础值或自定义加成。源字段必须有独立的正文/规则错误才能修正，其他必要修复仍须完成。返回本组完整纠正补丁。`;
+        throw error;
+      }
+      return patch;
+    };
     let retry = null, lastError = null;
     const attempts = [];
     const groups = planVariableGroups(rules, before.stat_data, previous?.payload?.stat_data, 8, [before.schema, previous?.payload?.schema]);
     if (!groups.length) throw fault('group_plan_empty', '没有取得可核对的变量范围，未开始写入');
     const groupResults = new Map();
-    let currentGroup = null;
+    // Observations are reusable only inside this run's immutable baseline.
+    // They are supporting model text, never an MVU candidate or a new event.
+    const observations = new Map();
+    let currentGroup = null, currentStage = 'observing', pendingObservation = null;
     for (let attempt = 1; attempt <= modelConfig.maxAttempts; attempt++) {
       await assertBaseline();
       phase('checking', attempt === 1 ? '正在对照正文、规则和变量检查本轮状态' : `正在自动修复第${attempt - 1}次检查的问题`);
@@ -126,6 +160,7 @@ export function createVariableModule({ host, store, story }) {
         for (const [index, group] of groups.entries()) {
           if (groupResults.get(group.id)?.valid) continue;
           currentGroup = group;
+          currentStage = 'observing'; pendingObservation = null;
           await assertBaseline();
           phase('checking', `正在核对第${index + 1}/${groups.length}组变量；全部完成后统一保存`);
           messages = composeDiagnosisMessages({ ...diagnosisInput,
@@ -134,39 +169,45 @@ export function createVariableModule({ host, store, story }) {
           });
           const priorRaw = retry?.groupId === group.id ? retry.raw : retry && !retry.groupId ? groupResults.get(group.id)?.raw : '';
           if (priorRaw) messages.push({ role: 'assistant', content: priorRaw }, { role: 'user', content: retry.feedback });
+          const diagnosisMessages = messages;
           raw = '';
-          if (settings.mode === 'direct') {
-            if (!settings.endpoint || !settings.model) throw fault('model_unconfigured', '变量模型连接尚未配置');
-            const body = { model: settings.model, messages, max_tokens: maxTokens };
-            if (settings.sendTemperature) body.temperature = settings.temperature;
-            raw = await so.callDirect(so.resolveEndpointUrl(settings), settings.apiKey, body, signal);
-          } else {
-            if (!settings.profileId) throw fault('model_unconfigured', '变量模型未选择连接配置');
-            raw = await so.callProfile(settings.profileId, messages, maxTokens, settings.sendTemperature ? { temperature: settings.temperature } : {}, signal);
+          let observation = observations.get(group.id);
+          if (!observation) {
+            phase('checking', `正在核对第${index + 1}/${groups.length}组修复所依据的正文事实`);
+            if (typeof so.observationInstruction !== 'function') throw fault('reference_contract', '故事神谕只读问答接口缺失');
+            messages = composeObservationMessages(baseMessages, group, so.observationInstruction(), modelConfig.globalPrompt);
+            const observationStartedAt = Date.now();
+            pendingObservation = { raw: '', messages: clone(messages), startedAt: observationStartedAt };
+            const observed = String(await callModel(messages, maxTokens) || '');
+            const observedText = observed.trim();
+            pendingObservation.raw = observed;
+            if (/^\[(?:(?:api|http|request)\s*)?(?:error|failed|failure|错误|失败)\]/iu.test(observedText)) throw fault('observation_transport', '事实核对返回了运输错误，本组尚未生成修复');
+            let observationPatch = false;
+            try {
+              const value = JSON.parse(observedText);
+              observationPatch = Array.isArray(value) && value.every(item => item && typeof item.op === 'string' && typeof item.path === 'string');
+            } catch { /* A normal observation is prose, not JSON. */ }
+            if (!observedText || /<(?:UpdateVariable|JSONPatch)\b/iu.test(observedText) || observationPatch) throw fault('observation_unusable', '事实核对未返回只读说明，本组尚未生成修复');
+            observation = { raw: observed, rawHash: await digest(observed), promptHash: await digest(messages), messages: clone(messages), durationMs: Date.now() - observationStartedAt };
+            observations.set(group.id, observation);
           }
-          await assertBaseline();
-          const groupPatch = parsePatch(raw);
-          const scopeErrors = checkGroupScope(groupPatch.operations, group);
-          if (scopeErrors.length) {
-            const error = fault('field_group_scope', '本组补丁越过分配范围，全部变量尚未写入');
-            error.feedback = `本组只能修改${JSON.stringify(group.paths)}及其后代；越界操作：${JSON.stringify(scopeErrors)}。请重新返回本组完整必要补丁，其他组由各自任务处理。`;
-            throw error;
-          }
-          const ownershipErrors = checkOwnership(groupPatch.operations, policy);
-          if (ownershipErrors.length) {
-            const error = fault('field_ownership', '本组尝试修改只读或前端托管字段，全部变量尚未写入');
-            error.feedback = `本组触及不归你修改的字段：${JSON.stringify(ownershipErrors)}。前端计算字段不直接写，也不能为达到同一派生总值而绕道改基础值或自定义加成。源字段必须有独立的正文/规则错误才能修正，其他必要修复仍须完成。返回本组完整纠正补丁。`;
-            throw error;
-          }
-          groupResults.set(group.id, { group: clone(group), raw: String(raw), operations: groupPatch.operations, messages: clone(messages), valid: true });
+          currentStage = 'diagnosing';
+          phase('checking', `正在依据事实核对第${index + 1}/${groups.length}组变量；尚未写入`);
+          messages = appendObservation(diagnosisMessages, observation.raw);
+          raw = await callModel(messages, maxTokens);
+          const groupPatch = parseGroup(raw, group);
+          groupResults.set(group.id, { group: clone(group), raw: String(raw), operations: groupPatch.operations, messages: clone(messages),
+            observation: clone(observation), valid: true });
         }
-        currentGroup = null;
+        currentGroup = null; currentStage = 'executing'; pendingObservation = null;
         await assertBaseline();
         // Like the database's unified group commit, no official execution or
         // durable write occurs until every disjoint group has a valid result.
         const complete = groups.map(group => groupResults.get(group.id));
         if (complete.some(result => !result?.valid)) throw fault('group_incomplete', '仍有分组没有完成，未写入变量');
-        raw = complete.map((result, index) => `分组 ${index + 1}/${groups.length}\n${result.raw}`).join('\n\n');
+        raw = complete.map((result, index) => `分组 ${index + 1}/${groups.length}\n`
+          + `【模型辅助事实观察；不具有事实权威】\n${result.observation.raw}\n\n【最终分组修复】\n`
+          + result.raw).join('\n\n');
         const parsed = parsePatch(JSON.stringify(complete.flatMap(result => result.operations)));
         const violations = checkOwnership(parsed.operations, policy);
         if (violations.length) {
@@ -214,7 +255,9 @@ export function createVariableModule({ host, store, story }) {
           before: clone(before), candidate: clone(candidate), beforeHash: currentFingerprint, afterHash: await digest(candidate),
           patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
           semanticProof: false, officialStateChanged: stateChanged, executionReceipt: clone(execution), raw: String(raw), groupCount: groups.length,
-          groups: complete.map(({ messages: _messages, ...result }) => clone(result)), attempts, readback: false, startedAt,
+          groups: complete.map(({ messages: _messages, observation, ...result }) => clone({ ...result,
+            observation: { raw: observation.raw, rawHash: observation.rawHash, promptHash: observation.promptHash, durationMs: observation.durationMs },
+          })), attempts, readback: false, startedAt,
         };
         lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone(complete), raw: String(raw), policy, attempts: clone(attempts) };
         // Save recovery evidence before writing any MVU. It remains local to
@@ -246,9 +289,9 @@ export function createVariableModule({ host, store, story }) {
         if (writeAttempted) throw error;
         if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'variable_rules_changed', 'variable_schema_changed', 'variable_schema_unavailable', 'mvu_readback', 'mvu_save_readback', 'official_receipt_unavailable'].includes(error.code)
           || /^(?:store_|host_)/u.test(String(error.code || ''))) throw error;
-        attempts.push({ attempt, groupId: currentGroup?.id || null, result: 'failed', code: error.code || 'model_transport' });
-        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone([...groupResults.values()]), failedGroup: clone(currentGroup), raw: String(raw), policy, attempts: clone(attempts) };
-        retry = raw ? { groupId: currentGroup?.id || null, raw: String(raw), feedback: error.feedback || `本次返回尚不能完成变量修复（${error.code || 'model_transport'}）。只修复格式或官方无法执行的部分，仍须完成本组的全部必要修复。返回唯一完整UpdateVariable和JSONPatch。` } : null;
+        attempts.push({ attempt, groupId: currentGroup?.id || null, stage: currentStage, result: 'failed', code: error.code || 'model_transport' });
+        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone([...groupResults.values()]), failedGroup: clone(currentGroup), observation: clone(observations.get(currentGroup?.id) || pendingObservation), raw: String(raw), policy, attempts: clone(attempts) };
+        retry = currentStage !== 'observing' && raw ? { groupId: currentGroup?.id || null, raw: String(raw), feedback: error.feedback || `本次返回尚不能完成变量修复（${error.code || 'model_transport'}）。只修复格式或官方无法执行的部分，仍须完成本组的全部必要修复。返回唯一完整UpdateVariable和JSONPatch。` } : null;
         if (!currentGroup) for (const result of groupResults.values()) result.valid = false;
       }
     }

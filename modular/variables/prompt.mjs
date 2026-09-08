@@ -1,6 +1,6 @@
 // Minimal adaptation through Story Oracle's native diagnoseSystemPrompt slot.
 // The reference file and its context/output builders remain unchanged.
-import { fault } from './core.mjs';
+import { clone, fault } from './core.mjs';
 const OLD_AUTHORITY = '至关重要——当前状态才是事实依据，而非更新区块：';
 const NEXT_SECTION = '什么才算真正的缺陷';
 const NATIVE_UPDATE_AUDIT = '1. 诊断。逐项核对最新更新在当前状态中体现出的效果。对每一项，说明它是否正确生效。然后只列出真正的缺陷（依照上面的定义），每一条都对应当前状态中的一个具体数值。';
@@ -71,6 +71,36 @@ export function composeDiagnosisMessages({ instruction, worldContext, card, hist
     EVIDENCE_INSTRUCTION,
   ].join('\n\n');
   return [{ role: 'system', content: system }, { role: 'user', content: data }];
+}
+
+const OBSERVATION_QUESTION = '请为一次已经结束的回合回答下列字段的事实问题，不生成变量补丁、不续写剧情，也不决定修复操作。针对每个字段及其子字段，说明上一楼层MVU记了什么、本轮官方处理后的当前MVU记了什么；按发生顺序列出本轮用户明确提交的事实和最终正文中已经完成的变化，给出最短原文依据并注明来自上一回合、本轮输入还是本轮正文。区分开场锚点、中间过程、明确终点、倒计时和估计；同一字段的不同时间点不能互相替代。依据原check，说明哪些触发前提已经满足、哪些仍未完成；规则本身、选项、计划和未完成的尝试不能证明事件已经发生。明确指出相关证据相互支持或存在的歧义；未给出的精度不要推造。固定背景和角色创建资料继续作为各自范围的事实依据，规则授权但尚待设计的定义不冒充已经发生的事件。每个字段用简洁中文完整说明。范围：';
+const OBSERVATION_REPAIR = '上面的回答是同一批材料生成的辅助事实观察候选，不是新的剧情、原卡规则或权威结论。请回到原始用户输入、最终正文、前后MVU和字段规则，完成先前分配的本组变量核对。观察中的推断、显示精度或阈值若没有原文依据，不能据此新增限制或改变变量；冲突以原始材料及其发生顺序为准。只为确凿的当前状态差额生成本组最小完整修复，保留已正确体现的变化，仍遵守字段所有权与配套更新规则。只返回唯一完整UpdateVariable/Analysis/JSONPatch；无实际差额返回空数组。';
+
+export function composeObservationMessages(baseMessages, group, questionInstruction, globalPrompt = '') {
+  if (!Array.isArray(baseMessages) || baseMessages.length < 2) throw fault('observation_messages', '事实核对缺少原始诊断消息');
+  if (!Array.isArray(group?.paths) || !group.paths.length) throw fault('observation_group', '事实核对缺少变量范围');
+  if (typeof questionInstruction !== 'string' || !questionInstruction.trim()) throw fault('observation_instruction', '事实核对缺少原生问答指令');
+  const messages = clone(baseMessages);
+  const user = messages[1];
+  if (!user || user.role !== 'user' || typeof user.content !== 'string' || !user.content.endsWith(EVIDENCE_INSTRUCTION)) {
+    throw fault('observation_evidence_tail', '原诊断消息没有精确的EVIDENCE尾部');
+  }
+  messages[0] = { role: 'system', content: questionInstruction + '\n这是本机只读事实核对，不生成补丁，不续写剧情。' + (globalPrompt ? `\n\n【全局自定义模型适配附加提示词】\n${globalPrompt}` : '') };
+  messages[1] = {
+    ...user,
+    content: user.content.slice(0, -EVIDENCE_INSTRUCTION.length)
+      + `【本次事实问题】\n${OBSERVATION_QUESTION}\n${group.paths.map(path => `- ${path}`).join('\n')}`,
+  };
+  return messages;
+}
+
+export function appendObservation(messages, observationRaw) {
+  if (!Array.isArray(messages) || messages.length < 2) throw fault('observation_messages', '辅助事实核对缺少原始消息');
+  if (typeof observationRaw !== 'string' || !observationRaw.trim()) throw fault('observation_raw', '辅助事实核对为空');
+  return [...clone(messages),
+    { role: 'assistant', content: `【模型辅助事实观察候选；仍须核对原始材料】\n${observationRaw}` },
+    { role: 'user', content: OBSERVATION_REPAIR },
+  ];
 }
 
 export function currentNarrative(so, ctx, settings, target) {
