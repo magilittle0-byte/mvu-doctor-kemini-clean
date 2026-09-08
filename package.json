@@ -1,12 +1,12 @@
 {
   "name": "mvu-doctor-kemini-clean",
-  "version": "0.10.20",
+  "version": "0.10.21",
   "private": true,
   "type": "module",
   "scripts": {
     "verify:vendor": "bash vendor/story-oracle-v1.35.4/verify-copy.sh && bash scripts/verify-world-engine-v3.0.2.sh && node scripts/verify-life-state-v5.35.mjs",
-    "test": "node --test tests/modular-variables.test.mjs tests/modular-group-material.test.mjs tests/module-lock.test.mjs tests/reference-baseline.test.mjs tests/vendor-life-state-v5.35.test.mjs tests/version-consistency.test.mjs",
-    "test:modular": "node --test tests/modular-variables.test.mjs tests/modular-group-material.test.mjs tests/module-lock.test.mjs",
+    "test": "node --test tests/modular-variables.test.mjs tests/modular-group-material.test.mjs tests/modular-structure-feedback.test.mjs tests/module-lock.test.mjs tests/reference-baseline.test.mjs tests/vendor-life-state-v5.35.test.mjs tests/version-consistency.test.mjs",
+    "test:modular": "node --test tests/modular-variables.test.mjs tests/modular-group-material.test.mjs tests/modular-structure-feedback.test.mjs tests/module-lock.test.mjs",
     "check:modular": "node scripts/check-modular.mjs && npm run test:modular",
     "test:browser": "node --test tests/reference-browser-smoke.cjs tests/vendor-world-reroll-injection-browser.cjs tests/vendor-world-actor-seed-chain-browser.cjs",
     "check": "node --check index.js && node --check profile-engine.js && npm run verify:vendor && npm test && npm run test:browser"

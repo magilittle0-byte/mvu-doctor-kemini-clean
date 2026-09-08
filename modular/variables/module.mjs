@@ -1,10 +1,11 @@
-import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths } from './core.mjs';
+import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths, lostObjectKeys } from './core.mjs';
 import { composeDiagnosisMessages, currentNarrative } from './prompt.mjs';
 import { planVariableGroups, checkGroupScope, groupInstruction, groupRuleMaterial } from './groups.mjs';
 import { userInput } from '../transcript.mjs';
 
 export function createVariableModule({ host, store, story }) {
   let lastReview = null;
+  const readSchemaMaterial = () => host.variableSchemaMaterial?.() || '';
   const modelFingerprint = async (settings, own) => digest({ routeHash: await host.modelRouteHash(settings), mode: settings.mode, model: settings.model, profileId: settings.profileId, maxTokens: settings.maxTokens, temperature: settings.sendTemperature ? settings.temperature : null, diagnosisPrompt: settings.diagnoseSystemPrompt || '', applyRegex: settings.applyRegex, contextDepth: settings.contextDepth, includeHiddenFloors: settings.includeHiddenFloors, worldInfoMode: settings.worldInfoMode, globalPrompt: own.globalPrompt });
   async function readRules(so, settings) {
     if (so.diagPickerActive()) return (await so.buildDiagSelectedWi()).block;
@@ -24,7 +25,7 @@ export function createVariableModule({ host, store, story }) {
     if (receipt?.moduleVersion !== MODULE_VERSION || receipt.identity !== target.identity || !receipt.readback || !['applied', 'model_nochange', 'recovered'].includes(receipt.status)) return false;
     const so = story(), mvu = await so.getMvu();
     const payload = await mvu.getMvuData({ type: 'message', message_id: target.index });
-    if (await digest(payload) !== receipt.afterHash || await digest(await readRules(so, so.getSettings())) !== receipt.ruleHash || await modelFingerprint(so.getSettings(), host.settings()) !== receipt.configHash) return false;
+    if (await digest(payload) !== receipt.afterHash || await digest(await readRules(so, so.getSettings())) !== receipt.ruleHash || await digest(readSchemaMaterial()) !== receipt.schemaHash || await modelFingerprint(so.getSettings(), host.settings()) !== receipt.configHash) return false;
     await host.readback(target, payload); host.assertTarget(target);
     return true;
   }
@@ -49,6 +50,8 @@ export function createVariableModule({ host, store, story }) {
     const ctx = host.contextSnapshot(target);
     const settings = clone(so.getSettings());
     const rules = await readRules(so, settings);
+    const schemaMaterial = readSchemaMaterial();
+    const schemaHash = await digest(schemaMaterial);
     assert();
     if (!String(rules || '').trim()) throw fault('variable_rules_missing', '尚未读到本卡变量规则，不能猜测字段含义');
     const policy = compileOwnership(rules, before.stat_data);
@@ -58,14 +61,14 @@ export function createVariableModule({ host, store, story }) {
     const key = `variables:${target.scopeKey}:${target.identity}`;
     const existing = await store.read(key); assert();
     const currentFingerprint = await digest(before);
-    if (reason === 'auto' && existing?.moduleVersion === MODULE_VERSION && existing.ruleHash === ruleHash && existing.configHash === configHash
+    if (reason === 'auto' && existing?.moduleVersion === MODULE_VERSION && existing.ruleHash === ruleHash && existing.schemaHash === schemaHash && existing.configHash === configHash
       && ['applied', 'model_nochange', 'recovered'].includes(existing.status) && existing.afterHash === currentFingerprint) {
       await host.readback(target, before); assert();
       return { ...existing, restored: true };
     }
     if (existing?.status === 'committing') {
       if (equal(before, existing.candidate)) {
-        if (existing.moduleVersion !== MODULE_VERSION || existing.ruleHash !== ruleHash || existing.configHash !== configHash) throw fault('pending_commit_version', '上次中断候选的版本或规则已变化，已保留现场');
+        if (existing.moduleVersion !== MODULE_VERSION || existing.ruleHash !== ruleHash || existing.schemaHash !== schemaHash || existing.configHash !== configHash) throw fault('pending_commit_version', '上次中断候选的版本或规则已变化，已保留现场');
         await host.saveChat(target, before); assert();
         const recovered = { ...existing, status: 'recovered', afterHash: currentFingerprint, durationMs: Date.now() - startedAt, readback: true };
         await store.write(key, recovered); await store.write(`latest:variables:${target.scopeKey}`, recovered); assert();
@@ -84,7 +87,7 @@ export function createVariableModule({ host, store, story }) {
       instruction: substitute(so.resolveModePrompt(settings, 'diagnose')), worldContext,
       card: substitute(so.buildCardSection(ctx)),
       history: so.diagnosisTranscript({ ...ctx, chat: ctx.chat.slice(0, target.index) }, settings),
-      rules, originalBlock, previous: previous?.payload?.stat_data, current: before.stat_data,
+      rules, schemaMaterial, originalBlock, previous: previous?.payload?.stat_data, current: before.stat_data,
       narrative, userText: userInput(target.userText), protectedPaths: policy.protected, globalPrompt: modelConfig.globalPrompt,
     };
     const baseMessages = composeDiagnosisMessages(diagnosisInput);
@@ -102,6 +105,7 @@ export function createVariableModule({ host, store, story }) {
       try { currentRuleHash = await digest(await readRules(so, so.getSettings())); }
       catch { throw fault('variable_rules_changed', '本卡变量规则已无法读取，旧候选已作废'); }
       if (currentRuleHash !== ruleHash) throw fault('variable_rules_changed', '本卡变量规则已变化，旧候选已作废，需按新规则重新检查');
+      if (await digest(readSchemaMaterial()) !== schemaHash) throw fault('variable_schema_changed', '本卡启用的变量结构已变化，旧候选作废，需按新结构重新检查');
       if (!equal(await read(), before)) throw fault('stale_mvu', '模型运行期间变量已被更新，旧补丁作废，需读取新快照重查');
       const freshPrevious = await host.previousMvu(target, mvu); assert();
       if (!equal(previous, freshPrevious)) throw fault('stale_previous_mvu', '更新前证据已变化，旧补丁作废');
@@ -184,12 +188,29 @@ export function createVariableModule({ host, store, story }) {
           error.feedback = `官方MVU完成Schema处理后，以下命令未产生实际修复：${JSON.stringify(rejected)}。当前变量仍是原快照，本批没有保存。对照规则与当前值：已一致的冗余操作可去除；仍有事实差额的字段必须改用合法值或操作完成修复，不要重复相同无效命令，也不要以空补丁隐藏未修复的事实差额。重新返回本组完整必要补丁。`;
           throw error;
         }
+        const lost = lostObjectKeys(parsed.operations, before.stat_data, candidate.stat_data);
+        if (lost.length) {
+          // Reuse the existing single-group format retry. Keep the other
+          // complete groups cached and leave this official candidate unsaved.
+          let start = 0;
+          const affected = complete.find(result => {
+            const end = start + result.operations.length;
+            const found = lost[0].operationIndex >= start && lost[0].operationIndex < end;
+            start = end; return found;
+          });
+          currentGroup = affected.group;
+          affected.valid = false;
+          raw = affected.raw;
+          const error = fault('patch_structure_loss', '官方解析丢弃了修复对象中的子字段，正在按原卡结构自动修复；尚未保存');
+          error.feedback = `本批候选尚未保存，写前MVU保持不变。官方Schema接受命令后丢弃了以下对象子字段：${JSON.stringify(lost)}。其中actual是未保存候选的实际结构，不是新的事实依据。对照本卡结构声明、正文与写前状态，重新返回本组完整必要补丁，把已有事实填入合法的目标字段；不得仅删除承载事实的内容、返回空数组或用默认值冒充修复。多余且不属于该主体Schema的键可移除，已有称谓等事实应保留在本卡规定的位置。其他组已缓存，无须重写。`;
+          throw error;
+        }
         const payloadChanged = !equal(before, candidate);
         if (parsed.operations.length && !stateChanged) throw fault('patch_no_effect', '非空修复经官方MVU解析后没有改变状态，不能算修复成功');
         attempts.push({ attempt, result: 'parsed', operationCount: parsed.operations.length });
         const record = {
           moduleVersion: MODULE_VERSION, scopeKey: target.scopeKey, identity: target.identity,
-          target: clone(target), ruleHash, contextHash, configHash, status: 'prepared',
+          target: clone(target), ruleHash, schemaHash, contextHash, configHash, status: 'prepared',
           before: clone(before), candidate: clone(candidate), beforeHash: currentFingerprint, afterHash: await digest(candidate),
           patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
           semanticProof: false, officialStateChanged: stateChanged, executionReceipt: clone(execution), raw: String(raw), groupCount: groups.length,
@@ -223,7 +244,7 @@ export function createVariableModule({ host, store, story }) {
         // A write or durable save may have partially completed. Never call the
         // model again against the old baseline; recovery inspects that receipt.
         if (writeAttempted) throw error;
-        if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'variable_rules_changed', 'mvu_readback', 'mvu_save_readback', 'official_receipt_unavailable'].includes(error.code)
+        if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'variable_rules_changed', 'variable_schema_changed', 'variable_schema_unavailable', 'mvu_readback', 'mvu_save_readback', 'official_receipt_unavailable'].includes(error.code)
           || /^(?:store_|host_)/u.test(String(error.code || ''))) throw error;
         attempts.push({ attempt, groupId: currentGroup?.id || null, result: 'failed', code: error.code || 'model_transport' });
         lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone([...groupResults.values()]), failedGroup: clone(currentGroup), raw: String(raw), policy, attempts: clone(attempts) };

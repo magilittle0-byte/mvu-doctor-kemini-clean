@@ -185,6 +185,51 @@ test('official receipts retain normalized results without interpreting model val
   assert.deepEqual(h.current().stat_data.effects, { canonical: 'schema value', defaultField: 1 });
   assert.deepEqual(record.executionReceipt, { parsedCount: 1, unexecuted: [] });
 });
+test('lost nested keys retry only their group and save only the fully repaired official candidate', async () => {
+  let actorCalls = 0, otherCalls = 0;
+  const schema = 'registerMvuSchema(z.object({ actors: z.record(z.string(), z.object({ title: z.object({ name: z.string() }) })) }))';
+  const h = harness({
+    reply() {
+      const messages = h.calls.at(-1)[1];
+      assert.ok(messages[1].content.includes(schema));
+      if (!messages[1].content.includes('- /actors\n')) { otherCalls++; return '[]'; }
+      actorCalls++;
+      assert.equal(h.writes.length, 0);
+      if (actorCalls === 2) {
+        assert.match(messages.at(-1).content, /丢弃/);
+        assert.match(messages.at(-1).content, /currentTitle/);
+      }
+      return JSON.stringify([{ op: 'insert', path: '/actors/a', value: { title: actorCalls === 1 ? { currentTitle: { name: 'synthetic title' } } : { name: 'synthetic title' } } }]);
+    },
+    officialResult(block, input) {
+      const requested = parsePatch(block).operations[0].value;
+      return { ...input, stat_data: { ...input.stat_data, actors: { a: { title: { name: requested.title.name || 'none', effects: {} } } } } };
+    },
+  });
+  h.host.variableSchemaMaterial = () => schema;
+  h.change({ stat_data: { actors: {}, coins: 7 } });
+  const result = await h.module.run(h.target);
+  assert.equal(actorCalls, 2); assert.equal(otherCalls, 1);
+  assert.equal(h.parsed.length, 2); assert.equal(h.writes.length, 1);
+  assert.deepEqual(h.parsed[0].input, h.parsed[1].input);
+  assert.equal(h.current().stat_data.actors.a.title.name, 'synthetic title');
+  assert.equal(result.attempts[0].code, 'patch_structure_loss');
+  assert.equal(result.status, 'applied');
+  assert.equal(result.schemaHash, await digest(schema));
+});
+test('schema source drift invalidates in-flight and settled receipts', async () => {
+  let schema = 'schema one';
+  const h = harness({ reply: () => { schema = 'schema two'; return '[]'; } });
+  h.host.variableSchemaMaterial = () => schema;
+  await assert.rejects(h.module.run(h.target), { code: 'variable_schema_changed' });
+  assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
+  const next = harness({ reply: () => '[]' });
+  next.host.variableSchemaMaterial = () => schema;
+  const record = await next.module.run(next.target);
+  assert.equal(await next.module.validateReceipt(next.target, record), true);
+  schema = 'schema three';
+  assert.equal(await next.module.validateReceipt(next.target, record), false);
+});
 test('official receipt binds both event identities and removes only its listeners on every exit', async () => {
   for (const mode of ['valid', 'missing', 'replaced-array', 'duplicate', 'not-cleaned', 'throw']) {
     const events = receiptEvents(), unrelated = () => {};

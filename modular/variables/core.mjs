@@ -1,5 +1,5 @@
 // Stage 1 only. No profile creation, world evolution, or local MVU executor.
-export const MODULE_VERSION = '1.0.0-candidate.21';
+export const MODULE_VERSION = '1.0.0-candidate.22';
 export const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 export function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -29,6 +29,43 @@ export function at(value, parts) {
 }
 export function usable(payload) {
   return Boolean(payload?.stat_data && typeof payload.stat_data === 'object' && !Array.isArray(payload.stat_data) && Object.keys(payload.stat_data).length);
+}
+
+// Old Doctor deepSubset's child walk, narrowed to missing object keys only.
+// Scalar values/coercion/defaults remain official-owned. There is no expected
+// state executor, and ambiguous overlapping/index-shifting commands are not
+// replayed locally to guess their final target.
+export function lostObjectKeys(operations, before, after) {
+  const overlap = (a, b) => a === b || a === '' || b === '' || a.startsWith(b + '/') || b.startsWith(a + '/');
+  const destinations = operation => [operation.op === 'move' ? (operation.to ?? operation.path) : operation.path, ...(operation.op === 'move' ? [operation.from] : [])];
+  const losses = [];
+  for (const [operationIndex, operation] of operations.entries()) {
+    if (!['insert', 'replace'].includes(operation.op) || !operation.value || typeof operation.value !== 'object') continue;
+    const parts = pointerParts(operation.path), parent = parts.slice(0, -1);
+    const parentPath = pointer(parent);
+    const arrayInsert = operation.op === 'insert' && [at(before, parent), at(after, parent)].some(Array.isArray);
+    const range = arrayInsert ? parentPath : operation.path;
+    if (operations.slice(operationIndex + 1).some(other => destinations(other).some(path => overlap(range, path)))) continue;
+    if (arrayInsert && parts.at(-1) === '-') {
+      const array = at(after, parent);
+      if (!Array.isArray(array) || !array.length) continue;
+      parts[parts.length - 1] = String(array.length - 1);
+    }
+    const missingPaths = [];
+    function walk(requested, actual, path) {
+      if (!requested || typeof requested !== 'object') return;
+      // An intentional object->scalar transform is not a missing-key proof.
+      if (!actual || typeof actual !== 'object') return;
+      for (const [key, child] of Object.entries(requested)) {
+        if (!Object.hasOwn(actual, key)) missingPaths.push(pointer([...path, key]));
+        else walk(child, actual[key], [...path, key]);
+      }
+    }
+    const actual = at(after, parts);
+    walk(operation.value, actual, parts);
+    if (missingPaths.length) losses.push({ operationIndex, path: pointer(parts), missingPaths, actual: clone(actual) });
+  }
+  return losses;
 }
 
 // Life State ver5.35's fence -> balanced candidate -> punctuation/trailing

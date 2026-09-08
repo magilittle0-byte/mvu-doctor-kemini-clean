@@ -1,5 +1,19 @@
 import { clone, canonical, digest, fault, equal, usable } from './variables/core.mjs';
 
+// Read the same current-character trees and enabled flags as TavernHelper.
+// Source is context only: never evaluate embedded code or mirror its Zod store.
+export function embeddedSchemaMaterial(ctx, helper) {
+  const card = ctx.characters?.[ctx.characterId];
+  const enabled = ctx.extensionSettings?.tavern_helper?.script?.enabled?.characters;
+  if (!card?.name || !Array.isArray(enabled) || !enabled.includes(card.name)) return '';
+  if (typeof helper?.getScriptTrees !== 'function') throw fault('variable_schema_unavailable', '无法读取本卡当前启用的变量结构声明');
+  const trees = helper.getScriptTrees({ type: 'character' });
+  const scripts = trees.filter(tree => tree.enabled).flatMap(tree => tree.type === 'folder' ? tree.scripts.filter(script => script.enabled) : [tree]);
+  return scripts.map(script => String(script.content || ''))
+    .filter(source => /\bregisterMvuSchema\s*\(/u.test(source) && /\b(?:z|zod)\.(?:object|record)\s*\(/u.test(source))
+    .join('\n\n');
+}
+
 // Read the official Zod command receipt before its cleanup event clears it.
 // No local patch interpreter: schema normalization stays entirely with MVU.
 export async function parseOfficialCandidate({ mvu, eventSource, block, before, assertCurrent = () => {} }) {
@@ -177,5 +191,6 @@ export function createHost(getContext = () => globalThis.SillyTavern?.getContext
       signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
-  return Object.freeze({ context, scope, capture, latestIndex, messageText, assertTarget, previousMvu, contextSnapshot, parseMvuCandidate, settings, updateSettings, modelRouteHash, saveChat, readback, delay });
+  const variableSchemaMaterial = () => embeddedSchemaMaterial(context(), globalThis.TavernHelper);
+  return Object.freeze({ context, scope, capture, latestIndex, messageText, assertTarget, previousMvu, contextSnapshot, parseMvuCandidate, variableSchemaMaterial, settings, updateSettings, modelRouteHash, saveChat, readback, delay });
 }
