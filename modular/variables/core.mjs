@@ -1,5 +1,5 @@
 // Stage 1 only. No profile creation, world evolution, or local MVU executor.
-export const MODULE_VERSION = '1.0.0-candidate.23';
+export const MODULE_VERSION = '1.0.0-candidate.24';
 export const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 export function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
