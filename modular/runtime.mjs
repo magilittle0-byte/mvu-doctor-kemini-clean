@@ -12,7 +12,11 @@ export function createRuntime({ host, store, variables, lock = { locked: false }
     setState({ status: 'cancelled', detail, busy: false });
   }
   async function run(target, reason = 'auto', token = epoch, staleRetries = 0) {
-    if (!target || token !== epoch || !host.settings().enabled) return;
+    if (!target || token !== epoch) return;
+    if (reason !== 'manual' && !host.settings().enabled) {
+      setState({ status: 'idle', detail: '自动检查已关闭，可点击“重试本轮”手动检查', busy: false });
+      return;
+    }
     const ctl = new AbortController(); controller = ctl;
     const job = {}; inFlight.add(job);
     setState({ status: 'checking', detail: '正在检查本轮变量', busy: true });
@@ -39,7 +43,7 @@ export function createRuntime({ host, store, variables, lock = { locked: false }
       if (['stale_mvu', 'stale_previous_mvu'].includes(error.code) && staleRetries < host.settings().maxAttempts - 1) {
         setState({ status: 'waiting_mvu', detail: '变量证据发生变化，正在读取当前快照重新检查', busy: true });
         try { await host.delay(500, ctl.signal); } catch { return; }
-        if (token === epoch) return await run(await host.capture(target.index), 'auto', token, staleRetries + 1);
+        if (token === epoch) return await run(await host.capture(target.index), reason, token, staleRetries + 1);
         return;
       }
       const code = error.code || (ctl.signal.aborted ? 'cancelled' : 'model_transport');

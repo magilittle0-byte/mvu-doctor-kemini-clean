@@ -851,6 +851,81 @@ test('runtime requires generation end, waits500ms, uses fresh final and ignores 
   assert.equal(runtime.snapshot().modules.profiles, 'not_implemented'); assert.equal(runtime.snapshot().modules.world, 'not_implemented');
 });
 
+test('automatic checking off leaves a completed reply idle and still manually retryable', async () => {
+  const scope = { chatId: 'manual-off' }, target = {
+    scopeKey: await digest(scope), identity: 'accepted-manual-off', index: 1, userIndex: 1, content: '正文',
+  };
+  let calls = 0; const writes = [];
+  const host = {
+    settings: () => ({ enabled: false, maxAttempts: 3 }), scope: () => scope, latestIndex: () => 0,
+    capture: async () => clone(target), delay: async () => {},
+  };
+  const variables = { version: 'controlled', run: async () => { calls++; return { status: 'model_nochange', operationCount: 0, readback: true }; } };
+  const store = { read: async () => null, write: async (key, value) => writes.push({ key, value }) };
+  const runtime = createRuntime({ host, store, variables });
+  runtime.started('normal'); runtime.received(1); runtime.ended();
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(calls, 0, 'automatic checking remains disabled');
+  assert.equal(runtime.snapshot().status, 'idle');
+  assert.equal(runtime.snapshot().busy, false);
+  await runtime.retry(); await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(calls, 1, 'the retry button remains an explicit manual path');
+  assert.equal(runtime.snapshot().status, 'model_nochange');
+  assert.equal(writes.some(entry => entry.key === `pending:variables:${target.scopeKey}`), true);
+});
+
+test('manual retry fresh-reads a settled module receipt and does not replay its old delta', async () => {
+  let h;
+  h = harness({ reply: () => h.diagnosisCalls.length === 1 ? '[{"op":"delta","path":"/coins","value":5}]' : '[]' });
+  h.host.settings = () => ({ enabled: false, maxAttempts: 3, globalPrompt: '' });
+  const first = await h.module.run(h.target);
+  assert.equal(first.status, 'applied'); assert.equal(h.current().stat_data.coins, 12);
+  const runtimeHost = { ...h.host, capture: async () => clone(h.target) };
+  const runtime = createRuntime({ host: runtimeHost, store: h.store, variables: h.module });
+  await runtime.retry(); await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(h.observationCalls.length, 2, 'manual retry observes a fresh current snapshot');
+  assert.equal(h.diagnosisCalls.length, 2, 'manual retry issues a fresh diagnosis call');
+  assert.equal(h.parsed.length, 2);
+  assert.equal(runtime.record().before.stat_data.coins, 12, 'manual retry uses the current post-repair baseline');
+  assert.equal(h.writes.length, 1, 'the second empty diagnosis does not replay the earlier MVU write');
+  assert.equal(h.current().stat_data.coins, 12, 'the second empty diagnosis does not replay the first delta');
+  assert.equal(runtime.snapshot().status, 'model_nochange');
+});
+
+test('manual stale MVU retries preserve manual reason and settle from a fresh target', async () => {
+  for (const staleCode of ['stale_mvu', 'stale_previous_mvu']) {
+    let attempts = 0; let captures = 0; const reasons = []; const targetCaptures = []; const scope = { chatId: `stale-${staleCode}` };
+    const target = { scopeKey: await digest(scope), identity: staleCode, index: 1, userIndex: 1, content: '正文' };
+    const host = {
+      settings: () => ({ enabled: false, maxAttempts: 3 }), scope: () => scope,
+      capture: async () => { captures++; return { ...clone(target), capture: captures }; }, delay: async () => {},
+    };
+    const variables = { version: 'controlled', run: async (_target, options) => {
+      reasons.push(options.reason); targetCaptures.push(_target.capture); if (attempts++ === 0) throw fault(staleCode, 'changed');
+      return { status: 'model_nochange', operationCount: 0, readback: true };
+    } };
+    const store = { read: async () => null, write: async () => {} };
+    const runtime = createRuntime({ host, store, variables });
+    await runtime.retry(); await new Promise(resolve => setTimeout(resolve, 15));
+    assert.deepEqual(reasons, ['manual', 'manual'], staleCode);
+    assert.deepEqual(targetCaptures, [1, 2], staleCode);
+    assert.equal(captures, 2, staleCode);
+    assert.equal(runtime.snapshot().status, 'model_nochange', staleCode);
+  }
+});
+
+test('manual retry late result after cancellation cannot commit', async () => {
+  const scope = { chatId: 'manual-cancel' }, target = { scopeKey: await digest(scope), identity: 'cancelled', index: 1, userIndex: 1, content: '正文' };
+  let resolveRun; let writes = 0;
+  const host = { settings: () => ({ enabled: false, maxAttempts: 3 }), scope: () => scope, capture: async () => clone(target), delay: async () => {} };
+  const variables = { version: 'controlled', run: async () => new Promise(resolve => { resolveRun = resolve; }) };
+  const store = { read: async () => null, write: async () => { writes++; } };
+  const runtime = createRuntime({ host, store, variables });
+  await runtime.retry(); runtime.cancel('测试取消'); resolveRun({ status: 'applied', operationCount: 1, readback: true });
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(writes, 0); assert.equal(runtime.snapshot().status, 'cancelled'); assert.equal(runtime.snapshot().busy, false);
+});
+
 async function boundRuntimeHarness() {
   const listeners = new Map(), calls = [], delays = [], writes = [];
   const ctx = { chatId: 'synthetic-regenerate', characterId: 0, characters: [{ avatar: 'synthetic.png' }], extensionSettings: {},
