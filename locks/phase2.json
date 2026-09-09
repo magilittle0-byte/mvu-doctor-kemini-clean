@@ -1,0 +1,36 @@
+{
+  "locked": true,
+  "stage": 2,
+  "version": "0.1.0-candidate.1",
+  "fingerprint": "08ceb43d71877ea66693711c20a02ba87ccb49fa8851533bff69f708a786bb7d",
+  "files": {
+    "profiles/content.mjs": "da2ff01f4211ee7796695e420b333635f43ff3ab8dced5e990fc29cf5c1d9684",
+    "profiles/entry.js": "749d5e16a9c9c35c50a7218ecddf7c3f46eb24fab20f813ce87f6d9423421b8b",
+    "profiles/host.mjs": "0cc58f8a069e722e907e30a7fc83dc24c8c3f50977974a05c76e32ad91045308",
+    "profiles/install.json": "0d3a3bdadfe12b4d35bcadca85bff7db35fbacbbbc716bceaa7573ef3b1b2ec6",
+    "profiles/loader.js": "738555c918d00958628ef747a87527ed5ff657b25ca8a11928df7f29894ed1d4",
+    "profiles/manifest.json": "3ef228f91d4f6c4b48e5917d1576ac6e6d7755cae61e8b9ca5b8aefeef310e68",
+    "profiles/runtime.mjs": "c6e5585c8d8e8d1a149bc0c2133b981edb4f52c0631e7c529048708f6e0cb008",
+    "profiles/store.mjs": "1d21fe4f7fabe701508480fc4ca2ae71df5c76512622c812f85de009be64a264",
+    "profiles/style.css": "61618891e01068845a08eb95b1c963161cbb4748f4b186621c2157da4b4ebaf4",
+    "profiles/ui.mjs": "d91b303ee1660890020f0e8b0a8fcee791012a730993b279e732b358e67be61c"
+  },
+  "p1Dependencies": {
+    "locks/phase1.json": "3f80c7769b6abf1c88d1018b6b42577ea41e98e841643f864929b7838075f305",
+    "locks/phase1-evidence.json": "ba7b82465d62fa9c72a5bfa41b21a462ead5d25ed9ad650002b4afc573b346b8",
+    "locks/phase1-supporting-files.json": "76d1fee3bafdaac271323b765bf090d2a47a80da8ab8c6c58bee9639a1436113"
+  },
+  "supportingFiles": {
+    "profiles/.gitattributes": "a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9",
+    "scripts/check-profiles.mjs": "5f68cc35d8b75ab985248e3b00a286fed3ad03892393f89403fc6d7f3e230afd",
+    "tests/profiles-content.test.mjs": "5905dfa71855e907cda2e9a68233cf003ea4d46ff2404c72a36205ebee1dd462",
+    "tests/profiles-store.test.mjs": "b0507771b8db1b1ecd8c44a917022bc7de10d7174d969c952e97b293f82b672e",
+    "tests/profiles-recall.test.mjs": "6bb7bd13a02f0df2a26edadf38100107330e0571858eb1ec946b5d72bbdf435d",
+    "tests/profiles-runtime.test.mjs": "8783b522a825846470ea130fa10c0089363465f59c4fe18bfa171f82383693dd",
+    "docs/profiles/PHASE2_SOURCE_MAP.md": "3e3c76c530ea7a45fabe397491f0fd2c338eca4cf97a79b86334c5c629619978",
+    "docs/profiles/README.md": "6aa9a52c3efb2cbf044bb16a8857c6e214f00f4932331279292be22640612d4f"
+  },
+  "realAcceptance": {
+    "summarySha256": "4e4d10b6c1af5e36fb97223a6b4836b645e89590cbbcc6dab4c95c27d8c0cafd"
+  }
+}
