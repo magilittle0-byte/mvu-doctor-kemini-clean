@@ -1,0 +1,13 @@
+{
+  "type": "script",
+  "enabled": true,
+  "name": "MVU Doctor 世界引擎 0.1.0-candidate.1",
+  "id": "c7e3bdf0-8295-4da1-ae6c-57f5f5d52703",
+  "content": "// TavernHelper owns this independent P3 module through its loader node.\nconst hostWindow = window.parent;\nconst owner = hostWindow.document.createElement('script');\nowner.type = 'module';\nowner.id = `mvu-world-loader-${crypto.randomUUID()}`;\nowner.textContent = `import { boot } from '/scripts/extensions/third-party/mvu-doctor-kemini-clean/world/entry.js';\nconst owner = document.getElementById(${JSON.stringify(owner.id)});\nif (owner?.isConnected) void boot(owner);`;\nconst unload = () => {\n  owner.remove();\n  hostWindow.MVUDoctorWorld?.dispose?.(owner);\n};\nwindow.addEventListener('pagehide', unload, { once: true });\nwindow.addEventListener('unload', unload, { once: true });\nhostWindow.document.head.appendChild(owner);\n",
+  "info": "独立世界引擎测试候选，需要已锁定的变量和人物档案模块。尚未完成真实门禁。",
+  "button": {
+    "enabled": true,
+    "buttons": []
+  },
+  "data": {}
+}

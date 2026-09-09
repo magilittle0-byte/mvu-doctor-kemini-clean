@@ -1,0 +1,11 @@
+#mvu-doctor-world-root { border:1px solid #758d93; border-radius:10px; margin:12px 0; padding:12px; color:inherit; }
+#mvu-doctor-world-root h2 { font-size:1.15em; margin:0 0 10px; }
+#mvu-doctor-world-root dl { display:grid; grid-template-columns:minmax(80px,auto) minmax(0,1fr); gap:5px 12px; }
+#mvu-doctor-world-root dt { font-weight:600; }
+#mvu-doctor-world-root dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+#mvu-doctor-world-root details { margin-top:10px; }
+#mvu-doctor-world-root summary { cursor:pointer; padding:5px 0; }
+#mvu-doctor-world-root pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+#mvu-doctor-world-root button { padding:6px 12px; margin:4px 8px 4px 0; border-radius:5px; cursor:pointer; }
+#mvu-doctor-world-root button:disabled { opacity:.5; cursor:wait; }
+@media(max-width:600px) { #mvu-doctor-world-root dl { display:block; } #mvu-doctor-world-root dd { margin-bottom:10px; } }
