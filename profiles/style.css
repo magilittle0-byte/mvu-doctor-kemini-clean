@@ -1,0 +1,28 @@
+.mvu-profiles-panel { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--SmartThemeBorderColor, #657080); border-radius: 9px; color: inherit; }
+.mvu-profiles-panel > summary { cursor: pointer; font-weight: 600; }
+.mvu-profiles-status { float: right; font-size: .9em; font-weight: 400; }
+.mvu-profiles-panel[data-state="failed"] { border-color: #e27575; }
+.mvu-profiles-panel[data-state="failed"] .mvu-profiles-status { color: #ef9090; }
+.mvu-profiles-body { display: grid; gap: 10px; margin-top: 12px; }
+.mvu-profiles-body p { margin: 0; line-height: 1.5; }
+.mvu-profiles-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.mvu-profiles-actions button { min-width: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--SmartThemeBorderColor, #657080); border-radius: 6px; cursor: pointer; color: inherit; background: var(--SmartThemeBlurTintColor, #30343b); }
+.mvu-profiles-actions button:disabled { opacity: .45; cursor: default; }
+.mvu-profiles-section { display: grid; gap: 8px; }
+.mvu-profiles-section h3, .mvu-profiles-card h4 { margin: 0; }
+.mvu-profiles-index-wrap { overflow-x: auto; max-width: 100%; }
+.mvu-profiles-index { width: 100%; min-width: 560px; border-collapse: collapse; }
+.mvu-profiles-index th, .mvu-profiles-index td { padding: 8px; border-bottom: 1px solid var(--SmartThemeBorderColor, #657080); text-align: left; vertical-align: top; }
+.mvu-profiles-index th { font-weight: 600; }
+.mvu-profiles-detail-button { min-width: 44px; min-height: 44px; padding: 8px 10px; border: 1px solid var(--SmartThemeBorderColor, #657080); border-radius: 6px; cursor: pointer; color: inherit; background: var(--SmartThemeBlurTintColor, #30343b); white-space: nowrap; }
+.mvu-profiles-settings label { display: block; min-height: 44px; padding: 9px 0; }
+.mvu-profiles-settings input { width: 20px; height: 20px; vertical-align: middle; }
+.mvu-profiles-card { padding: 10px; border: 1px solid var(--SmartThemeBorderColor, #657080); border-radius: 7px; overflow-wrap: anywhere; }
+.mvu-profiles-fields { display: grid; grid-template-columns: minmax(9em, 15em) 1fr; gap: 6px 10px; margin: 0; }
+.mvu-profiles-fields dt { font-weight: 600; }
+.mvu-profiles-fields dd { margin: 0; white-space: pre-wrap; }
+.mvu-profiles-fields ul { margin: 0; padding-left: 1.2em; }
+.mvu-profiles-task-status { margin-left: 4px; opacity: .8; }
+.mvu-profiles-error { color: #ef9090; }
+.mvu-profiles-muted { opacity: .7; }
+@media (max-width: 600px) { .mvu-profiles-fields { grid-template-columns: 1fr; gap: 2px; } .mvu-profiles-fields dd { margin-bottom: 8px; } }

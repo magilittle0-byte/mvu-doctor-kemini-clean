@@ -1,0 +1,13 @@
+{
+  "type": "script",
+  "enabled": true,
+  "name": "MVU Doctor 人物档案 0.1.0-candidate.1",
+  "id": "07fa62d8-6e38-40c5-9ed4-50510aef21b0",
+  "content": "// TavernHelper script content: execute in its iframe, load P2 in the host page.\nconst hostWindow = window.parent;\nconst owner = hostWindow.document.createElement('script');\nowner.type = 'module';\nowner.id = `mvu-profiles-loader-${crypto.randomUUID()}`;\nowner.textContent = `import { boot } from '/scripts/extensions/third-party/mvu-doctor-kemini-clean/profiles/entry.js';\nconst owner = document.getElementById(${JSON.stringify(owner.id)});\nif (owner?.isConnected) void boot(owner);`;\nconst unload = () => {\n  owner.remove();\n  hostWindow.MVUDoctorProfiles?.dispose?.(owner);\n};\nwindow.addEventListener('pagehide', unload, { once: true });\nwindow.addEventListener('unload', unload, { once: true });\nhostWindow.document.head.appendChild(owner);\n",
+  "info": "独立人物档案测试候选。需要同一安装目录中的已锁定 P1 0.10.26；普通正文后自主建档、填表及召回。尚未完成真实门禁。",
+  "button": {
+    "enabled": true,
+    "buttons": []
+  },
+  "data": {}
+}
