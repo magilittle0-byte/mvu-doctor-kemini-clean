@@ -1,0 +1,18 @@
+{
+  "stage": 1,
+  "kind": "additional_contract_and_regression_protection",
+  "sourceFingerprint": "c7a8af5a7f33363f06796e1b0f587ec087387dfe3cf4ac2281266145c589d595",
+  "files": {
+    ".gitattributes": "c84107b115643b76724f3c1efc6599301af5cfe74c6e144ca52411fd8e442f49",
+    "docs/modular/MODULE_CONTRACT.md": "7f571386a1b3a67c5739c82a06a7c7aa7578d8d84e71271673da31ae655b9054",
+    "package.json": "521d70af34f0f705cbd1a6b8637f97c590fac7fb1b6dc74115a98580c7bddb93",
+    "scripts/check-modular.mjs": "fd36ed05aaed7f484d6a9af1786163859301debe1e43c945a335c7770cd76136",
+    "scripts/modular-fingerprint.mjs": "525a3a066d8a155e08657c7c2c5da40776d07772b5962ebddce2dfd25f59cc7a",
+    "scripts/validate-module-lock.mjs": "6a77ee7a8335a612b2e7b4ea8aab9d2d91093558c84fdeab43ea71e223a3079e",
+    "tests/modular-group-material.test.mjs": "857b8117a25797b78788f900134bd533833a7ecac51e650461ce17eccfe358a2",
+    "tests/modular-structure-feedback.test.mjs": "7a546e44b671f236c593c4395fcb5ff2eda0722bd964d7e3d6e181d0355cb662",
+    "tests/modular-variables.test.mjs": "564c62ea635a1702e0a2131b2e00ded4cbbca20b1e4e18b09c5201fe19a6c8e2",
+    "tests/module-lock.test.mjs": "6a3b380d5f9b616500e18249b904577a96563308e93ffdb780a13c3b6eb3069f",
+    "tests/version-consistency.test.mjs": "b8219c042cdbcaf40b13b6b949aa43f6b44464d93531ff179e7197fd59b1f737"
+  }
+}

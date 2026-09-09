@@ -6,3 +6,13 @@ modular/** text eol=lf
 manifest.json text eol=lf
 compatibility/** text eol=lf
 locks/** text eol=lf
+# Locked verification and interface bytes must also survive checkout unchanged.
+.gitattributes text eol=lf
+package.json text eol=lf
+scripts/modular-fingerprint.mjs text eol=lf
+scripts/validate-module-lock.mjs text eol=lf
+scripts/check-modular.mjs text eol=lf
+tests/modular-*.test.mjs text eol=lf
+tests/module-lock.test.mjs text eol=lf
+tests/version-consistency.test.mjs text eol=lf
+docs/modular/MODULE_CONTRACT.md text eol=lf

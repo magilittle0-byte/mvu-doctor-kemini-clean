@@ -1,0 +1,382 @@
+{
+  "complete": true,
+  "rounds": 12,
+  "hardFailures": 0,
+  "sourceFingerprint": "c7a8af5a7f33363f06796e1b0f587ec087387dfe3cf4ac2281266145c589d595",
+  "stage": 1,
+  "version": "0.10.26",
+  "sourceCommit": "38e6165a5459058d08be4cd737f6303203dcd205",
+  "acceptanceScope": "MVU variable runtime and fresh manual repair mechanism under the user clarification dated 2026-09-08; no claim of zero model hallucinations",
+  "fullDoctorAcceptance": false,
+  "profilesImplemented": false,
+  "worldImplemented": false,
+  "normalRounds": 12,
+  "additionalPressureRounds": 1,
+  "sameChat": true,
+  "pressure": {
+    "complete": true,
+    "sequence": 5,
+    "enteredDungeon": true,
+    "sameReplyMultipleNewNpcs": true
+  },
+  "roundResults": [
+    {
+      "sequence": 1,
+      "kind": "first",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1278638,
+      "mainDurationMs": null,
+      "operationCount": 2,
+      "originalEventTimingAvailable": false
+    },
+    {
+      "sequence": 2,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1339296,
+      "mainDurationMs": 53657,
+      "operationCount": 1,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 3,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1176763,
+      "mainDurationMs": 41216,
+      "operationCount": 2,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 4,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1126052,
+      "mainDurationMs": 48739,
+      "operationCount": 0,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 5,
+      "kind": "pressure",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1239960,
+      "mainDurationMs": 94808,
+      "operationCount": 5,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 6,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1212767,
+      "mainDurationMs": 78867,
+      "operationCount": 3,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 7,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1543895,
+      "mainDurationMs": 78897,
+      "operationCount": 0,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 8,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1393316,
+      "mainDurationMs": 66922,
+      "operationCount": 5,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 9,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1365888,
+      "mainDurationMs": 37980,
+      "operationCount": 4,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 10,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 13815065,
+      "mainDurationMs": 28710,
+      "operationCount": 0,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 11,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1182308,
+      "mainDurationMs": 48568,
+      "operationCount": 10,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 12,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1328121,
+      "mainDurationMs": 81482,
+      "operationCount": 2,
+      "originalEventTimingAvailable": true
+    },
+    {
+      "sequence": 13,
+      "kind": "next",
+      "approved": true,
+      "fullInputAndBodyReviewed": true,
+      "fullMvuReviewed": true,
+      "fullDoctorReviewed": true,
+      "actualUiReviewed": true,
+      "nativeDiskReadback": true,
+      "doctorDurationMs": 1483924,
+      "mainDurationMs": 39356,
+      "operationCount": 1,
+      "originalEventTimingAvailable": true
+    }
+  ],
+  "manualRecovery": {
+    "quotaRecovery": {
+      "sequence": 1,
+      "freshGroups": 31,
+      "operations": 2,
+      "readback": true
+    },
+    "semanticRechecks": [
+      {
+        "sequence": 7,
+        "freshGroups": 31,
+        "newRecord": true,
+        "currentBaseline": true,
+        "operations": 0,
+        "readback": true,
+        "semanticErrorFixed": false,
+        "durationMs": 1543895
+      },
+      {
+        "sequence": 10,
+        "freshGroups": 31,
+        "newRecord": true,
+        "currentBaseline": true,
+        "operations": 0,
+        "readback": true,
+        "semanticErrorFixed": false,
+        "durationMs": 13815065
+      }
+    ],
+    "repeatedIncrementObserved": false
+  },
+  "finalReadback": {
+    "actualRefreshes": 1,
+    "additionalRefreshes": 0,
+    "originalHelperResult": "failed",
+    "reopenedOriginalChat": true,
+    "postCurrentTargetAndDiskMatched": true,
+    "chatMessages": 27,
+    "doctorKvEntries": 15,
+    "all13HistoricalBodiesAndDoctorRecordsMatched": true,
+    "nativeHistoricalMvuMatchedCount": 11,
+    "nativeHistoricalMvuCleanupProjectionCount": 2,
+    "allHistoricalNativeMvuMatched": false,
+    "preAggregateDigestAvailable": false,
+    "prePostAggregateEqualityClaim": false,
+    "currentUiFieldsRead": 57,
+    "currentUiPagesIndependentlyRead": 3,
+    "privateCapturesCleaned": true
+  },
+  "limitations": [
+    "Model phase/time and some enemy initialization or equipment judgments remain wrong; manual rechecks can miss them again.",
+    "One narrative used earlier enemy stats; the original main request was no longer in the last-five transport log, so the upstream cause is unresolved and not attributed to P1 code.",
+    "The final round skill MP cost lacked an independently established numeric definition; its correctness is not proven.",
+    "Narrative omniscience and an auxiliary subscription error appeared upstream; P1 does not retroactively rewrite narrative.",
+    "An actual host exit occurred and original-chat recovery succeeded; the exit cause is unknown.",
+    "The first normal round original START/accepted precise timing is unavailable; its observed accepted reply and quota recovery evidence are retained.",
+    "Transport evidence includes bounded last-five requests, not full-wire coverage.",
+    "First final-refresh helper failed with no chat selected; reopening the same chat completed post readback. Missing pre aggregate digests are not reconstructed.",
+    "Two old native MVU snapshots match official cleanup projection under enabled keep20/snapshot50 settings; the cleanup execution timestamp was not directly observed.",
+    "Background controls remained available; deliberate overlap, cancellation and extra restart fault injection were not performed."
+  ],
+  "testedConfiguration": {
+    "presetVersion": "0.10.14r1",
+    "presetSha256": "7a552697cf8ed19afa432ba86ff738188c4d93d856f815e1114ffb28451827a2",
+    "compatibilityRegexSha256": "d997a23f11735a6a7fe737531aabd8c9172d77b0b6fbfb7531f50bb40a18764c",
+    "requestModel": "[满血A]gemini-3.1-pro-preview",
+    "responseModel": "[J]gemini-3.1-pro-preview",
+    "temperature": 0.85,
+    "maxTokens": 60000,
+    "rulesHash": "79a2b3d3acd9805a728e24d43af64f7be65e8c7187f7f7489f3c686e6984ff54",
+    "schemaHash": "67e5d6c27c56a69006118c5ae5271eddc89ff2153b92bcb1b1e816ec4ac20f43",
+    "configHash": "970980b6016ca093575001bb2e75514775b6ee8de78ef7c3106b0a6c5c7b36df"
+  },
+  "localEvidenceRefs": [
+    {
+      "file": "0126-run1-independent-review.json",
+      "sha256": "50999d4b154a693692cf68061cf4313541d619b3eb6324ffc1b1e27fafe404ec"
+    },
+    {
+      "file": "0126-p1-real-recovery-evidence-index.json",
+      "sha256": "81f675a0256d3eb641fb6b6992dff44716749df20d7fbeacc2a4c5862bd376ad"
+    },
+    {
+      "file": "0126-seq7-manual-freshness.json",
+      "sha256": "5ca42c68f3d399263cef2227597a8564f896931bff5844197e2b00fb34653be9"
+    },
+    {
+      "file": "0126-seq10-manual-freshness.json",
+      "sha256": "13862cecbb085f6149084bc4ba309131b6f7d214eeda50470d94de5f1279aa55"
+    },
+    {
+      "file": "0126-seq11-host-exit-recovery.json",
+      "sha256": "668cdd9b0940e81db760836968644b40c93eae7d1b70e5bd7e3fcf8b9022c893"
+    },
+    {
+      "file": "0126-final-readback.started.json",
+      "sha256": "72dd6acbf91b36d6e1d65620e6d40882fde9c458daef1c4595e5d9db92415ee0"
+    },
+    {
+      "file": "0126-final-readback-first-attempt-failure.json",
+      "sha256": "77bb129e67bf8a658e48a7f8a53e21477b6b5e50d7f0f4dae6c40a564a287ed4"
+    },
+    {
+      "file": "0126-final-retention-readback-result.json",
+      "sha256": "3d3cd6802b4fadabeb4325f6ef58c70d72ea88daf75b5a52cf200470495599e7"
+    },
+    {
+      "file": "0126-final-post-ui-independent-review.json",
+      "sha256": "4800efb3fd7eaa511a7cc7e724a1dfbfa9ef4337ca11397614bf1149289e6e0a"
+    },
+    {
+      "file": "0126-final-historical-mvu-diagnostic.json",
+      "sha256": "c03ebccd9a1bdf88fff2e4c0b8ddfbcc7b7e291e7f5b7276d3d24635524b286e"
+    },
+    {
+      "file": "0126-final-historical-record-diagnostic.json",
+      "sha256": "513f7c591fd9e91f4ca2a159a7e78574f4618a678c5b4622a1dde9e639c085a8"
+    },
+    {
+      "file": "0126-final-mvu-cleanup-config.json",
+      "sha256": "2b5abdced6fb9f0ddd6dd279e332432ca8085267a2736978b32f9e68ef58bb8e"
+    },
+    {
+      "file": "0126-topup-complete-independent-review.json",
+      "sha256": "1fc568209d278f532d1ad0daa071c0edddc472dd0aa4228ec7bb2eb2f99f12c0"
+    },
+    {
+      "file": "0126-seq2-complete-independent-review.json",
+      "sha256": "775ac0fe5605c727e512e3b33dca240962d7cdc59f0e684baac3513fa3115da0"
+    },
+    {
+      "file": "0126-seq3-complete-independent-review.json",
+      "sha256": "da9dbb6501b78f7bb229ac2e65f45844df1e6420ac918697986b1ddd2fe434f3"
+    },
+    {
+      "file": "0126-seq4-complete-independent-review.json",
+      "sha256": "6ad90f0e03e4372c27e38cab7a7d407094d28d3d82138185192be1573c116d10"
+    },
+    {
+      "file": "0126-seq5-complete-independent-review.json",
+      "sha256": "51d1f36244123e12a21c3942dc997df8f05259cc9038e3d861388f91e8f42cf4"
+    },
+    {
+      "file": "0126-seq6-complete-independent-review.json",
+      "sha256": "3af81ebb062ee55fc973925ae320ce27bb5ff4a2d0534aee023eec0af9c1bc81"
+    },
+    {
+      "file": "0126-seq7-complete-independent-review.json",
+      "sha256": "e3c630444e63f9fcf2455150a3dd71c9f380d80c756c6fa0f5c9b7eb15b7277b"
+    },
+    {
+      "file": "0126-seq8-complete-independent-review.json",
+      "sha256": "7de23320f35caf80fa111a95c104074e62f3b9d493a49c93a55913c4bcb07de7"
+    },
+    {
+      "file": "0126-seq9-complete-independent-review.json",
+      "sha256": "18532fa6913b5f084b7fc022c6e4aa5b7cbeeef39774560d53c5e95ebddc2d88"
+    },
+    {
+      "file": "0126-seq10-complete-independent-review.json",
+      "sha256": "afad0e5ded7edb8472384b4847e747de9a5b90879826b4bc394f9a193a9b39f4"
+    },
+    {
+      "file": "0126-seq11-complete-independent-review.json",
+      "sha256": "b80551d283c0cf6828784394ec476513c1a0f082eda4f4224f4a63903c2b3061"
+    },
+    {
+      "file": "0126-seq12-complete-independent-review.json",
+      "sha256": "d83d789f04410ffe32164e53978f5a5d595fff0ddedd49532d3a7c3dfa903930"
+    },
+    {
+      "file": "0126-seq13-complete-independent-review.json",
+      "sha256": "aee0ee74ccd50774972a40ffd6f82706ceccc6b11f4db6ebfce330ce2ada7db6"
+    }
+  ],
+  "lockedAt": "2026-09-09T06:16:39.843Z"
+}
