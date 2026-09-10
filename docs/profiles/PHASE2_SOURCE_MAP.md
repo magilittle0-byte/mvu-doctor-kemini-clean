@@ -1,5 +1,15 @@
 # 人物档案模块：独立接入与复用来源
 
+## 0.1.0-candidate.2 手动发现反馈
+
+真实发现结果多次在格式合法时遗漏正文中已提及人物；现有按钮只重发同一提示，结构修复分支没有触发。本次最小改动只为主动retry添加上一份发现结果和重新核对说明。它是对修复机制的改进，不把模型遗漏伪称为解析器故障，也不要求模型永远零幻觉。
+
+应用前重新检索并核对旧Doctor、数据库绑定/模板、Story Oracle、变量反馈、人物staging及糖糖/Izumi/缝合怪/Z论坛相关来源。直接复用当前 `profiles/runtime.mjs` 的请求留存、当前receipt、取消、parse/binding、单人物生成和store/readback；参考既有discovery/profile repair携带原结果与错误的顺序。旧 `profile-engine.js` 的 `minimumNameCount/preserveNames` 属于不同schema，不搬入本模块，避免强制保留错误候选。
+
+`previousDiscoveryForRetry` 只读取同分支、非tombstone、相同variableIdentity与mvuHash的既有请求，先用当前 `parseDiscovery` 重新核对证据和身份，再作为待复核材料发送。反馈要求通读当前正文，包括HTML系统概览和名单中的实际提及，排除选项/规划/示例；仍禁止从MVU或世界书单独造名。上一名单允许纠错，存储中已有完整档案仍按原机制保留。自动提示字节不变；没有新状态机、UI、路由、存储或额外自动重试。P1的运行文件、支持文件及锁定记录均不变。本候选尚待真实验收，旧锁与旧回合不证明新候选通过。
+
+## 初版实现来源（历史记录）
+
 开始条件已满足：P1 0.10.26 的17文件锁校验为true。P2只能新增 `profiles/` 与独立安装入口、相应测试和文档，不能修改P1的manifest、modular、vendor、包依赖、契约或既有断言。两名Luna分别完成全项目人物引擎与表格来源检索，Root补读了选用的解析、字段、发现、整人生成、提交、宿主订阅和召回实现。私人材料不进入仓库。
 
 ## 输入、模型与完整档案

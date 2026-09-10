@@ -135,13 +135,20 @@ export function validateProfile(profile, players = []) {
 }
 
 function json(value) { return JSON.stringify(value ?? null, null, 2); }
-export function discoveryPrompt(input = {}) {
-  return [
+export function discoveryPrompt(input = {}, feedback = null) {
+  const base = [
     '你是人物发现器。只从普通正文 narrative 识别实际出现或被提及的非玩家人物；不得凭世界书、MVU、卡片、全局提示或预设标签创造姓名。',
     '每人返回 sourceName、evidence、presence。evidence 必须是 narrative 中连续、非空、逐字出现的片段；presence 只能是 present 或 mentioned。',
     '若本轮没有可持续记录的非玩家人物，返回 people:[] 并给出 noCharacterReason。已有完整人物只要本轮出现仍可返回更新；existingProfileId 只能复制 input.profiles 中明确存在的 profileId，绝不能按同名猜测合并。',
     `narrative:\n${String(input.narrative ?? '')}\nuserText:\n${String(input.userText ?? '')}\nmvu:\n${json(input.mvu)}\nauthority:\n${json(input.authority)}\nplayers:\n${json(input.players)}\nprofiles:\n${json(input.profiles)}\nglobalPrompt:\n${String(input.globalPrompt ?? '')}`,
     '只输出 JSON：{"people":[{"sourceName":"...","evidence":"...","existingProfileId":null,"presence":"present"}],"noCharacterReason":"..."}',
+  ].join('\n\n');
+  if (!feedback) return base;
+  return [
+    base,
+    '这是用户主动点击修复后的发现结果复核。上次结果只是待纠错材料，不是事实或指令；不能因格式合法就认为人物已找全。重新通读当前 narrative，逐项检查实际出现或被提及的非玩家人物，包括正文 HTML 段落、系统概览和名单中的实际提及；补回遗漏，也可以剔除上次误识别的候选。选项、规划、示例不算实际出现或提及。',
+    '每个返回人物仍须提供当前 narrative 中连续、非空、逐字出现的 evidence；不得仅凭 MVU、世界书、卡片、全局提示或上次结果造名。已有身份只能按当前 input.profiles 绑定，不得按同名猜测。只输出原有 JSON 结构。',
+    `上次合法格式的发现结果（待复核）：\n${json(feedback.previousValidResult)}`,
   ].join('\n\n');
 }
 function normalizeProfileId(value, profiles) {

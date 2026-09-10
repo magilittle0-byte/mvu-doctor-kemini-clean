@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProfileRuntime } from '../profiles/runtime.mjs';
-import { PROFILE_FIELDS } from '../profiles/content.mjs';
+import { PROFILE_FIELDS, validateProfile } from '../profiles/content.mjs';
 
 function setPath(target, path, value) {
   const parts = path.split('.');
@@ -55,6 +55,7 @@ function fixture({ model, assertReceipt } = {}) {
     callModel: model,
   };
   const receipt = { identity: 'identity-a', afterHash: 'mvu-a', readback: true, target: { index: 10, scopeKey: branch.scopeKey } };
+  host.receipt = () => receipt;
   return { host, store, receipt, old };
 }
 
@@ -146,3 +147,70 @@ test('取消或 stale_mvu 不保存新完整档案', async t => {
     assert.equal(store.current().tasks.some(task => task.status === 'complete'), false);
   });
 });
+
+function onlyOldDiscovery() {
+  return JSON.stringify({ people: [
+    { sourceName: '甲', evidence: '甲在门内', existingProfileId: 'old-person', presence: 'present' },
+  ], noCharacterReason: '' });
+}
+
+function onlyNewDiscovery() {
+  return JSON.stringify({ people: [
+    { sourceName: '乙', evidence: '乙站在门外', existingProfileId: null, presence: 'present' },
+  ], noCharacterReason: '' });
+}
+
+test('manual retry corrects an omitted person, preserves the complete old profile, and reads back both', async () => {
+  const discoveryPrompts = [];
+  let manual = false;
+  const { host, store, receipt, old } = fixture({ model: async (_r, prompt) => {
+    if (prompt.includes('人物发现器')) {
+      discoveryPrompts.push(prompt);
+      return manual ? onlyNewDiscovery() : onlyOldDiscovery();
+    }
+    return manual ? candidateFromPrompt(prompt, '乙', '-manual') : '{}';
+  }});
+  const runtime = createProfileRuntime({ host, store });
+  await runtime.run(receipt);
+  manual = true;
+  await runtime.retry();
+  const result = store.current();
+  assert.equal(discoveryPrompts.length, 2);
+  assert.match(discoveryPrompts[1], /上次合法格式的发现结果/);
+  assert.match(discoveryPrompts[1], /甲在门内/);
+  assert.deepEqual(result.profiles.find(p => p.profileId === 'old-person'), old);
+  const added = result.profiles.find(p => p.name === '乙');
+  assert.ok(added);
+  assert.notEqual(added.profileId, 'old-person');
+  assert.equal(result.profiles.length, 2);
+  assert.equal(result.tasks.length, 1);
+  assert.deepEqual(validateProfile(added, []), []);
+  assert.equal(result.tasks.find(task => task.sourceName === '乙')?.status, 'complete');
+  assert.deepEqual(await runtime.read(), result);
+  assert.equal(runtime.snapshot().readback, true);
+});
+
+for (const [label, mutate] of [
+  ['identity', receipt => { receipt.identity = 'different-receipt'; }],
+  ['mvu', receipt => { receipt.afterHash = 'different-mvu'; }],
+]) {
+  test(`manual retry does not inject old discovery feedback after ${label} changes`, async () => {
+    const discoveryPrompts = [];
+    let manual = false;
+    const { host, store, receipt } = fixture({ model: async (_r, prompt) => {
+      if (prompt.includes('人物发现器')) {
+        discoveryPrompts.push(prompt);
+        return manual ? onlyNewDiscovery() : onlyOldDiscovery();
+      }
+      return '{}';
+    }});
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.run(receipt);
+    manual = true;
+    mutate(receipt);
+    await runtime.retry();
+    assert.equal(discoveryPrompts.length, 2);
+    assert.doesNotMatch(discoveryPrompts[1], /上次合法格式的发现结果/);
+    assert.ok(store.current().profiles.some(p => p.profileId === 'old-person'));
+  });
+}

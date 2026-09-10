@@ -1,10 +1,22 @@
 import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
 import { discoveryPrompt, parseDiscovery, profilePrompt, parseJsonResponse, validateProfile } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.1';
+export const PROFILE_VERSION = '0.1.0-candidate.2';
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready', 'variable_evidence_changed']);
+
+function previousDiscoveryForRetry(exact, input, receipt) {
+  if (!exact || exact.tombstone || exact.variableIdentity !== receipt.identity || exact.mvuHash !== receipt.afterHash) return null;
+  const requests = Array.isArray(exact.review?.requests) ? exact.review.requests : [];
+  for (let index = requests.length - 1; index >= 0; index--) {
+    const request = requests[index];
+    if (!['discovery', 'discovery-repair'].includes(request?.kind) || typeof request.raw !== 'string') continue;
+    try { return { previousValidResult: parseDiscovery(request.raw, input) }; }
+    catch { /* Revalidate old candidates against the current narrative and identities. */ }
+  }
+  return null;
+}
 
 export function createProfileRuntime({ host, store, notify = () => {} }) {
   let epoch = 0, controller = null, current = null, runPromise = null, refreshToken = 0;
@@ -115,10 +127,11 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
         review: { input, requests: [], previousRecall: clone(acceptedRecall) }, durationMs: 0 };
       await persist();
       publish({ detail: '正在从正文识别人，并核对已有身份' });
-      let discoveryRaw = await call('discovery', discoveryPrompt(input)), discovered;
+      const prompt = discoveryPrompt(input, manual ? previousDiscoveryForRetry(exact, input, receipt) : null);
+      let discoveryRaw = await call('discovery', prompt), discovered;
       try { discovered = parseDiscovery(discoveryRaw, input); }
       catch (error) {
-        discoveryRaw = await call('discovery-repair', `${discoveryPrompt(input)}\n\n仅修复这份发现结果的格式或绑定错误，保留正确人物，不为消除错误删掉真实人物。\n错误：${String(error.message)}\n原结果：${discoveryRaw}`);
+        discoveryRaw = await call('discovery-repair', `${prompt}\n\n仅修复这份发现结果的格式或绑定错误，保留正确人物，不为消除错误删掉真实人物。\n错误：${String(error.message)}\n原结果：${discoveryRaw}`);
         discovered = parseDiscovery(discoveryRaw, input);
       }
       draft.noCharacterReason = discovered.noCharacterReason;

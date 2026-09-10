@@ -1,7 +1,7 @@
 {
   "name": "MVU Doctor 人物档案",
   "stage": 2,
-  "version": "0.1.0-candidate.1",
+  "version": "0.1.0-candidate.2",
   "entry": "profiles/entry.js",
   "loader": "profiles/install.json",
   "requires": {

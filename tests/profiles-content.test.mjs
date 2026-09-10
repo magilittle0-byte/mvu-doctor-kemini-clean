@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseJsonResponse, PROFILE_FIELDS, validateProfile, parseDiscovery, discoveryPrompt, profilePrompt } from '../profiles/content.mjs';
@@ -74,4 +75,22 @@ test('prompts preserve ordinary narrative and repair contract', () => {
   assert.match(prompt, /弱点与自我欺骗/);
   assert.match(prompt, /选项、规划或示例不算实际登场或既成动作/);
   assert.match(prompt, /没有新依据时保持不变/);
+});
+
+test('automatic discovery prompt matches frozen original bytes; feedback permits correction', () => {
+  const input = { narrative: '甲走进门。乙站在门外。', userText: '继续', mvu: {}, authority: {}, players: ['玩家'], profiles: [] };
+  const automatic = discoveryPrompt(input);
+  assert.equal(Buffer.byteLength(automatic, 'utf8'), 894);
+  assert.equal(automatic.length, 556);
+  assert.equal(createHash('sha256').update(Buffer.from(automatic, 'utf8')).digest('hex'), '87d9b73aa3e4e4c10e5bf593983337e330771df24288900f67f9814c7ad63207');
+  const feedback = discoveryPrompt(input, { previousValidResult: {
+    people: [{ sourceName: '甲', evidence: '甲走进门。', existingProfileId: null, presence: 'present' }],
+    noCharacterReason: '',
+  } });
+  assert.match(feedback, /上次合法格式的发现结果/);
+  assert.match(feedback, /甲走进门。乙站在门外。/);
+  assert.match(feedback, /补回遗漏/);
+  assert.match(feedback, /也可以剔除上次误识别的候选/);
+  assert.match(feedback, /选项、规划、示例不算实际出现或提及/);
+  assert.match(feedback, /只能复制 input.profiles 中明确存在的 profileId/);
 });
