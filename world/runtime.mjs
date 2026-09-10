@@ -166,6 +166,7 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
     try {
       const receipt = host.receipt(), p1 = host.doctor()?.status?.(), p2 = host.profilesApi()?.status?.();
       if (p1?.busy || p1?.inFlight || p2?.busy) {
+        lastAttempt = null; // Revalidate the stored result when upstream repair finishes, even if its input is unchanged.
         if (state.busy) cancel('变量或人物档案正在重新修复，旧世界候选停止');
         publish({ status: 'waiting', stage: '等待本轮变量和档案', detail: '本轮世界将在变量和人物档案保存完成后继续，已有世界记录保留' });
         return;

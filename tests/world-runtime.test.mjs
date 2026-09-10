@@ -36,7 +36,7 @@ function makeHarness({ existing = null, p2Busy = false, engineMode = 'success', 
   };
   const engineFactory = options => { counters.factory++; const base = structuredClone(options.world || { round: 0 }); return { state: () => structuredClone(base), abort() {}, dispose() {}, async evolve() { counters.evolve++; if (counters.gate) await counters.gate; await options.callModel('controlled engine request', options.signal); if (engineMode === 'fail') return { ok: false, state: base, debug: {} }; return { ok: true, state: { ...base, round: Number(base.round || 0) + 1, worldDigest: `round-${Number(base.round || 0) + 1}` }, debug: { controlled: true } }; } }; };
   const runtime = createWorldRuntime({ host, store, notify: () => {}, engineFactory });
-  return { f, store, runtime, host, events, branch, receipt, counters, context, setProfiles: next => { profile = next; }, setP2: next => { p2 = next; }, setBranch: next => { currentBranch = next; branchHistory = [next]; }, addBranch: next => { currentBranch = next; branchHistory = [...branchHistory, next]; }, notifyDoctor: () => doctorCallback?.(), key: b => `world:v1:${b.scopeKey}:${b.lineage}` };
+  return { f, store, runtime, host, events, branch, receipt, counters, context, setProfiles: next => { profile = next; }, setP1: next => { p1 = next; }, setP2: next => { p2 = next; }, setBranch: next => { currentBranch = next; branchHistory = [next]; }, addBranch: next => { currentBranch = next; branchHistory = [...branchHistory, next]; }, notifyDoctor: () => doctorCallback?.(), key: b => `world:v1:${b.scopeKey}:${b.lineage}` };
 }
 function recordFor(b, overrides = {}) { return { version: '0.1.0-candidate.1', scopeKey: b.scopeKey, lineage: b.lineage, index: b.index, revision: 2, status: 'complete', world: { round: 0, worldDigest: 'baseline' }, baselineWorld: { round: 0 }, deliveries: [], baseDeliveries: [], ...overrides }; }
 
@@ -49,6 +49,47 @@ test('P2 readiness gates P1 and a new P2 revision callback starts exactly one ru
 test('manual retries use the same stored baseline and persist the engine request', async () => {
   const h = makeHarness({ existing: recordFor(makeBranch()) }); await h.runtime.run(h.receipt, true); const first = await h.store.read(h.branch); await h.runtime.run(h.receipt, true); const second = await h.store.read(h.branch);
   assert.equal(h.counters.factory, 2); assert.equal(h.counters.evolve, 2); assert.equal(first.world.round, 1); assert.equal(second.world.round, 1); assert.ok(second.review.requests.length >= 1); assert.equal(h.counters.model, 2); h.runtime.destroy();
+});
+
+for (const upstream of ['variables', 'profiles']) test(`unchanged ${upstream} repair restores the saved world without another model call or write`, async () => {
+  const h = makeHarness();
+  try {
+    await h.runtime.bind(); await h.runtime.run(h.receipt, true);
+    const saved = await h.store.read(h.branch);
+    const writes = h.f.calls.filter(([kind]) => kind === 'write').length;
+    if (upstream === 'variables') h.setP1({ status: 'checking', busy: true, inFlight: 1 });
+    else h.setP2({ status: 'generating', busy: true });
+    await h.notifyDoctor(); await waitFor(() => h.runtime.snapshot().status === 'waiting');
+    assert.deepEqual(h.runtime.record(), saved);
+    if (upstream === 'variables') h.setP1({ status: 'model_nochange', busy: false, inFlight: 0, readback: true });
+    else h.setP2({ status: 'restored', busy: false, readback: true });
+    await h.notifyDoctor();
+    await waitFor(() => h.runtime.snapshot().status === 'restored' && !h.runtime.snapshot().busy);
+    await h.notifyDoctor(); await h.notifyDoctor();
+    assert.equal(h.runtime.snapshot().readback, true);
+    assert.deepEqual(h.runtime.record(), saved);
+    assert.deepEqual(await h.store.read(h.branch), saved);
+    assert.equal(h.counters.factory, 1); assert.equal(h.counters.evolve, 1); assert.equal(h.counters.model, 1);
+    assert.equal(h.f.calls.filter(([kind]) => kind === 'write').length, writes);
+  } finally { h.runtime.destroy(); }
+});
+
+test('unchanged upstream recovery does not automatically retry a saved world failure', async () => {
+  const h = makeHarness({ engineMode: 'fail' });
+  try {
+    await h.runtime.bind(); await h.runtime.run(h.receipt, true);
+    const saved = await h.store.read(h.branch);
+    const writes = h.f.calls.filter(([kind]) => kind === 'write').length;
+    assert.equal(saved.status, 'failed');
+    h.setP1({ status: 'checking', busy: true, inFlight: 1 });
+    await h.notifyDoctor(); await waitFor(() => h.runtime.snapshot().status === 'waiting');
+    h.setP1({ status: 'model_nochange', busy: false, inFlight: 0, readback: true });
+    await h.notifyDoctor(); await waitFor(() => h.runtime.snapshot().status === 'failed' && !h.runtime.snapshot().busy);
+    await h.notifyDoctor(); await h.notifyDoctor();
+    assert.deepEqual(await h.store.read(h.branch), saved);
+    assert.equal(h.counters.model, 1);
+    assert.equal(h.f.calls.filter(([kind]) => kind === 'write').length, writes);
+  } finally { h.runtime.destroy(); }
 });
 test('failed generation keeps the complete world and delivery ledger', async () => {
   const b = makeBranch(); const d = { id: 'd1', status: 'pending', kind: 'event', content: 'held' }; const h = makeHarness({ engineMode: 'fail', existing: recordFor(b, { world: { round: 4, worldDigest: 'complete' }, baselineWorld: { round: 4 }, deliveries: [d], baseDeliveries: [d] }) });

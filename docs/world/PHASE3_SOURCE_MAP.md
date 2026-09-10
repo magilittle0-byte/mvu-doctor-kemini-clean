@@ -21,3 +21,11 @@ P1 与 P2 已分别锁定。P3 独立新增代码，不修改两个模块或其�
 世界行动提示沿用 `profile-engine.js:703-735` 的 native actor hook，但读取完整 P2 profile，不再使用旧 seed 摘要或 2200 字截断。按稳定 profileId 和世界轮次轮转完整人物；已经离场的完整人物优先推进，禁止将档案缺失人物再造一份。世界裁决与人物尝试在 native 同一次模型调用中完成，通过原有事件描述、私密 blackbox 和世界数据保存；脚本不据自由文本判断成败，不成为第二 MVU writer。
 
 召回字段与消费绑定来源另见 `PHASE3_RECALL_SOURCE_MAP.md`。生成结束只封存请求观察，P1 的稳定 accepted target 才能绑定正文证据。有限字面匹配与真实语义消费分开记录；主模型看见提示本身不算事件已经发生。生成取消、分支变化或不匹配目标丢弃旧租约。P3 自有 UI/entry/loader 独立装卸，不读取旧 P1 的 modules.world 显示字段。
+
+## 上游修复结束后的同输入恢复
+
+真实第三轮曾出现：P1 手动修复返回 `model_nochange`，P2 自动恢复完全相同的档案，P3 的完整存档和输入身份均未改变，但界面一直等待。原因是 observer 在上游忙碌时更新了展示状态，随后又因旧 `lastAttempt` 相同而跳过恢复。
+
+本次重新检索并完整核对 P2 的 exact 恢复、P3 的 observe/run/execute/show、host 快照断言、store 读回和 surface 通知链。最小适配仅在上游忙碌分支清除 attempt 标记，使结束后重新走既有 `captureProfiles -> assertSnapshot -> store.read -> inputIdentity -> show(exact, true)`。不新增模型调用或写入，不修改已锁定 P1/P2。原生 world chatcache 的同内容恢复仅作来源参考，不移植其独立存储机制。
+
+定向回归覆盖变量与档案两种上游修复后的状态恢复，并核对存档不变、世界轮数不变、模型调用与写入不增加；已有世界失败仍等待人工修复。受控回归不能替代真实门禁，旧指纹第三轮在此问题处被拒绝，新指纹重新进行完整真实验收。
