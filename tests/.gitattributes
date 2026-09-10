@@ -1,1 +1,4 @@
 world-*.test.mjs text eol=lf
+modular-variables.test.mjs -text
+profiles-store.test.mjs -text
+profiles-recall.test.mjs -text
