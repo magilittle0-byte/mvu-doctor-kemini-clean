@@ -562,6 +562,81 @@ test('lost object keys fail once without writing and succeed only on an explicit
   assert.deepEqual(h.current().stat_data.actors.a.title, { name: 'synthetic', role: 'guide' });
 });
 
+function dynamicStructureFailure() {
+  const rejected = JSON.stringify([{ op: 'insert', path: '/actors/a', value: { name: 'OLD_REJECTED_VALUE', unsupported: 'OLD_UNSUPPORTED_VALUE' } }]);
+  const accepted = JSON.stringify([{ op: 'insert', path: '/actors/a', value: { name: 'FRESH_ACCEPTED_VALUE' } }]);
+  const h = harness({
+    reply: ({ callIndex }) => callIndex === 1 ? rejected : accepted,
+    officialResult: (block, input) => ({ ...input, stat_data: { ...input.stat_data, actors: { a: { name: parsePatch(block).operations[0].value.name } } } }),
+  });
+  h.change({ stat_data: { actors: {} } });
+  h.host.variableSchemaMaterial = () => 'actors is a record of objects with only name:string';
+  h.so.collectMvuUpdateRules = async () => ['actors records explicitly encountered people'];
+  let scans = 0;
+  h.so.buildWorldInfo = async () => `Complete current background; dynamic roll ${++scans}`;
+  return { h, rejected };
+}
+
+test('dynamic background manual repair receives structural paths only and commits a freshly validated candidate once', async () => {
+  const { h, rejected } = dynamicStructureFailure();
+  await assert.rejects(h.module.run(h.target), { code: 'patch_structure_loss' });
+  const failed = h.module.review();
+  assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+  assert.deepEqual(h.current().stat_data, { actors: {} });
+  assert.deepEqual(failed.structureLosses, [{ operationIndex: 0, path: '/actors/a', missingPaths: ['/actors/a/unsupported'] }]);
+  const record = await h.module.run(h.target, { reason: 'manual' });
+  const sent = h.calls[1][1], text = sent.map(message => message.content).join('\n');
+  assert.match(text, /Complete current background; dynamic roll 2/);
+  assert.doesNotMatch(text, /dynamic roll 1|OLD_REJECTED_VALUE|OLD_UNSUPPORTED_VALUE/);
+  assert.equal(text.includes(rejected), false);
+  assert.deepEqual(sent.map(message => message.role), ['system', 'user', 'user']);
+  assert.match(sent[2].content, /"code":"patch_structure_loss"/);
+  assert.match(sent[2].content, /"missingPaths":\["\/actors\/a\/unsupported"\]/);
+  assert.doesNotMatch(sent[2].content, /"actual"|"value"/);
+  assert.notEqual(record.contextHash, failed.contextHash);
+  assert.equal(h.calls.length, 2); assert.equal(record.requestCount, 1); assert.equal(record.requestLimit, 1);
+  assert.equal(h.parsed.length, 2); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
+  assert.equal(record.status, 'applied'); assert.equal(record.readback, true);
+  assert.deepEqual(h.current().stat_data.actors.a, { name: 'FRESH_ACCEPTED_VALUE' });
+  assert.equal(await h.module.validateReceipt(h.target, record), true);
+});
+
+for (const [boundary, change] of Object.entries({
+  identity: h => { h.target.identity = 'reply-b'; },
+  scope: h => { h.target.scopeKey = 'chat-b'; },
+  before: h => { h.change({ stat_data: { actors: {}, changed: true } }); },
+  previous: h => { h.host.previousMvu = async () => ({ index: 0, payload: { stat_data: { coins: 6 } } }); },
+  rules: h => { h.so.collectMvuUpdateRules = async () => ['actors now follows changed authoritative rules']; },
+  schema: h => { h.host.variableSchemaMaterial = () => 'changed actor structure'; },
+  config: h => { h.settings.maxTokens = 8192; },
+})) {
+  test(`changed ${boundary} suppresses structural feedback even on explicit manual repair`, async () => {
+    const { h } = dynamicStructureFailure();
+    await assert.rejects(h.module.run(h.target), { code: 'patch_structure_loss' });
+    change(h);
+    await h.module.run(h.target, { reason: 'manual' });
+    assert.equal(h.calls.length, 2);
+    assert.equal(h.calls[1][1].length, 2, 'only fresh base messages may be sent');
+    assert.doesNotMatch(h.calls[1][1].map(message => message.content).join('\n'), /patch_structure_loss|OLD_REJECTED_VALUE|OLD_UNSUPPORTED_VALUE/);
+  });
+}
+
+test('automatic checks do not carry manual structural feedback across a dynamic background', async () => {
+  const { h } = dynamicStructureFailure();
+  await assert.rejects(h.module.run(h.target), { code: 'patch_structure_loss' });
+  await h.module.run(h.target);
+  assert.equal(h.calls.length, 2); assert.equal(h.calls[1][1].length, 2);
+});
+
+test('dynamic background does not carry failed raw or nonstructural feedback', async () => {
+  const h = harness({ reply: () => 'OLD_INVALID_RAW' }); let scans = 0;
+  h.so.buildWorldInfo = async () => `Fresh background ${++scans}`;
+  await assert.rejects(h.module.run(h.target), { code: 'patch_format' });
+  await assert.rejects(h.module.run(h.target, { reason: 'manual' }), { code: 'patch_format' });
+  assert.equal(h.calls.length, 2); assert.equal(h.calls[1][1].length, 2);
+  assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+});
+
 test('manual feedback is omitted when the current baseline no longer matches the failed run', async () => {
   const h = harness({ reply: () => 'not-json' });
   await assert.rejects(h.module.run(h.target), { code: 'patch_format' });

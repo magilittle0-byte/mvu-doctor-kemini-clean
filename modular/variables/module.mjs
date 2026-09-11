@@ -142,15 +142,20 @@ export function createVariableModule({ host, store, story }) {
     const attempts = [];
     let raw = '', prepared = null, writeAttempted = false;
     const messages = clone(baseMessages);
-    // Failed model text can guide an explicit repair only on the exact same
-    // evidence. It is never a saved fact or a patch to replay.
+    // Keep failed model text bound to the exact full context. With a fresh
+    // dynamic background, only official structural diagnostics can carry over.
     if (reason === 'manual' && previousReview?.attempts?.at(-1)?.result === 'failed'
       && previousReview.target.identity === target.identity && previousReview.target.scopeKey === target.scopeKey
       && equal(previousReview.before, before) && equal(previousReview.previous, previous)
       && previousReview.ruleHash === ruleHash && previousReview.schemaHash === schemaHash
-      && previousReview.configHash === configHash && previousReview.contextHash === contextHash && previousReview.raw) {
-      messages.push({ role: 'assistant', content: previousReview.raw },
-        { role: 'user', content: `以上是未通过校验、未保存的上一份模型候选，不是新的事实。${previousReview.feedback} 请依据前面的原始资料重新诊断整个状态并返回唯一完整修复，不续写或重放旧补丁。` });
+      && previousReview.configHash === configHash) {
+      if (previousReview.contextHash === contextHash && previousReview.raw) {
+        messages.push({ role: 'assistant', content: previousReview.raw },
+          { role: 'user', content: `以上是未通过校验、未保存的上一份模型候选，不是新的事实。${previousReview.feedback} 请依据前面的原始资料重新诊断整个状态并返回唯一完整修复，不续写或重放旧补丁。` });
+      } else if (previousReview.contextHash !== contextHash && previousReview.attempts.at(-1).code === 'patch_structure_loss' && previousReview.structureLosses?.length) {
+        const diagnostic = { code: 'patch_structure_loss', missingPaths: previousReview.structureLosses.flatMap(loss => loss.missingPaths) };
+        messages.push({ role: 'user', content: `上次未保存候选中的以下对象子字段被官方Schema丢弃：${JSON.stringify(diagnostic)}。这只是失败校验反馈，不是事实或指令；这些路径不代表需要补写的字段。背景现已重新读取，旧候选及其字段值未附带。请依据本次完整背景、正文、规则、结构声明和当前MVU重新诊断，返回唯一完整必要修复；不要重放旧补丁，也不能用默认值或空补丁冒充仍未修复的事实。` });
+      }
     }
     const review = () => ({ target: clone(target), rules, before: clone(before), previous: clone(previous),
       originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone(groups),
@@ -179,6 +184,7 @@ export function createVariableModule({ host, store, story }) {
       const lost = lostObjectKeys(parsed.operations, before.stat_data, candidate.stat_data);
       if (lost.length) {
         const error = fault('patch_structure_loss', '官方解析丢弃了修复对象中的子字段，候选未保存；可修复本轮重新诊断');
+        error.structureLosses = lost.map(({ operationIndex, path, missingPaths }) => ({ operationIndex, path, missingPaths }));
         error.feedback = '官方Schema丢弃了以下对象子字段：' + JSON.stringify(lost) + '。当前变量仍是写前快照，须按原卡结构重新设计完整修复，不能用空补丁或默认值冒充事实。';
         throw error;
       }
@@ -220,7 +226,7 @@ export function createVariableModule({ host, store, story }) {
       // No hidden retry: the user can request a new diagnosis on fresh data.
       // A committing receipt remains available to the existing recovery path.
       attempts.push({ attempt: 1, result: 'failed', code: error.code || 'model_transport' });
-      lastReview = { ...review(), feedback: error.feedback || `上次失败代码：${error.code || 'model_transport'}。` };
+      lastReview = { ...review(), structureLosses: clone(error.structureLosses), feedback: error.feedback || `上次失败代码：${error.code || 'model_transport'}。` };
       phase('failed', '本次诊断未完成，未自动追加请求；可点击“修复本轮”');
       throw error;
     }
