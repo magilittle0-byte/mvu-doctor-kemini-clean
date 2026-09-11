@@ -1,5 +1,15 @@
 # P3 world dependencies source map
 
+## 2026-09-11 当前 P2 锁的必要适配
+
+P2 `0.1.0-candidate.2` 已完成独立真实验收并写入 canonical `locks/phase2.json`。旧 P3 固定读取 `.1` 的锁哈希，因此会正确拒绝当前安装；必须更新这一依赖才能开始新的三模块组合验收。
+
+本次再次搜索项目中的依赖加载、阶段锁和安装历史，复用本文件下述 `modular/lock.mjs` → `loadWorldDependencies` → `world/entry.js` 现有链。实际核对了当前锁的原始字节、P2 10 个运行文件/8 个配套文件、P1 三份依赖，以及 `scripts/check-world.mjs` 和现有依赖回归。只替换 P3 的三个 P2 固定值、manifest 的 P2 requires，并同步既有回归的准确预期值和本文档；没有新写加载器或状态机，也不修改 P1/P2 或世界推演、召回、保存算法。
+
+当前 P2 version 为 `0.1.0-candidate.2`，fingerprint 为 `fc2e81eb7e8402e3eb2bf6a4f0b24be0a654e147cbb2da4581548d1d5ef027be`，lock 原始字节 SHA-256 为 `61239fb877271ab113e45e9b18f85bd101d29ac94dec9daa1b28c4b636a47364`。旧值保留在 Git 和历史 P2 锁中。P3 自身版本继续为 `0.1.0-candidate.1`，但依赖更新会产生新的源码指纹，旧 P3 回合不得计入新组合验收。尚未完成真实门禁。
+
+以下为最初依赖加载器的来源记录，其“固定批准依赖”描述历史 `.1` 接口。
+
 本文件是 P3 依赖加载器的实现来源映射。此次范围只新增 `world/dependencies.mjs`、其受控测试和本文件；P1/P2 锁定文件、vendor、package 和生产运行路径不改。
 
 ## 逐项来源与适配
