@@ -6,6 +6,6 @@
 #mvu-doctor-world-root details { margin-top:10px; }
 #mvu-doctor-world-root summary { cursor:pointer; padding:5px 0; }
 #mvu-doctor-world-root pre { white-space:pre-wrap; overflow-wrap:anywhere; }
-#mvu-doctor-world-root button { padding:6px 12px; margin:4px 8px 4px 0; border-radius:5px; cursor:pointer; }
+#mvu-doctor-world-root button { padding:6px 12px; margin:4px 8px 4px 0; border:1px solid var(--SmartThemeBorderColor, #657080); border-radius:5px; cursor:pointer; color:inherit; background:var(--SmartThemeBlurTintColor, #30343b); }
 #mvu-doctor-world-root button:disabled { opacity:.5; cursor:wait; }
 @media(max-width:600px) { #mvu-doctor-world-root dl { display:block; } #mvu-doctor-world-root dd { margin-bottom:10px; } }
