@@ -1,7 +1,7 @@
 import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
 import { discoveryPrompt, parseDiscovery, profilePrompt, parseJsonResponse, validateProfile } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.2';
+export const PROFILE_VERSION = '0.1.0-candidate.3';
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready', 'variable_evidence_changed']);
@@ -81,6 +81,19 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
     };
     if (contains(payload)) recall.promptObserved = true;
   }
+  function settleRecall(receipt) {
+    const generation = recallGeneration, target = receipt.target;
+    if (!generation || generation.ended || generation.scope !== canonical(host.scope())) return;
+    if (generation.type === 'normal'
+      ? target.index <= generation.baselineIndex || target.userIndex <= generation.baselineIndex
+      : target.index !== generation.baselineIndex) return;
+    // P1 already accepted the final body and validated this receipt. Global END
+    // events also belong to auxiliary requests and cannot settle profile recall.
+    generation.ended = true;
+    acceptedRecall = recall ? { ...clone(recall), text: undefined,
+      targetIdentity: receipt.identity, scopeKey: target.scopeKey } : null;
+    clearRecall();
+  }
   async function execute(receipt, manual, token) {
     const ctl = new AbortController(); controller = ctl;
     const startedAt = Date.now(); let draft = null, branch = null, revision = 0;
@@ -109,6 +122,7 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
     try {
       publish({ status: 'waiting', detail: '正在读取本轮已确认变量和已有档案', busy: true, restored: false });
       await assert();
+      settleRecall(receipt);
       const branches = await host.branches();
       branch = branches.find(value => value.index === receipt.target.index);
       if (!branch || branch.scopeKey !== receipt.target.scopeKey) throw fault('stale_target', '人物任务缺少当前聊天分支');
@@ -124,7 +138,8 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       const input = await host.inputFor(receipt, profiles, host.settings().globalPrompt, ctl.signal);
       draft = { version: PROFILE_VERSION, variableIdentity: receipt.identity, mvuHash: receipt.afterHash,
         profiles, tasks: [], status: 'discovering', reason: manual ? 'manual' : 'auto',
-        review: { input, requests: [], previousRecall: clone(acceptedRecall) }, durationMs: 0 };
+        review: { input, requests: [], previousRecall: acceptedRecall?.targetIdentity === receipt.identity
+          && acceptedRecall.scopeKey === receipt.target.scopeKey ? clone(acceptedRecall) : null }, durationMs: 0 };
       await persist();
       publish({ detail: '正在从正文识别人，并核对已有身份' });
       const prompt = discoveryPrompt(input, manual ? previousDiscoveryForRetry(exact, input, receipt) : null);
@@ -225,11 +240,6 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       }
     });
     on('CHAT_COMPLETION_PROMPT_READY', 'chat_completion_prompt_ready', inspectPrompt);
-    on('GENERATION_ENDED', 'generation_ended', () => {
-      if (!recallGeneration || recallGeneration.ended || recallGeneration.scope !== canonical(host.scope())) return;
-      recallGeneration.ended = true;
-      acceptedRecall = recall ? { ...clone(recall), text: undefined } : null; clearRecall();
-    });
     const changed = () => { recallGeneration = null; cancel('聊天或正文发生变化，旧人物检查停止'); clearRecall(); acceptedRecall = null;
       void refresh().catch(() => publish({ status: 'failed', detail: '人物档案存档未能读回', profiles: [], tasks: [], readback: false })); };
     on('MESSAGE_DELETED', 'message_deleted', index => {

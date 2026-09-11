@@ -1,5 +1,15 @@
 # 人物档案模块：独立接入与复用来源
 
+## 0.1.0-candidate.3 召回等待已有完成收据
+
+真实组合运行中，数据库辅助请求的 GENERATION_ENDED 早于主正文请求，人物资料虽已准备却被提前清空。当前 `profiles/runtime.mjs` 的 END 监听是故障点；这是代码时序缺陷，不能用重新生成掩盖。
+
+修改前重新检索旧医生、数据库、NPC Tracker、Story Oracle 及相关历史材料，并完整读回当前 profiles runtime/host、modular runtime/host/entry。直接复用 P1 `subscribe` 的完成收据和 P2 `assertReceipt`：P1 已负责消息类型、END/RECEIVED 汇合、500ms 和 150ms 两次正文读取、scope/index/swipe/identity 与变量存档核验。P2 无需复制这些判定或调用旧 Doctor 的 waitForTargetSettled。
+
+最小适配仅把召回结算从全局 END 移至 execute 首次 assert 成功之后。当前 generation 的 scope、baseline 楼号规则须匹配收据，保存 targetIdentity/scopeKey，review 只引用同一目标。正常生成必须包含 baseline 后的新用户楼和新助手楼；续写、重生成和 swipe 按冻结 P1 的同楼规则。START、停止、编辑、切聊、删除及卸载仍清理自己的旧提示。P1 失败时保留至现有按钮重试成功或下次失效事件；没有新增重试、轮询、消息判定器或模型调用。
+
+NPC Tracker 的独立提示 key 和清空方法继续复用，其全局 END 清理不适合多辅助请求的宿主，故不继续照搬。旧医生的目标结算和数据库 waitForTargetSettled 说明下游应等权威完成；旧世界多阶段召回账本不适配本模块，未引入。promptObserved 仍只证明提示中观测到整段资料，semanticConsumptionProven 保持 false，真实主请求与正文消费须独立核对。P1 和 P3 文件不改；旧 P2 锁与验收只属于历史候选，新候选尚未完成真实门禁。
+
 ## 0.1.0-candidate.2 手动发现反馈
 
 真实发现结果多次在格式合法时遗漏正文中已提及人物；现有按钮只重发同一提示，结构修复分支没有触发。本次最小改动只为主动retry添加上一份发现结果和重新核对说明。它是对修复机制的改进，不把模型遗漏伪称为解析器故障，也不要求模型永远零幻觉。
@@ -41,4 +51,4 @@
 
 复查旧 `index.js:130–166` 的脚本/样式加载、NPC Tracker `resetRoleplayTrigger/clearRoleplayPromptOnGenerationEnd` 的解绑与清空，以及冻结 `modular/runtime.mjs` 的生成类型筛选和 regenerate 内部首次删除识别。P1入口已锁定，不能往manifest加入P2；新增酒馆助手独立加载脚本，把ES模块置于宿主页同一全局。卸载只取消P2订阅、UI和自身提示，重新启用复用缓存模块的显式boot入口；不加载旧Doctor或World入口。为异步初始化增加所属加载节点检查，节点已移除时不能完成后台安装。
 
-P2不另判accepted-final。仅在前置召回中复用P1的正常生成类型、scope和原始楼号信息，用于取消过期召回及识别regenerate内部删除；swipe/regenerate不读取正被替换楼的档案。读盘与计算哈希后再次核对所属生成和scope，避免已切换聊天时注入旧资料。相关生成结束后清空自身提示，只保存注入观察元数据，不把“进入提示”当作正文已正确消费。
+P2不另判accepted-final。仅在前置召回中复用P1的正常生成类型、scope和原始楼号信息，用于取消过期召回及识别regenerate内部删除；swipe/regenerate不读取正被替换楼的档案。读盘与计算哈希后再次核对所属生成和scope，避免已切换聊天时注入旧资料。candidate.3 起在 P1 完成收据通过现有断言后清空自身提示，只保存绑定该目标的注入观察元数据，不把“进入提示”当作正文已正确消费。
