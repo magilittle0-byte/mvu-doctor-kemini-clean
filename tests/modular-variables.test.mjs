@@ -637,6 +637,85 @@ test('dynamic background does not carry failed raw or nonstructural feedback', a
   assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
 });
 
+test('dynamic background carries only official failed operation paths for an explicit manual repair', async () => {
+  let first = true;
+  const rejectedRaw = JSON.stringify([
+    { op: 'remove', path: '/actors/dead', reason: 'OLD_REASON', args: { value: 'OLD_VALUE' } },
+    { op: 'replace', path: '/coins', value: 12 },
+  ]);
+  const freshRaw = JSON.stringify([{ op: 'replace', path: '/coins', value: 12 }]);
+  const h = harness({
+    reply: ({ callIndex }) => callIndex === 1 ? rejectedRaw : freshRaw,
+    unexecuted: operations => first ? (first = false, operations.filter(op => op.op === 'remove')) : [],
+    officialResult: (block, input) => ({ ...input, stat_data: { ...input.stat_data, coins: 12 } }),
+  });
+  h.change({ stat_data: { coins: 7, actors: {} } });
+  h.host.variableSchemaMaterial = () => 'actors record with name:string; coins:number';
+  h.so.collectMvuUpdateRules = async () => ['actors removal and coin replacement are checked'];
+  let scans = 0;
+  h.so.buildWorldInfo = async () => `Fresh dynamic background ${++scans}`;
+
+  await assert.rejects(h.module.run(h.target), { code: 'patch_outcome' });
+  const failed = h.module.review();
+  assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+  assert.deepEqual(failed.executionFailures, [{ op: 'remove', path: '/actors/dead' }]);
+
+  const record = await h.module.run(h.target, { reason: 'manual' });
+  const sent = h.diagnosisCalls[1][1], diagnostic = sent.at(-1).content;
+  assert.deepEqual(sent.map(message => message.role), ['system', 'user', 'user']);
+  assert.match(diagnostic, /"code":"patch_outcome"/);
+  assert.match(diagnostic, /"failedOperations":\[\{"op":"remove","path":"\/actors\/dead"\}\]/);
+  assert.doesNotMatch(diagnostic, /OLD_REASON|OLD_VALUE|"value"|"args"|<JSONPatch>/);
+  assert.doesNotMatch(sent.map(message => message.content).join('\n'), /OLD_REASON|OLD_VALUE/);
+  assert.notEqual(record.contextHash, failed.contextHash);
+  assert.equal(h.calls.length, 2); assert.equal(record.requestCount, 1); assert.equal(record.requestLimit, 1);
+  assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
+  assert.equal(record.status, 'applied'); assert.equal(record.readback, true);
+  assert.equal(h.current().stat_data.coins, 12);
+});
+
+test('dynamic background suppresses failed operation feedback for automatic and mismatched manual retries', async () => {
+  const boundaries = {
+    automatic: () => {},
+    identity: h => { h.target.identity = 'different-reply'; },
+    scope: h => { h.target.scopeKey = 'different-scope'; },
+    before: h => { h.change({ stat_data: { coins: 99, actors: { dead: { name: 'changed' } } } }); },
+    previous: h => { h.host.previousMvu = async () => ({ index: 0, payload: { stat_data: { coins: 6 } } }); },
+    rules: h => { h.so.collectMvuUpdateRules = async () => ['changed authoritative rules']; },
+    schema: h => { h.host.variableSchemaMaterial = () => 'changed actor structure'; },
+    config: h => { h.settings.maxTokens = 8192; },
+  };
+  for (const [boundary, change] of Object.entries(boundaries)) {
+    const h = harness({
+      reply: () => JSON.stringify([{ op: 'remove', path: '/actors/dead', value: 'OLD_VALUE' }]),
+      unexecuted: operations => operations,
+    });
+    h.change({ stat_data: { coins: 7, actors: { dead: { name: 'synthetic' } } } });
+    h.host.variableSchemaMaterial = () => 'actors record with name:string';
+    h.so.collectMvuUpdateRules = async () => ['actors removal is checked'];
+    let scans = 0;
+    h.so.buildWorldInfo = async () => `Fresh dynamic background ${++scans}`;
+    await assert.rejects(h.module.run(h.target), { code: 'patch_outcome' });
+    change(h);
+    await assert.rejects(h.module.run(h.target, boundary === 'automatic' ? {} : { reason: 'manual' }), { code: 'patch_outcome' });
+    assert.equal(h.diagnosisCalls[1][1].length, 2);
+    assert.doesNotMatch(h.diagnosisCalls[1][1].map(message => message.content).join('\n'), /patch_outcome|failedOperations|OLD_VALUE/);
+    assert.equal(h.writes.length, 0, boundary); assert.equal(h.saves.length, 0, boundary);
+  }
+  const h = harness({
+    reply: () => JSON.stringify([{ op: 'replace', path: '/coins', value: 12 }]),
+  });
+  const originalParse = h.host.parseMvuCandidate;
+  h.host.parseMvuCandidate = async (...args) => {
+    const result = await originalParse(...args);
+    result.receipt.unexecuted = [{ type: 'remove', full_match: JSON.stringify({ op: 'replace', path: '/coins', value: 999 }) }];
+    return result;
+  };
+  await assert.rejects(h.module.run(h.target), { code: 'patch_outcome' });
+  assert.deepEqual(h.module.review().executionFailures, []);
+  assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+});
+
 test('manual feedback is omitted when the current baseline no longer matches the failed run', async () => {
   const h = harness({ reply: () => 'not-json' });
   await assert.rejects(h.module.run(h.target), { code: 'patch_format' });

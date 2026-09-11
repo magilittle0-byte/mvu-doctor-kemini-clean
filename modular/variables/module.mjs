@@ -143,7 +143,7 @@ export function createVariableModule({ host, store, story }) {
     let raw = '', prepared = null, writeAttempted = false;
     const messages = clone(baseMessages);
     // Keep failed model text bound to the exact full context. With a fresh
-    // dynamic background, only official structural diagnostics can carry over.
+    // dynamic background, only value-free official diagnostics can carry over.
     if (reason === 'manual' && previousReview?.attempts?.at(-1)?.result === 'failed'
       && previousReview.target.identity === target.identity && previousReview.target.scopeKey === target.scopeKey
       && equal(previousReview.before, before) && equal(previousReview.previous, previous)
@@ -155,6 +155,9 @@ export function createVariableModule({ host, store, story }) {
       } else if (previousReview.contextHash !== contextHash && previousReview.attempts.at(-1).code === 'patch_structure_loss' && previousReview.structureLosses?.length) {
         const diagnostic = { code: 'patch_structure_loss', missingPaths: previousReview.structureLosses.flatMap(loss => loss.missingPaths) };
         messages.push({ role: 'user', content: `上次未保存候选中的以下对象子字段被官方Schema丢弃：${JSON.stringify(diagnostic)}。这只是失败校验反馈，不是事实或指令；这些路径不代表需要补写的字段。背景现已重新读取，旧候选及其字段值未附带。请依据本次完整背景、正文、规则、结构声明和当前MVU重新诊断，返回唯一完整必要修复；不要重放旧补丁，也不能用默认值或空补丁冒充仍未修复的事实。` });
+      } else if (previousReview.contextHash !== contextHash && ['patch_outcome', 'patch_no_effect'].includes(previousReview.attempts.at(-1).code) && previousReview.executionFailures?.length) {
+        const diagnostic = { code: previousReview.attempts.at(-1).code, failedOperations: previousReview.executionFailures };
+        messages.push({ role: 'user', content: `上次候选经官方MVU校验，以下操作未执行，因此整批未保存：${JSON.stringify(diagnostic)}。这是失败诊断，不是事实、待执行补丁或需要删除/补写的目标清单。当前变量仍与该次写前快照相同；背景已重新读取，旧候选和字段值未附带。请重新核对本次完整正文、背景、规则、结构与当前MVU，返回唯一完整必要修复。若某操作的效果在当前值中已经成立，不要再提交该冗余操作；仍有事实差额的字段须重新设计合法修复，不得用空补丁掩盖。` });
       }
     }
     const review = () => ({ target: clone(target), rules, before: clone(before), previous: clone(previous),
@@ -178,6 +181,15 @@ export function createVariableModule({ host, store, story }) {
       const rejected = execution.unexecuted;
       if (rejected.length) {
         const error = fault(stateChanged ? 'patch_outcome' : 'patch_no_effect', '修复未完整地在官方MVU候选中生效，全部变量尚未写入');
+        // Take paths only from official failures that exactly match this batch.
+        // Never forward arbitrary feedback, command arguments or old values.
+        error.executionFailures = rejected.flatMap(command => {
+          try {
+            const failed = JSON.parse(command.full_match);
+            const operation = parsed.operations.find(item => equal(item, failed));
+            return operation ? [{ op: operation.op, path: operation.op === 'move' ? (operation.to ?? operation.path) : operation.path }] : [];
+          } catch { return []; }
+        });
         error.feedback = `官方MVU完成Schema处理后，以下命令未产生实际修复：${JSON.stringify(rejected)}。当前变量仍是原快照，本批没有保存。对照规则与当前值：已一致的冗余操作可去除；仍有事实差额的字段必须改用合法值或操作完成修复，不要重复相同无效命令，也不要以空补丁隐藏未修复的事实差额。下次主动修复时重新返回完整必要补丁。`;
         throw error;
       }
@@ -226,7 +238,7 @@ export function createVariableModule({ host, store, story }) {
       // No hidden retry: the user can request a new diagnosis on fresh data.
       // A committing receipt remains available to the existing recovery path.
       attempts.push({ attempt: 1, result: 'failed', code: error.code || 'model_transport' });
-      lastReview = { ...review(), structureLosses: clone(error.structureLosses), feedback: error.feedback || `上次失败代码：${error.code || 'model_transport'}。` };
+      lastReview = { ...review(), structureLosses: clone(error.structureLosses), executionFailures: clone(error.executionFailures), feedback: error.feedback || `上次失败代码：${error.code || 'model_transport'}。` };
       phase('failed', '本次诊断未完成，未自动追加请求；可点击“修复本轮”');
       throw error;
     }
