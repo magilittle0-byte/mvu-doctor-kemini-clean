@@ -123,7 +123,6 @@ export function createHost(getContext = () => globalThis.SillyTavern?.getContext
     const prior = ctx.extensionSettings?.['mvu-doctor-kemini-clean']?.mvuDoctorReferenceSettings || {};
     return {
       enabled: own.enabled !== false,
-      maxAttempts: Math.max(1, Math.min(6, Math.floor(Number(own.maxAttempts) || 3))),
       globalPrompt: String(own.globalPrompt ?? prior.globalPrompt ?? ''),
     };
   }

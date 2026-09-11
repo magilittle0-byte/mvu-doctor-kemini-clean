@@ -1,6 +1,6 @@
-import { MODULE_VERSION, clone, canonical, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths, lostObjectKeys } from './core.mjs';
-import { composeDiagnosisMessages, composeObservationMessages, appendObservation, currentNarrative } from './prompt.mjs';
-import { planVariableGroups, checkGroupScope, groupInstruction, groupRuleMaterial } from './groups.mjs';
+import { MODULE_VERSION, clone, equal, digest, fault, usable, parsePatch, compileOwnership, checkOwnership, changedPaths, lostObjectKeys } from './core.mjs';
+import { composeDiagnosisMessages, currentNarrative } from './prompt.mjs';
+import { planVariableGroups, checkGroupScope } from './groups.mjs';
 import { userInput } from '../transcript.mjs';
 
 export function createVariableModule({ host, store, story }) {
@@ -31,11 +31,14 @@ export function createVariableModule({ host, store, story }) {
   }
   async function run(target, { signal, onStatus = () => {}, reason = 'auto' } = {}) {
     const startedAt = Date.now();
+    let requestCount = 0;
+    const previousReview = lastReview;
+    lastReview = null;
     const assert = () => {
       if (signal?.aborted) throw fault('cancelled', '本次变量检查已取消');
       host.assertTarget(target);
     };
-    const phase = (status, detail) => onStatus({ status, detail });
+    const phase = (status, detail) => onStatus({ status, detail, requestCount, requestLimit: 1 });
     assert();
     const so = story();
     const mvu = await so.getMvu(); assert();
@@ -90,7 +93,14 @@ export function createVariableModule({ host, store, story }) {
       rules, schemaMaterial, originalBlock, previous: previous?.payload?.stat_data, current: before.stat_data,
       narrative, userText: userInput(target.userText), protectedPaths: policy.protected, globalPrompt: modelConfig.globalPrompt,
     };
-    const baseMessages = composeDiagnosisMessages(diagnosisInput);
+    // Structural groups remain a local coverage plan, never separate calls.
+    const groups = planVariableGroups(rules, before.stat_data, previous?.payload?.stat_data, 8, [before.schema, previous?.payload?.schema]);
+    if (!groups.length) throw fault('group_plan_empty', '没有取得可核对的变量范围，未开始写入');
+    const coverage = { paths: groups.flatMap(group => group.paths) };
+    const baseMessages = composeDiagnosisMessages({ ...diagnosisInput,
+      groupMaterial: '【全量变量核对范围】\n以下是本地结构清单，全部范围在本次诊断中一起核对，不分配其他模型任务。逐项按上方完整规则、结构和前后MVU检查，并返回唯一完整补丁：\n'
+        + coverage.paths.map(path => '- ' + path).join('\n'),
+    });
     const prompt = baseMessages.map(message => message.content).join('\n\n');
     const assertBaseline = async () => {
       assert();
@@ -112,190 +122,108 @@ export function createVariableModule({ host, store, story }) {
     };
     const callModel = async (messages, maxTokens) => {
       await assertBaseline();
+      if (requestCount >= 1) throw fault('request_limit', '本次变量检查已用完一次模型请求，请主动修复后再试');
+      const requested = () => { requestCount++; phase('checking', '正在进行一次完整变量诊断；失败后不自动追加请求'); };
       let result;
       if (settings.mode === 'direct') {
         if (!settings.endpoint || !settings.model) throw fault('model_unconfigured', '变量模型连接尚未配置');
         const body = { model: settings.model, messages, max_tokens: maxTokens };
         if (settings.sendTemperature) body.temperature = settings.temperature;
+        requested();
         result = await so.callDirect(so.resolveEndpointUrl(settings), settings.apiKey, body, signal);
       } else {
         if (!settings.profileId) throw fault('model_unconfigured', '变量模型未选择连接配置');
+        requested();
         result = await so.callProfile(settings.profileId, messages, maxTokens, settings.sendTemperature ? { temperature: settings.temperature } : {}, signal);
       }
       await assertBaseline();
       return result;
     };
-    const parseGroup = (raw, group) => {
-      const patch = parsePatch(raw);
-      const scopeErrors = checkGroupScope(patch.operations, group);
-      if (scopeErrors.length) {
-        const error = fault('field_group_scope', '本组补丁越过分配范围，全部变量尚未写入');
-        error.feedback = `本组只能修改${JSON.stringify(group.paths)}及其后代；越界操作：${JSON.stringify(scopeErrors)}。请重新返回本组完整必要补丁，其他组由各自任务处理。`;
-        throw error;
-      }
-      const ownershipErrors = checkOwnership(patch.operations, policy);
-      if (ownershipErrors.length) {
-        const error = fault('field_ownership', '本组尝试修改只读或前端托管字段，全部变量尚未写入');
-        error.feedback = `本组触及不归你修改的字段：${JSON.stringify(ownershipErrors)}。前端计算字段不直接写，也不能为达到同一派生总值而绕道改基础值或自定义加成。源字段必须有独立的正文/规则错误才能修正，其他必要修复仍须完成。返回本组完整纠正补丁。`;
-        throw error;
-      }
-      return patch;
-    };
-    let retry = null, lastError = null;
     const attempts = [];
-    const groups = planVariableGroups(rules, before.stat_data, previous?.payload?.stat_data, 8, [before.schema, previous?.payload?.schema]);
-    if (!groups.length) throw fault('group_plan_empty', '没有取得可核对的变量范围，未开始写入');
-    const groupResults = new Map();
-    // Observations are reusable only inside this run's immutable baseline.
-    // They are supporting model text, never an MVU candidate or a new event.
-    const observations = new Map();
-    let currentGroup = null, currentStage = 'observing', pendingObservation = null;
-    for (let attempt = 1; attempt <= modelConfig.maxAttempts; attempt++) {
-      await assertBaseline();
-      phase('checking', attempt === 1 ? '正在对照正文、规则和变量检查本轮状态' : `正在自动修复第${attempt - 1}次检查的问题`);
-      let raw = '', prepared = null, writeAttempted = false;
-      let messages = baseMessages;
-      try {
-        const maxTokens = Math.max(Number(settings.maxTokens) || 4096, 4096);
-        for (const [index, group] of groups.entries()) {
-          if (groupResults.get(group.id)?.valid) continue;
-          currentGroup = group;
-          currentStage = 'observing'; pendingObservation = null;
-          await assertBaseline();
-          phase('checking', `正在核对第${index + 1}/${groups.length}组变量；全部完成后统一保存`);
-          messages = composeDiagnosisMessages({ ...diagnosisInput,
-            groupMaterial: groupInstruction(group, index, groups.length)
-              + groupRuleMaterial(rules, before.stat_data, group),
-          });
-          const priorRaw = retry?.groupId === group.id ? retry.raw : retry && !retry.groupId ? groupResults.get(group.id)?.raw : '';
-          if (priorRaw) messages.push({ role: 'assistant', content: priorRaw }, { role: 'user', content: retry.feedback });
-          const diagnosisMessages = messages;
-          raw = '';
-          let observation = observations.get(group.id);
-          if (!observation) {
-            phase('checking', `正在核对第${index + 1}/${groups.length}组修复所依据的正文事实`);
-            if (typeof so.observationInstruction !== 'function') throw fault('reference_contract', '故事神谕只读问答接口缺失');
-            messages = composeObservationMessages(baseMessages, group, so.observationInstruction(), modelConfig.globalPrompt);
-            const observationStartedAt = Date.now();
-            pendingObservation = { raw: '', messages: clone(messages), startedAt: observationStartedAt };
-            const observed = String(await callModel(messages, maxTokens) || '');
-            const observedText = observed.trim();
-            pendingObservation.raw = observed;
-            if (/^\[(?:(?:api|http|request)\s*)?(?:error|failed|failure|错误|失败)\]/iu.test(observedText)) throw fault('observation_transport', '事实核对返回了运输错误，本组尚未生成修复');
-            let observationPatch = false;
-            try {
-              const value = JSON.parse(observedText);
-              observationPatch = Array.isArray(value) && value.every(item => item && typeof item.op === 'string' && typeof item.path === 'string');
-            } catch { /* A normal observation is prose, not JSON. */ }
-            if (!observedText || /<(?:UpdateVariable|JSONPatch)\b/iu.test(observedText) || observationPatch) throw fault('observation_unusable', '事实核对未返回只读说明，本组尚未生成修复');
-            observation = { raw: observed, rawHash: await digest(observed), promptHash: await digest(messages), messages: clone(messages), durationMs: Date.now() - observationStartedAt };
-            observations.set(group.id, observation);
-          }
-          currentStage = 'diagnosing';
-          phase('checking', `正在依据事实核对第${index + 1}/${groups.length}组变量；尚未写入`);
-          messages = appendObservation(diagnosisMessages, observation.raw);
-          raw = await callModel(messages, maxTokens);
-          const groupPatch = parseGroup(raw, group);
-          groupResults.set(group.id, { group: clone(group), raw: String(raw), operations: groupPatch.operations, messages: clone(messages),
-            observation: clone(observation), valid: true });
-        }
-        currentGroup = null; currentStage = 'executing'; pendingObservation = null;
-        await assertBaseline();
-        // Like the database's unified group commit, no official execution or
-        // durable write occurs until every disjoint group has a valid result.
-        const complete = groups.map(group => groupResults.get(group.id));
-        if (complete.some(result => !result?.valid)) throw fault('group_incomplete', '仍有分组没有完成，未写入变量');
-        raw = complete.map((result, index) => `分组 ${index + 1}/${groups.length}\n`
-          + `【模型辅助事实观察；不具有事实权威】\n${result.observation.raw}\n\n【最终分组修复】\n`
-          + result.raw).join('\n\n');
-        const parsed = parsePatch(JSON.stringify(complete.flatMap(result => result.operations)));
-        const violations = checkOwnership(parsed.operations, policy);
-        if (violations.length) {
-          const error = fault('field_ownership', '模型尝试修改只读或前端托管字段，候选未写入');
-          error.feedback = `修复补丁触及不归你修改的字段：${JSON.stringify(violations)}。请按原规则重新生成完整纠正补丁：前端计算字段不直接写，也不能为达到同一派生总值而绕道改基础值或自定义加成。源字段必须有独立的正文/规则错误才能修正，已登记的同一加成不能换个字段再次计入。其他已经定位的错误仍须完整修复，不得用空数组掩盖。`;
-          throw error;
-        }
-        // Story Oracle's autoApplyFix sends empty patches through this same
-        // official pipeline: card-owned event handlers may still derive data.
-        phase('parsing', '正在通过官方MVU解析候选并完成前端计算');
-        const { candidate, receipt: execution } = await host.parseMvuCandidate(target, mvu, parsed.block, before);
-        await assertBaseline();
-        if (!usable(candidate)) throw fault('official_parse', '官方MVU未返回可用候选');
-        const stateChanged = !equal(before.stat_data, candidate.stat_data);
-        if (execution.parsedCount !== parsed.operations.length) throw fault('official_command_count', '官方解析命令数与本批补丁不一致，未写入变量');
-        const rejected = execution.unexecuted;
-        if (rejected.length) {
-          const error = fault(stateChanged ? 'patch_outcome' : 'patch_no_effect', '修复未完整地在官方MVU候选中生效，全部变量尚未写入');
-          error.feedback = `官方MVU完成Schema处理后，以下命令未产生实际修复：${JSON.stringify(rejected)}。当前变量仍是原快照，本批没有保存。对照规则与当前值：已一致的冗余操作可去除；仍有事实差额的字段必须改用合法值或操作完成修复，不要重复相同无效命令，也不要以空补丁隐藏未修复的事实差额。重新返回本组完整必要补丁。`;
-          throw error;
-        }
-        const lost = lostObjectKeys(parsed.operations, before.stat_data, candidate.stat_data);
-        if (lost.length) {
-          // Reuse the existing single-group format retry. Keep the other
-          // complete groups cached and leave this official candidate unsaved.
-          let start = 0;
-          const affected = complete.find(result => {
-            const end = start + result.operations.length;
-            const found = lost[0].operationIndex >= start && lost[0].operationIndex < end;
-            start = end; return found;
-          });
-          currentGroup = affected.group;
-          affected.valid = false;
-          raw = affected.raw;
-          const error = fault('patch_structure_loss', '官方解析丢弃了修复对象中的子字段，正在按原卡结构自动修复；尚未保存');
-          error.feedback = `本批候选尚未保存，写前MVU保持不变。官方Schema接受命令后丢弃了以下对象子字段：${JSON.stringify(lost)}。其中actual是未保存候选的实际结构，不是新的事实依据。对照本卡结构声明、正文与写前状态，重新返回本组完整必要补丁，把已有事实填入合法的目标字段；不得仅删除承载事实的内容、返回空数组或用默认值冒充修复。多余且不属于该主体Schema的键可移除，已有称谓等事实应保留在本卡规定的位置。其他组已缓存，无须重写。`;
-          throw error;
-        }
-        const payloadChanged = !equal(before, candidate);
-        if (parsed.operations.length && !stateChanged) throw fault('patch_no_effect', '非空修复经官方MVU解析后没有改变状态，不能算修复成功');
-        attempts.push({ attempt, result: 'parsed', operationCount: parsed.operations.length });
-        const record = {
-          moduleVersion: MODULE_VERSION, scopeKey: target.scopeKey, identity: target.identity,
-          target: clone(target), ruleHash, schemaHash, contextHash, configHash, status: 'prepared',
-          before: clone(before), candidate: clone(candidate), beforeHash: currentFingerprint, afterHash: await digest(candidate),
-          patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
-          semanticProof: false, officialStateChanged: stateChanged, executionReceipt: clone(execution), raw: String(raw), groupCount: groups.length,
-          groups: complete.map(({ messages: _messages, observation, ...result }) => clone({ ...result,
-            observation: { raw: observation.raw, rawHash: observation.rawHash, promptHash: observation.promptHash, durationMs: observation.durationMs },
-          })), attempts, readback: false, startedAt,
-        };
-        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone(complete), raw: String(raw), policy, attempts: clone(attempts) };
-        // Save recovery evidence before writing any MVU. It remains local to
-        // this browser; public status never exposes narrative or credentials.
-        prepared = record;
-        await store.write(key, record); await assertBaseline();
-        if (payloadChanged) {
-          phase('saving', '正在写入修复并核对实际读回');
-          record.status = 'committing';
-          await store.write(key, record); await assertBaseline();
-          writeAttempted = true;
-          await mvu.replaceMvuData(clone(candidate), options);
-          assert();
-          if (!equal(await read(), candidate)) throw fault('mvu_readback', 'MVU写后读回不一致；未报告成功');
-          await host.saveChat(target, candidate); assert();
-          if (!equal(await read(), candidate)) throw fault('mvu_save_readback', '保存后变量已变化；未报告成功');
-          so.refreshMessageBar(target.index);
-          record.status = stateChanged ? 'applied' : 'model_nochange';
-        }
-        if (!payloadChanged) { await host.saveChat(target, candidate); record.status = 'model_nochange'; }
-        record.readback = true; record.durationMs = Date.now() - startedAt;
-        await store.write(key, record); await store.write(`latest:variables:${target.scopeKey}`, record); assert();
-        return record;
-      } catch (error) {
-        lastError = error;
-        if (prepared && !writeAttempted) await store.write(key, { ...prepared, status: 'abandoned', failureCode: error.code || 'prewrite_failure' }).catch(() => {});
-        // A write or durable save may have partially completed. Never call the
-        // model again against the old baseline; recovery inspects that receipt.
-        if (writeAttempted) throw error;
-        if (signal?.aborted || ['cancelled', 'stale_target', 'stale_mvu', 'stale_previous_mvu', 'model_unconfigured', 'model_config_changed', 'variable_rules_changed', 'variable_schema_changed', 'variable_schema_unavailable', 'mvu_readback', 'mvu_save_readback', 'official_receipt_unavailable'].includes(error.code)
-          || /^(?:store_|host_)/u.test(String(error.code || ''))) throw error;
-        attempts.push({ attempt, groupId: currentGroup?.id || null, stage: currentStage, result: 'failed', code: error.code || 'model_transport' });
-        lastReview = { target: clone(target), rules, before: clone(before), previous: clone(previous), originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone([...groupResults.values()]), failedGroup: clone(currentGroup), observation: clone(observations.get(currentGroup?.id) || pendingObservation), raw: String(raw), policy, attempts: clone(attempts) };
-        retry = currentStage !== 'observing' && raw ? { groupId: currentGroup?.id || null, raw: String(raw), feedback: error.feedback || `本次返回尚不能完成变量修复（${error.code || 'model_transport'}）。只修复格式或官方无法执行的部分，仍须完成本组的全部必要修复。返回唯一完整UpdateVariable和JSONPatch。` } : null;
-        if (!currentGroup) for (const result of groupResults.values()) result.valid = false;
-      }
+    let raw = '', prepared = null, writeAttempted = false;
+    const messages = clone(baseMessages);
+    // Failed model text can guide an explicit repair only on the exact same
+    // evidence. It is never a saved fact or a patch to replay.
+    if (reason === 'manual' && previousReview?.attempts?.at(-1)?.result === 'failed'
+      && previousReview.target.identity === target.identity && previousReview.target.scopeKey === target.scopeKey
+      && equal(previousReview.before, before) && equal(previousReview.previous, previous)
+      && previousReview.ruleHash === ruleHash && previousReview.schemaHash === schemaHash
+      && previousReview.configHash === configHash && previousReview.contextHash === contextHash && previousReview.raw) {
+      messages.push({ role: 'assistant', content: previousReview.raw },
+        { role: 'user', content: `以上是未通过校验、未保存的上一份模型候选，不是新的事实。${previousReview.feedback} 请依据前面的原始资料重新诊断整个状态并返回唯一完整修复，不续写或重放旧补丁。` });
     }
-    throw lastError || fault('variable_failed', '变量检查未完成');
+    const review = () => ({ target: clone(target), rules, before: clone(before), previous: clone(previous),
+      originalBlock, prompt, baseMessages: clone(baseMessages), messages: clone(messages), groups: clone(groups),
+      raw: String(raw), policy, ruleHash, schemaHash, configHash, contextHash, attempts: clone(attempts), requestCount, requestLimit: 1 });
+    try {
+      raw = await callModel(messages, Math.max(Number(settings.maxTokens) || 4096, 4096));
+      const parsed = parsePatch(raw);
+      const scopeErrors = checkGroupScope(parsed.operations, coverage);
+      if (scopeErrors.length) throw fault('field_group_scope', '补丁超出了本卡完整变量范围，候选未写入；可修复本轮重新诊断');
+      const violations = checkOwnership(parsed.operations, policy);
+      if (violations.length) throw fault('field_ownership', '模型尝试修改只读或前端托管字段，候选未写入；可修复本轮重新诊断');
+      // Story Oracle's autoApplyFix sends empty patches through this same
+      // official pipeline: card-owned event handlers may still derive data.
+      phase('parsing', '正在通过官方MVU解析候选并完成前端计算');
+      const { candidate, receipt: execution } = await host.parseMvuCandidate(target, mvu, parsed.block, before);
+      await assertBaseline();
+      if (!usable(candidate)) throw fault('official_parse', '官方MVU未返回可用候选');
+      const stateChanged = !equal(before.stat_data, candidate.stat_data);
+      if (execution.parsedCount !== parsed.operations.length) throw fault('official_command_count', '官方解析命令数与本批补丁不一致，未写入变量');
+      const rejected = execution.unexecuted;
+      if (rejected.length) {
+        const error = fault(stateChanged ? 'patch_outcome' : 'patch_no_effect', '修复未完整地在官方MVU候选中生效，全部变量尚未写入');
+        error.feedback = `官方MVU完成Schema处理后，以下命令未产生实际修复：${JSON.stringify(rejected)}。当前变量仍是原快照，本批没有保存。对照规则与当前值：已一致的冗余操作可去除；仍有事实差额的字段必须改用合法值或操作完成修复，不要重复相同无效命令，也不要以空补丁隐藏未修复的事实差额。下次主动修复时重新返回完整必要补丁。`;
+        throw error;
+      }
+      const lost = lostObjectKeys(parsed.operations, before.stat_data, candidate.stat_data);
+      if (lost.length) {
+        const error = fault('patch_structure_loss', '官方解析丢弃了修复对象中的子字段，候选未保存；可修复本轮重新诊断');
+        error.feedback = '官方Schema丢弃了以下对象子字段：' + JSON.stringify(lost) + '。当前变量仍是写前快照，须按原卡结构重新设计完整修复，不能用空补丁或默认值冒充事实。';
+        throw error;
+      }
+      const payloadChanged = !equal(before, candidate);
+      if (parsed.operations.length && !stateChanged) throw fault('patch_no_effect', '非空修复经官方MVU解析后没有改变状态，不能算修复成功');
+      attempts.push({ attempt: 1, result: 'parsed', operationCount: parsed.operations.length });
+      const record = {
+        moduleVersion: MODULE_VERSION, scopeKey: target.scopeKey, identity: target.identity,
+        target: clone(target), ruleHash, schemaHash, contextHash, configHash, status: 'prepared',
+        before: clone(before), candidate: clone(candidate), beforeHash: currentFingerprint, afterHash: await digest(candidate),
+        patch: parsed.block, operationCount: parsed.operations.length, changedPaths: changedPaths(before.stat_data, candidate.stat_data),
+        semanticProof: false, officialStateChanged: stateChanged, executionReceipt: clone(execution), raw: String(raw), groupCount: groups.length,
+        groups: clone(groups), requestCount, requestLimit: 1, attempts, readback: false, startedAt,
+      };
+      lastReview = review();
+      // Save recovery evidence before writing any MVU. It remains local to
+      // this browser; public status never exposes narrative or credentials.
+      prepared = record;
+      await store.write(key, record); await assertBaseline();
+      if (payloadChanged) {
+        phase('saving', '正在写入修复并核对实际读回');
+        record.status = 'committing';
+        await store.write(key, record); await assertBaseline();
+        writeAttempted = true;
+        await mvu.replaceMvuData(clone(candidate), options);
+        assert();
+        if (!equal(await read(), candidate)) throw fault('mvu_readback', 'MVU写后读回不一致；未报告成功');
+        await host.saveChat(target, candidate); assert();
+        if (!equal(await read(), candidate)) throw fault('mvu_save_readback', '保存后变量已变化；未报告成功');
+        so.refreshMessageBar(target.index);
+        record.status = stateChanged ? 'applied' : 'model_nochange';
+      }
+      if (!payloadChanged) { await host.saveChat(target, candidate); record.status = 'model_nochange'; }
+      record.readback = true; record.durationMs = Date.now() - startedAt;
+      await store.write(key, record); await store.write(`latest:variables:${target.scopeKey}`, record); assert();
+      return record;
+    } catch (error) {
+      if (prepared && !writeAttempted) await store.write(key, { ...prepared, status: 'abandoned', failureCode: error.code || 'prewrite_failure' }).catch(() => {});
+      // No hidden retry: the user can request a new diagnosis on fresh data.
+      // A committing receipt remains available to the existing recovery path.
+      attempts.push({ attempt: 1, result: 'failed', code: error.code || 'model_transport' });
+      lastReview = { ...review(), feedback: error.feedback || `上次失败代码：${error.code || 'model_transport'}。` };
+      phase('failed', '本次诊断未完成，未自动追加请求；可点击“修复本轮”');
+      throw error;
+    }
   }
   return Object.freeze({ id: 'variables', version: MODULE_VERSION, run, validateReceipt, review: () => clone(lastReview) });
 }

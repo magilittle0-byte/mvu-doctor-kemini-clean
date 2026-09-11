@@ -2,7 +2,7 @@ import { clone, canonical, digest, fault } from './variables/core.mjs';
 
 export function createRuntime({ host, store, variables, lock = { locked: false }, disableNative = () => {}, notify = () => {} }) {
   let epoch = 0, ticket = null, controller = null, result = null;
-  let state = { status: 'idle', detail: '等待本轮正文完成', busy: false, stage: 1, locked: lock.locked === true };
+  let state = { status: 'idle', detail: '等待本轮正文完成', busy: false, stage: 1, locked: lock.locked === true, requestCount: 0, requestLimit: 1 };
   const inFlight = new Set(), consumers = new Map();
   const snapshot = () => ({ ...clone(state), inFlight: inFlight.size, modules: { variables: state.locked ? 'locked' : 'candidate', profiles: 'not_implemented', world: 'not_implemented' }, result: result ? { status: result.status, durationMs: result.durationMs, operationCount: result.operationCount, changedPaths: result.changedPaths, readback: result.readback, semanticProof: false, restored: result.restored === true } : null });
   const publish = () => notify(snapshot());
@@ -11,15 +11,16 @@ export function createRuntime({ host, store, variables, lock = { locked: false }
     epoch++; ticket = null; controller?.abort(); controller = null;
     setState({ status: 'cancelled', detail, busy: false });
   }
-  async function run(target, reason = 'auto', token = epoch, staleRetries = 0) {
+  async function run(target, reason = 'auto', token = epoch) {
     if (!target || token !== epoch) return;
     if (reason !== 'manual' && !host.settings().enabled) {
-      setState({ status: 'idle', detail: '自动检查已关闭，可点击“重试本轮”手动检查', busy: false });
+      setState({ status: 'idle', detail: '自动检查已关闭，可点击“修复本轮”手动检查', busy: false });
       return;
     }
     const ctl = new AbortController(); controller = ctl;
     const job = {}; inFlight.add(job);
-    setState({ status: 'checking', detail: '正在检查本轮变量', busy: true });
+    result = null;
+    setState({ status: 'checking', detail: '正在检查本轮变量', busy: true, requestCount: 0, requestLimit: 1 });
     try {
       const receipt = await variables.run(target, { signal: ctl.signal, reason,
         onStatus: values => { if (token === epoch) setState(values); },
@@ -40,20 +41,14 @@ export function createRuntime({ host, store, variables, lock = { locked: false }
       }
     } catch (error) {
       if (token !== epoch) return;
-      if (['stale_mvu', 'stale_previous_mvu'].includes(error.code) && staleRetries < host.settings().maxAttempts - 1) {
-        setState({ status: 'waiting_mvu', detail: '变量证据发生变化，正在读取当前快照重新检查', busy: true });
-        try { await host.delay(500, ctl.signal); } catch { return; }
-        if (token === epoch) return await run(await host.capture(target.index), reason, token, staleRetries + 1);
-        return;
-      }
       const code = error.code || (ctl.signal.aborted ? 'cancelled' : 'model_transport');
       // Transport exception messages may include endpoint details. Expose only
       // a known code and a user-facing explanation, never upstream raw errors.
       const detail = code === 'cancelled' || code === 'stale_target'
         ? '输入已变化或任务已取消，旧检查不能作为本轮结果。'
-        : `本轮变量检查未完成（${code}）。已保留恢复记录，可重试本轮；未将失败算作成功。`;
+        : `本轮变量检查未完成（${code}）。未自动追加请求，可点击“修复本轮”重新检查。`;
       setState({ status: 'failed', code, detail, busy: false });
-      await store.write(`pending:variables:${target.scopeKey}`, { status: 'failed', code, target, moduleVersion: variables.version }).catch(() => {});
+      await store.write(`pending:variables:${target.scopeKey}`, { status: 'failed', code, target, moduleVersion: variables.version, requestCount: state.requestCount, requestLimit: 1 }).catch(() => {});
     } finally {
       inFlight.delete(job); if (controller === ctl) controller = null; publish();
     }

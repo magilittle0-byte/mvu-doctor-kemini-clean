@@ -12,7 +12,6 @@ import { planVariableGroups, checkGroupScope } from '../modular/variables/groups
 import { diagnosisTranscript, userInput } from '../modular/transcript.mjs';
 
 const nativeSource = fs.readFileSync(new URL('../vendor/story-oracle-v1.35.4/index.js', import.meta.url), 'utf8');
-const nativeObservationPrompt = vm.runInNewContext(nativeSource.slice(nativeSource.indexOf('const DEFAULT_SYSTEM_PROMPT ='), nativeSource.indexOf('const DIAGNOSE_SYSTEM_PROMPT =')) + '\nDEFAULT_SYSTEM_PROMPT');
 const nativePrompt = vm.runInNewContext(nativeSource.slice(nativeSource.indexOf('const DIAGNOSE_SYSTEM_PROMPT ='), nativeSource.indexOf('const LOREBOOK_SYSTEM_PROMPT =')) + '\nDIAGNOSE_SYSTEM_PROMPT');
 
 test('history retains original user facts when host prompt regex deletes older user messages', () => {
@@ -167,11 +166,12 @@ test('format recovery keeps a unique patch; errors and conflicting blocks fail',
   assert.throws(() => parsePatch('[{"op":"run","path":"/x"}]'), { code: 'patch_operation' });
 });
 
-test('empty diagnosis after fact observation reaches official MVU without inventing an operation', async () => {
-  const h = harness({ reply: ({ stage }) => stage === 'diagnosis' ? '[]' : undefined });
+test('one complete diagnosis call reaches official MVU without an external observation call', async () => {
+  const h = harness({ reply: () => '[]' });
   const receipt = await h.module.run(h.target);
-  assert.equal(h.observationCalls.length, 1);
   assert.equal(h.diagnosisCalls.length, 1);
+  assert.equal(receipt.requestCount, 1);
+  assert.equal(receipt.requestLimit, 1);
   assert.equal(h.parsed.length, 1);
   assert.deepEqual(parsePatch(h.parsed[0].block).operations, []);
   assert.deepEqual(h.current().stat_data, { coins: 7 });
@@ -179,26 +179,18 @@ test('empty diagnosis after fact observation reaches official MVU without invent
   assert.equal(receipt.status, 'model_nochange');
 });
 
-test('observation failures retry without diagnosis, parsing, or writing', async () => {
-  for (const [label, reply, code] of [
-    ['blank', '', 'observation_unusable'],
-    ['transport', '[HTTP Error] synthetic failure', 'observation_transport'],
-    ['bare pseudo-patch', '[{"op":"replace","path":"/coins","value":9}]', 'observation_unusable'],
-    ['tagged pseudo-patch', '<UpdateVariable>[{"op":"replace","path":"/coins","value":9}]', 'observation_unusable'],
-  ]) {
-    const h = harness({ observationReply: reply });
-    await assert.rejects(h.module.run(h.target), { code }, label);
-    assert.equal(h.observationCalls.length, 3, label);
-    assert.equal(h.diagnosisCalls.length, 0, label);
+test('one malformed or transport response fails once without write or hidden retry', async () => {
+  for (const [label, reply] of [['blank', ''], ['transport', '[HTTP Error] synthetic failure']]) {
+    const h = harness({ reply });
+    await assert.rejects(h.module.run(h.target), label);
+    assert.equal(h.calls.length, 1, label);
     assert.equal(h.parsed.length, 0, label);
     assert.equal(h.writes.length, 0, label);
-    const review = h.module.review();
-    assert.equal(review.attempts.at(-1).stage, 'observing', label);
-    assert.equal(review.observation.raw, reply, label);
+    assert.equal(h.saves.length, 0, label);
   }
 });
 
-test('scope, MVU, model, and schema drift during observation discard the run before diagnosis', async () => {
+test('baseline drift during the single diagnosis discards the run before parsing or writing', async () => {
   for (const [label, drift, code] of [
     ['scope', h => h.driftScope(), 'stale_target'],
     ['MVU', h => h.change({ stat_data: { coins: 8 } }), 'stale_mvu'],
@@ -206,37 +198,34 @@ test('scope, MVU, model, and schema drift during observation discard the run bef
     ['schema', h => h.driftSchema(), 'variable_schema_changed'],
   ]) {
     let h;
-    h = harness({ observationReply: () => { drift(h); return '本轮没有新的确定事实变化。'; } });
+    h = harness({ reply: () => { drift(h); return '[]'; } });
     await assert.rejects(h.module.run(h.target), { code }, label);
-    assert.equal(h.observationCalls.length, 1, label);
-    assert.equal(h.diagnosisCalls.length, 0, label);
+    assert.equal(h.diagnosisCalls.length, 1, label);
     assert.equal(h.parsed.length, 0, label);
     assert.equal(h.writes.length, 0, label);
   }
 });
 
-test('diagnosis scope failure never reaches official MVU and reuses one observation for the group', async () => {
-  const h = harness({ reply: ({ stage }) => stage === 'diagnosis' ? '[{"op":"replace","path":"/other","value":9}]' : undefined });
+test('out-of-coverage write never reaches official MVU and does not retry', async () => {
+  const h = harness({ reply: () => '[{"op":"replace","path":"/other","value":9}]' });
   await assert.rejects(h.module.run(h.target), { code: 'field_group_scope' });
-  assert.equal(h.observationCalls.length, 1);
+  assert.equal(h.diagnosisCalls.length, 1);
   assert.equal(h.parsed.length, 0);
   assert.equal(h.writes.length, 0);
   assert.equal(h.saves.length, 0);
-  assert.equal(h.diagnosisCalls.length, 3);
 });
 
-test('necessary repair executes once after observation and diagnosis and persists no group messages', async () => {
+test('necessary repair executes once after the complete diagnosis and persists no per-group model text', async () => {
   const h = harness();
   const receipt = await h.module.run(h.target);
   assert.equal(h.diagnosisCalls.length, 1);
-  assert.equal(h.observationCalls.length, 1);
   assert.equal(h.parsed.length, 1);
   assert.equal(h.writes.length, 1);
   assert.equal(h.saves.length, 1);
   assert.equal(receipt.status, 'applied');
   assert.equal(h.current().stat_data.coins, 12);
-  assert.ok(receipt.groups.every(group => !Object.hasOwn(group, 'messages')));
-  assert.ok(receipt.groups.every(group => !Object.hasOwn(group.observation, 'messages')));
+  assert.equal(receipt.requestCount, 1);
+  assert.equal(receipt.requestLimit, 1);
 });
 
 function receiptEvents() {
@@ -254,42 +243,9 @@ test('official receipts retain normalized results without interpreting model val
   });
   h.change({ stat_data: { effects: 'old' } });
   const record = await h.module.run(h.target);
-  assert.equal(record.status, 'applied'); assert.equal(h.calls.length, 2);
+  assert.equal(record.status, 'applied'); assert.equal(h.calls.length, 1);
   assert.deepEqual(h.current().stat_data.effects, { canonical: 'schema value', defaultField: 1 });
   assert.deepEqual(record.executionReceipt, { parsedCount: 1, unexecuted: [] });
-});
-test('lost nested keys retry only their group and save only the fully repaired official candidate', async () => {
-  let actorCalls = 0, otherCalls = 0;
-  const schema = 'registerMvuSchema(z.object({ actors: z.record(z.string(), z.object({ title: z.object({ name: z.string() }) })) }))';
-  const h = harness({
-    reply() {
-      const messages = h.calls.at(-1)[1];
-      assert.ok(messages[1].content.includes(schema));
-      if (!messages[1].content.includes('- /actors\n')) { otherCalls++; return '[]'; }
-      actorCalls++;
-      assert.equal(h.writes.length, 0);
-      if (actorCalls === 2) {
-        const feedback = messages.find(message => message.role === 'user' && message.content.startsWith('本批候选尚未保存'))?.content;
-        assert.match(feedback, /丢弃/);
-        assert.match(feedback, /currentTitle/);
-      }
-      return JSON.stringify([{ op: 'insert', path: '/actors/a', value: { title: actorCalls === 1 ? { currentTitle: { name: 'synthetic title' } } : { name: 'synthetic title' } } }]);
-    },
-    officialResult(block, input) {
-      const requested = parsePatch(block).operations[0].value;
-      return { ...input, stat_data: { ...input.stat_data, actors: { a: { title: { name: requested.title.name || 'none', effects: {} } } } } };
-    },
-  });
-  h.host.variableSchemaMaterial = () => schema;
-  h.change({ stat_data: { actors: {}, coins: 7 } });
-  const result = await h.module.run(h.target);
-  assert.equal(actorCalls, 2); assert.equal(otherCalls, 1);
-  assert.equal(h.parsed.length, 2); assert.equal(h.writes.length, 1);
-  assert.deepEqual(h.parsed[0].input, h.parsed[1].input);
-  assert.equal(h.current().stat_data.actors.a.title.name, 'synthetic title');
-  assert.equal(result.attempts[0].code, 'patch_structure_loss');
-  assert.equal(result.status, 'applied');
-  assert.equal(result.schemaHash, await digest(schema));
 });
 test('schema source drift invalidates in-flight and settled receipts', async () => {
   let schema = 'schema one';
@@ -334,14 +290,14 @@ function harness(overrides = {}) {
   const routeContext = { chatCompletionSettings: defaults, getPresetManager: () => ({ getCompletionPresetByName: () => preset }),
     ConnectionManagerRequestService: { getProfile(id) { if (profile.id !== id) throw Error('missing'); return profile; }, validateProfile: () => ({ selected: 'openai', source: 'custom' }) } };
   const routeHost = createHost(() => routeContext, async () => proxies);
-  const values = new Map(), calls = [], diagnosisCalls = [], observationCalls = [], parsed = [], writes = [], saves = [], eventSource = receiptEvents();
+  const values = new Map(), calls = [], diagnosisCalls = [], parsed = [], writes = [], saves = [], eventSource = receiptEvents();
   const target = { scopeKey: 'chat-a', identity: 'reply-a', index: 2, swipeId: 0, content: '获奖7枚金币。', userText: '领取奖励。' };
   const host = {
     modelRouteHash: routeHost.modelRouteHash,
     assertTarget() { if (stale || scopeDrift) throw fault('stale_target', scopeDrift ? 'scope changed' : 'changed'); },
     previousMvu: async () => ({ index: 0, payload: { stat_data: { coins: 5 } } }),
     contextSnapshot: () => ({ chat: [{ mes: '开场' }, { is_user: true, mes: target.userText }, { is_user: false, mes: target.content }] }),
-    settings: () => ({ maxAttempts: 3, globalPrompt: '' }),
+    settings: () => ({ maxAttempts: 1, globalPrompt: '' }),
     variableSchemaMaterial: () => schemaDrift ? 'changed schema' : '',
     async saveChat(_target, candidate) { saves.push(clone(candidate)); if (saveFailure) throw fault('host_mvu_durable_mismatch', 'failed'); },
     async readback() { if (saveFailure) throw fault('host_mvu_durable_mismatch', 'failed'); },
@@ -372,23 +328,19 @@ function harness(overrides = {}) {
     buildTranscriptTurns: (ctx, settings, keepMechanism) => { assert.equal(settings.contextDepth, 1); assert.equal(keepMechanism, false); assert.equal(ctx.chat.length, 1); return [{ role: 'assistant', text: ctx.chat[0].mes }]; },
     extractUpdateBlock: () => '', buildCardSection: () => 'Synthetic card facts',
     diagnosisTranscript: (ctx, s) => { assert.equal(ctx.chat.length, target.index); assert.equal(ctx.chat.some(row => row.mes === target.content), false); return 'Synthetic prior story'; },
-    observationInstruction: () => nativeObservationPrompt,
     callProfile: async (...args) => {
       const messages = args[1];
-      const stage = String(messages[0]?.content || '').includes('这是本机只读事实核对') ? 'observation' : 'diagnosis';
-      calls.push(args);
-      ({ diagnosis: diagnosisCalls, observation: observationCalls }[stage]).push(args);
-      const reply = stage === 'observation'
-        ? (typeof overrides.observationReply === 'function' ? overrides.observationReply({ stage, messages, callIndex: calls.length }) : (overrides.observationReply ?? '本轮没有新的确定事实变化。'))
-      : (overrides.reply?.({ stage, messages, callIndex: calls.length })
-          ?? '[{"op":"delta","path":"/coins","value":5}]');
+      const stage = 'diagnosis';
+      calls.push(args); diagnosisCalls.push(args);
+      const reply = (typeof overrides.reply === 'function' ? overrides.reply({ stage, messages, callIndex: calls.length }) : overrides.reply)
+        ?? '[{"op":"delta","path":"/coins","value":5}]';
       return reply;
     },
     refreshMessageBar: () => {},
   };
   const store = { read: async key => clone(values.get(key) ?? null), write: async (key, value) => { values.set(key, clone(value)); await overrides.onStore?.(key, value); } };
   const module = createVariableModule({ host, store, story: () => so });
-  return { module, host, store, so, mvu, target, values, calls, diagnosisCalls, observationCalls, parsed, writes, saves, settings, profile, preset, defaults, proxies, routeContext,
+  return { module, host, store, so, mvu, target, values, calls, diagnosisCalls, parsed, writes, saves, settings, profile, preset, defaults, proxies, routeContext,
     change: value => { current = value; }, stale: () => { stale = true; }, driftScope: () => { scopeDrift = true; }, driftSchema: () => { schemaDrift = true; }, failSave: value => { saveFailure = value; }, current: () => clone(current) };
 }
 test('native prompt override removes conflicting stored-equals-correct instructions and keeps output contract', async () => {
@@ -403,20 +355,14 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   assert.doesNotMatch(sent, /1\. 诊断。逐项核对最新更新在当前状态中体现出的效果/);
   assert.match(sent, /逐项阅读本卡全部字段的check规则/);
   const messages = h.diagnosisCalls[0][1];
-  assert.deepEqual(messages.map(message => message.role), ['system', 'user', 'assistant', 'user']);
-  const observationMessages = h.observationCalls[0][1];
-  assert.deepEqual(observationMessages.map(message => message.role), ['system', 'user']);
-  assert.equal((observationMessages[0].content.match(/GLOBAL_SYNTHETIC_OVERRIDE/g) || []).length, 1);
+  assert.deepEqual(messages.map(message => message.role), ['system', 'user']);
   assert.equal((messages[0].content.match(/GLOBAL_SYNTHETIC_OVERRIDE/g) || []).length, 1);
-  assert.match(messages[2].content, /本轮没有新的确定事实变化/);
-  assert.match(messages[3].content, /辅助事实观察/);
   const baseMessages = h.module.review().baseMessages;
   assert.ok(baseMessages[1].content.endsWith(EVIDENCE_INSTRUCTION));
   const frozenContext = baseMessages[1].content.slice(0, -EVIDENCE_INSTRUCTION.length).trimEnd();
   assert.ok(messages[1].content.startsWith(frozenContext), 'group material preserves the exact frozen context prefix');
-  assert.ok(observationMessages[1].content.startsWith(frozenContext), 'observation retains the full original data prefix');
-  assert.ok(observationMessages[0].content.startsWith(nativeObservationPrompt), 'observation reuses the native factual question role');
   assert.match(messages[1].content, /\/coins/);
+  assert.match(messages[1].content, /全量变量核对范围/);
   assert.equal(messages.map(message => message.content).join('\n').split('【本轮变量核对任务】').length - 1, 1);
   assert.doesNotMatch(sent, /【本轮变量核对任务】/);
   assert.match(messages[1].content, /物品存在、约定归属和实际交付是不同状态/);
@@ -438,7 +384,7 @@ test('native prompt override removes conflicting stored-equals-correct instructi
   const custom = '使用本卡专用字段格式。';
   assert.ok(adaptDiagnosisPrompt(custom).startsWith(custom), 'native custom prompt is retained');
 });
-test('group rule material is before the single evidence task in the actual sent user message', async () => {
+test('one complete message keeps full rules and adds only the local coverage list', async () => {
   const h = harness({ reply: () => '[]' });
   h.host.settings = () => ({ maxAttempts: 3, globalPrompt: 'GLOBAL_ADAPTER_ONLY_SYSTEM' });
   h.so.collectMvuUpdateRules = async () => [[
@@ -452,17 +398,11 @@ test('group rule material is before the single evidence task in the actual sent 
   const messages = h.diagnosisCalls[0][1];
   const system = messages.find(message => message.role === 'system').content;
   const user = messages.find(message => message.role === 'user').content;
-  const materialAt = user.indexOf('【本组字段规则原文与当前值】');
-  const evidenceAt = user.indexOf('【本轮变量核对任务】');
-
-  assert.ok(materialAt >= 0, 'the sent group contains its original field material');
-  assert.ok(evidenceAt > materialAt, 'the evidence task follows group material');
-  const groupMaterial = user.slice(materialAt, evidenceAt);
-  assert.equal(user.lastIndexOf('【本轮变量核对任务】'), evidenceAt, 'the evidence task is unique');
+  assert.equal(user.includes('【本组字段规则原文与当前值】'), false, 'old per-group material is not duplicated');
+  assert.match(user, /【全量变量核对范围】/u);
   assert.ok(user.endsWith(EVIDENCE_INSTRUCTION), 'the user message ends with the evidence task');
-  assert.match(groupMaterial, /coins:/u);
-  assert.match(groupMaterial, /coin rule must remain beside its target group/u);
-  assert.match(groupMaterial, /\/coins: 7/u, 'the group material includes the write-before value');
+  assert.match(user, /coin rule must remain beside its target group/u);
+  assert.match(user, /\/coins/u, 'the local coverage list includes the target path');
   assert.match(system, /GLOBAL_ADAPTER_ONLY_SYSTEM/u);
   assert.doesNotMatch(user, /GLOBAL_ADAPTER_ONLY_SYSTEM/u, 'global adapter remains system-only');
 });
@@ -473,7 +413,7 @@ test('uses current7 and prior5 evidence; delegates residual+5 once to official M
   assert.equal(parsePatch(h.parsed[0].block).operations[0].value, 5);
   assert.deepEqual(h.writes[0].options, { type: 'message', message_id: 2 }); assert.equal(h.saves[0].stat_data.coins, 12);
   assert.match(h.diagnosisCalls[0][1][1].content, /"coins":\s*5/); assert.match(h.diagnosisCalls[0][1][1].content, /领取奖励/);
-  await h.module.run(h.target); assert.equal(h.calls.length, 2, 'valid settled receipt prevents duplicate work');
+  await h.module.run(h.target); assert.equal(h.calls.length, 1, 'valid settled receipt prevents duplicate work');
 });
 test('uses native current-reply projection without changing raw target or saved context depth', async () => {
   const h = harness({ reply: () => '[]' });
@@ -593,26 +533,42 @@ test('a partially dropped official patch cannot write or claim success', async (
   });
   h.change({ stat_data: { coins: 7, mode: 'unset' } });
   await assert.rejects(h.module.run(h.target), { code: 'patch_outcome' });
-  assert.equal(h.calls.length, 4); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+  assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
   assert.deepEqual(h.current().stat_data, { coins: 7, mode: 'unset' });
-  assert.ok(h.diagnosisCalls[1][1].some(message => /\/mode/.test(String(message.content))));
-  assert.ok(h.diagnosisCalls[1][1].some(message => /mixed-invalid/.test(String(message.content))));
+  assert.ok(h.diagnosisCalls[0][1].some(message => /\/mode/.test(String(message.content))));
+  assert.match(h.module.review().raw, /mixed-invalid/u);
   assert.equal([...h.values.values()].some(value => value.readback === true), false);
 });
 
-test('outcome retry starts from unchanged baseline and persists only the repaired official candidate', async () => {
-  let responses = 0;
+test('lost object keys fail once without writing and succeed only on an explicit manual fresh request', async () => {
+  const schema = 'registerMvuSchema(z.object({ actors: z.record(z.string(), z.object({ title: z.object({ name: z.string(), role: z.string() }) })) }))';
+  let calls = 0;
   const h = harness({
-    reply: () => JSON.stringify([{ op: 'delta', path: '/coins', value: 5 }, { op: 'replace', path: '/mode', value: ++responses === 1 ? 'mixed-invalid' : 'allowed' }]),
-    officialResult: (block, input) => ({ ...input, stat_data: { coins: 12, mode: parsePatch(block).operations[1].value === 'allowed' ? 'allowed' : 'unset', derived: 24 } }),
-    unexecuted: operations => operations[1].value === 'allowed' ? [] : [operations[1]],
+    reply: () => {
+      calls++;
+      return JSON.stringify([{ op: 'insert', path: '/actors/a', value: { title: { name: 'synthetic', role: 'guide' } } }]);
+    },
+    officialResult: (_block, input) => ({ ...input, stat_data: { actors: { a: { title: calls === 1 ? { name: 'synthetic' } : { name: 'synthetic', role: 'guide' } } } } }),
   });
-  h.change({ stat_data: { coins: 7, mode: 'unset' } });
-  const record = await h.module.run(h.target);
-  assert.equal(h.calls.length, 3); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
-  assert.ok(h.parsed.every(entry => entry.input.stat_data.coins === 7));
-  assert.deepEqual(h.current().stat_data, { coins: 12, mode: 'allowed', derived: 24 });
-  assert.equal(record.status, 'applied'); assert.equal(record.readback, true);
+  h.host.variableSchemaMaterial = () => schema;
+  h.change({ stat_data: { actors: {} } });
+  await assert.rejects(h.module.run(h.target), { code: 'patch_structure_loss' });
+  assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+  assert.equal(h.module.review().attempts.at(-1).code, 'patch_structure_loss');
+  const manual = await h.module.run(h.target, { reason: 'manual' });
+  assert.ok(h.diagnosisCalls[1][1].some(message => /未通过校验、未保存的上一份模型候选/u.test(String(message.content))));
+  assert.equal(h.calls.length, 2); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
+  assert.equal(manual.status, 'applied');
+  assert.deepEqual(h.current().stat_data.actors.a.title, { name: 'synthetic', role: 'guide' });
+});
+
+test('manual feedback is omitted when the current baseline no longer matches the failed run', async () => {
+  const h = harness({ reply: () => 'not-json' });
+  await assert.rejects(h.module.run(h.target), { code: 'patch_format' });
+  h.change({ stat_data: { coins: 99 } });
+  await assert.rejects(h.module.run(h.target, { reason: 'manual' }), { code: 'patch_format' });
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.diagnosisCalls[1][1].some(message => /未通过校验、未保存的上一份模型候选/u.test(String(message.content))), false);
 });
 
 test('late model response after variable edit is discarded without parse or write', async () => {
@@ -700,7 +656,7 @@ test('rule changes during a response or immediately before write discard all old
     });
     h.so.collectMvuUpdateRules = async () => [rules];
     await assert.rejects(h.module.run(h.target), { code: 'variable_rules_changed' });
-    assert.equal(h.calls.length, 2); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+    assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
     if (stage === 'response') assert.equal(h.parsed.length, 0);
     else assert.equal(h.values.get('variables:chat-a:reply-a').status, 'abandoned');
   }
@@ -709,7 +665,7 @@ test('same profile ID cannot hide model, endpoint, preset, fallback sampler or p
   for (const change of [h => { h.profile.model = 'changed'; }, h => { h.profile['api-url'] += '/changed'; }, h => { h.preset.temperature = 0.2; }, h => { h.defaults.top_p = 0.5; }, h => { h.proxies[0].url += '/changed'; }, h => { h.proxies[0].password += '-changed'; }]) {
     const h = harness({ reply() { change(h); return '[]'; } });
     await assert.rejects(h.module.run(h.target), { code: 'model_config_changed' });
-    assert.equal(h.calls.length, 2); assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
+    assert.equal(h.calls.length, 1); assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
   }
 });
 test('resolved connection changes invalidate a settled receipt and force a new model request', async () => {
@@ -717,7 +673,7 @@ test('resolved connection changes invalidate a settled receipt and force a new m
   h.profile.model = 'new-model';
   assert.equal(await h.module.validateReceipt(h.target, receipt), false);
   const next = await h.module.run(h.target);
-  assert.equal(h.calls.length, 4); assert.notEqual(next.configHash, receipt.configHash);
+  assert.equal(h.calls.length, 2); assert.notEqual(next.configHash, receipt.configHash);
   assert.doesNotMatch(JSON.stringify(next), /synthetic-password|synthetic\.invalid|proxy\.invalid/);
 });
 test('unreadable native connection stops before transport or MVU parsing', async () => {
@@ -749,10 +705,10 @@ test('prewrite drift abandons prepared intent and does not create a false recove
 test('failed durable save never reports success; retry verifies pending candidate without replay', async () => {
   const h = harness(); h.failSave(true);
   await assert.rejects(h.module.run(h.target), { code: 'host_mvu_durable_mismatch' });
-  assert.equal(h.values.get('variables:chat-a:reply-a').status, 'committing'); assert.equal(h.calls.length, 2);
+  assert.equal(h.values.get('variables:chat-a:reply-a').status, 'committing'); assert.equal(h.calls.length, 1);
   await assert.rejects(h.module.run(h.target), { code: 'host_mvu_durable_mismatch' });
   h.failSave(false); const receipt = await h.module.run(h.target);
-  assert.equal(receipt.status, 'recovered'); assert.equal(h.writes.length, 1); assert.equal(h.calls.length, 2);
+  assert.equal(receipt.status, 'recovered'); assert.equal(h.writes.length, 1); assert.equal(h.calls.length, 1);
 });
 test('no-change is a model conclusion with real save check, not semantic acceptance', async () => {
   const h = harness({ reply: () => '[]' }); const receipt = await h.module.run(h.target);
@@ -766,7 +722,7 @@ test('empty model patch still persists official derived-state updates once witho
   h.change({ stat_data: { coins: 7, derivedTotal: 0 } });
   const receipt = await h.module.run(h.target);
   assert.equal(receipt.status, 'applied'); assert.equal(receipt.operationCount, 0); assert.equal(receipt.officialStateChanged, true);
-  assert.equal(h.parsed.length, 1); assert.equal(h.calls.length, 2); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
+  assert.equal(h.parsed.length, 1); assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
   assert.deepEqual(h.current().stat_data, { coins: 7, derivedTotal: 14 });
   assert.deepEqual(h.saves[0], h.current()); assert.equal(receipt.afterHash, await digest(h.current()));
   assert.equal(receipt.readback, true); assert.equal(receipt.semanticProof, false);
@@ -779,54 +735,39 @@ test('official metadata-only changes are saved without claiming a state repair',
   assert.equal(h.writes.length, 1); assert.equal(h.parsed.length, 1);
   assert.deepEqual(h.current().stat_data, { coins: 7 }); assert.deepEqual(h.saves[0], h.current());
 });
-test('unexecutable patch retries without converting a parser no-op into success', async () => {
+test('unexecutable patch fails once without converting a parser no-op into success', async () => {
   const h = harness({ officialResult: (_block, input) => input, unexecuted: operations => operations });
-  await assert.rejects(h.module.run(h.target), { code: 'patch_no_effect' }); assert.equal(h.calls.length, 4); assert.equal(h.writes.length, 0);
+  await assert.rejects(h.module.run(h.target), { code: 'patch_no_effect' }); assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0);
 });
 
-test('multiple groups finish against one baseline before one official parse and durable save', async () => {
+test('all local groups are covered by one complete diagnosis before one official parse and durable save', async () => {
   let h;
   const source = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`v${i}`, i]));
   h = harness({ reply() {
     assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
-    return JSON.stringify([{ op: 'replace', path: h.diagnosisCalls.length === 1 ? '/v0' : '/v8', value: 20 }]);
+    return JSON.stringify([{ op: 'replace', path: '/v0', value: 20 }, { op: 'replace', path: '/v8', value: 20 }]);
   }, officialResult: (_block, input) => ({ ...input, stat_data: { ...input.stat_data, v0: 20, v8: 20 } }) });
   h.change({ stat_data: source }); const receipt = await h.module.run(h.target);
-  assert.equal(receipt.groupCount, 2); assert.equal(receipt.groups.length, 2); assert.equal(h.calls.length, 4);
+  assert.equal(receipt.groupCount, 2); assert.equal(receipt.groups.length, 2); assert.equal(h.calls.length, 1);
   assert.equal(h.parsed.length, 1); assert.equal(h.writes.length, 1); assert.equal(h.saves.length, 1);
   assert.equal(parsePatch(h.parsed[0].block).operations.length, 2);
   assert.deepEqual(h.current().stat_data, { ...source, v0: 20, v8: 20 });
-  assert.ok(receipt.groups.every(group => !Object.hasOwn(group, 'messages')), 'do not persist the whole context again for each group');
+  assert.equal(receipt.requestCount, 1);
 });
-test('later group failure retains earlier response in memory but never partially applies it', async () => {
-  let h;
-  h = harness({ reply: ({ stage }) => stage === 'diagnosis' && h.diagnosisCalls.length === 1
-    ? '[{"op":"replace","path":"/v0","value":20}]' : '[HTTP Error] synthetic failure' });
-  const source = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`v${i}`, i])); h.change({ stat_data: source });
-  await assert.rejects(h.module.run(h.target), { code: 'model_transport' });
-  assert.equal(h.calls.length, 6, 'one successful group plus three diagnosis attempts for the failing group');
-  assert.equal(h.diagnosisCalls.length, 4); assert.equal(h.observationCalls.length, 2);
-  assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
-  assert.deepEqual(h.current().stat_data, source);
+test('a thirty-one-path local audit still uses one model request', async () => {
+  const source = Object.fromEntries(Array.from({ length: 31 }, (_, i) => [`v${i}`, { value: i }]));
+  const h = harness({ reply: () => '[]' });
+  h.change({ stat_data: source });
+  h.host.previousMvu = async () => ({ index: 0, payload: { stat_data: clone(source) } });
+  h.so.collectMvuUpdateRules = async () => [Array.from({ length: 31 }, (_, i) => `  v${i}:\n    check:\n      - retain actual value`).join('\n')];
+  const receipt = await h.module.run(h.target);
+  assert.equal(h.calls.length, 1);
+  assert.equal(receipt.requestCount, 1);
+  assert.equal(receipt.requestLimit, 1);
+  assert.equal(receipt.groupCount, 31);
+  const sent = h.diagnosisCalls[0][1].map(message => message.content).join('\n');
+  for (let i = 0; i < 31; i++) assert.match(sent, new RegExp(`/v${i}(?:\\b|:)`));
 });
-test('cross-group write is retried within the same group and cannot reach official MVU', async () => {
-  const h = harness({ reply: () => '[{"op":"replace","path":"/unassigned","value":9}]' });
-  await assert.rejects(h.module.run(h.target), { code: 'field_group_scope' });
-  assert.equal(h.calls.length, 4); assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
-});
-test('a model change between groups discards all earlier group results', async () => {
-  let h;
-  h = harness({ observationReply: () => {
-    if (h.observationCalls.length === 2) h.profile.model = 'changed';
-    return '本轮没有新的确定事实变化。';
-  }, reply: () => '[{"op":"replace","path":"/v0","value":20}]' });
-  h.change({ stat_data: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`v${i}`, i])) });
-  await assert.rejects(h.module.run(h.target), { code: 'model_config_changed' });
-  assert.equal(h.calls.length, 3); assert.equal(h.observationCalls.length, 2); assert.equal(h.diagnosisCalls.length, 1);
-  assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
-  assert.deepEqual(h.current().stat_data, Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`v${i}`, i])), 'the completed first group is discarded before any write');
-});
-
 test('host binds scope, active swipe and preceding user, rejects later input', async () => {
   const ctx = { chatId: 'test', characterId: 0, characters: [{ avatar: 'fake.png' }], chat: [{ is_user: false, mes: '开场' }, { is_user: true, mes: '行动' }, { is_user: false, mes: '结果', swipe_id: 1, swipes: ['旧', '结果'] }], extensionSettings: {} };
   const host = createHost(() => ctx); const target = await host.capture();
@@ -883,8 +824,7 @@ test('manual retry fresh-reads a settled module receipt and does not replay its 
   const runtimeHost = { ...h.host, capture: async () => clone(h.target) };
   const runtime = createRuntime({ host: runtimeHost, store: h.store, variables: h.module });
   await runtime.retry(); await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(h.observationCalls.length, 2, 'manual retry observes a fresh current snapshot');
-  assert.equal(h.diagnosisCalls.length, 2, 'manual retry issues a fresh diagnosis call');
+  assert.equal(h.diagnosisCalls.length, 2, 'manual retry issues exactly one fresh diagnosis call');
   assert.equal(h.parsed.length, 2);
   assert.equal(runtime.record().before.stat_data.coins, 12, 'manual retry uses the current post-repair baseline');
   assert.equal(h.writes.length, 1, 'the second empty diagnosis does not replay the earlier MVU write');
@@ -892,7 +832,7 @@ test('manual retry fresh-reads a settled module receipt and does not replay its 
   assert.equal(runtime.snapshot().status, 'model_nochange');
 });
 
-test('manual stale MVU retries preserve manual reason and settle from a fresh target', async () => {
+test('stale MVU does not trigger a hidden second model request', async () => {
   for (const staleCode of ['stale_mvu', 'stale_previous_mvu']) {
     let attempts = 0; let captures = 0; const reasons = []; const targetCaptures = []; const scope = { chatId: `stale-${staleCode}` };
     const target = { scopeKey: await digest(scope), identity: staleCode, index: 1, userIndex: 1, content: '正文' };
@@ -907,10 +847,10 @@ test('manual stale MVU retries preserve manual reason and settle from a fresh ta
     const store = { read: async () => null, write: async () => {} };
     const runtime = createRuntime({ host, store, variables });
     await runtime.retry(); await new Promise(resolve => setTimeout(resolve, 15));
-    assert.deepEqual(reasons, ['manual', 'manual'], staleCode);
-    assert.deepEqual(targetCaptures, [1, 2], staleCode);
-    assert.equal(captures, 2, staleCode);
-    assert.equal(runtime.snapshot().status, 'model_nochange', staleCode);
+    assert.deepEqual(reasons, ['manual'], staleCode);
+    assert.deepEqual(targetCaptures, [1], staleCode);
+    assert.equal(captures, 1, staleCode);
+    assert.notEqual(runtime.snapshot().status, 'model_nochange', staleCode);
   }
 });
 
