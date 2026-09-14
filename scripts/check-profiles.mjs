@@ -31,7 +31,7 @@ export function profileFingerprint() {
 function loaderObject() {
   return { type: 'script', enabled: true, name: `MVU Doctor 人物档案 ${PROFILE_VERSION}`,
     id: '07fa62d8-6e38-40c5-9ed4-50510aef21b0', content: read('profiles/loader.js').toString('utf8'),
-    info: '独立人物档案测试候选。需要同一安装目录中的已锁定 P1 0.10.26；普通正文后自主建档、填表及召回。尚未完成真实门禁。',
+    info: `独立人物档案测试候选。需要同一安装目录中的已锁定 P1 ${json('profiles/manifest.json').requires.version}；普通正文后自主建档、填表及召回。每次最多两次模型请求，失败不自动重试。尚未完成真实门禁。`,
     button: { enabled: true, buttons: [] }, data: {} };
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

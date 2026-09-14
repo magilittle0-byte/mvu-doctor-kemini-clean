@@ -1,13 +1,13 @@
 {
   "name": "MVU Doctor 人物档案",
   "stage": 2,
-  "version": "0.1.0-candidate.3",
+  "version": "0.1.0-candidate.4",
   "entry": "profiles/entry.js",
   "loader": "profiles/install.json",
   "requires": {
     "stage": 1,
-    "version": "0.10.26",
-    "fingerprint": "c7a8af5a7f33363f06796e1b0f587ec087387dfe3cf4ac2281266145c589d595"
+    "version": "0.10.30",
+    "fingerprint": "39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e"
   },
   "locked": false,
   "realAcceptance": false

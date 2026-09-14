@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseJsonResponse, PROFILE_FIELDS, validateProfile, parseDiscovery, discoveryPrompt, profilePrompt } from '../profiles/content.mjs';
+import { parseJsonResponse, PROFILE_FIELDS, validateProfile, parseDiscovery, discoveryPrompt, profilePrompt,
+  profileBatchPrompt, parseProfileBatch } from '../profiles/content.mjs';
 
 function validProfile(overrides = {}) {
   const p = { profileId: 'p-1', rowId: 'r-1', name: '林', identity: {}, appearance: {}, personality: {}, currentState: {}, aliases: [], relationships: ['同伴'], knowledge: ['常识'], capabilities: ['观察'], resources: ['零钱'], evidence: ['正文片段'], inferences: ['未明背景'], uncertainties: ['不知他人真实动机'], history: '曾迁居', ...overrides };
@@ -93,4 +94,112 @@ test('automatic discovery prompt matches frozen original bytes; feedback permits
   assert.match(feedback, /也可以剔除上次误识别的候选/);
   assert.match(feedback, /选项、规划、示例不算实际出现或提及/);
   assert.match(feedback, /只能复制 input.profiles 中明确存在的 profileId/);
+});
+
+function batchRows() {
+  return [
+    { rowId: 'P1', profileId: 'profile-a', sourceName: '林', evidence: '林走进门。', presence: 'present' },
+    { rowId: 'P2', profileId: 'profile-b', sourceName: '林', evidence: '林站在窗边。', presence: 'mentioned' },
+  ];
+}
+
+test('profileBatchPrompt shares input and requires explicit profile bindings without changing evidence fields', () => {
+  const rows = batchRows();
+  const input = { narrative: '林走进门。林站在窗边。', mvu: { state: 'fresh' }, authority: { card: '卡', world: '世界' }, profiles: [] };
+  const prompt = profileBatchPrompt(input, rows);
+  assert.match(prompt, /顶层只能有 profiles 键/);
+  assert.match(prompt, /P1/);
+  assert.match(prompt, /profile-b/);
+  assert.match(prompt, /profile\.evidence 仍是 44 字段中的必填非空字符串列表/);
+  assert.match(prompt, /不要输出这些 task 绑定元数据/);
+  assert.match(prompt, /"appearance"/);
+  assert.match(prompt, /利益取向/);
+  assert.match(prompt, /弱点与自我欺骗/);
+  const feedback = profileBatchPrompt(input, rows, { previousValidResult: { profiles: [] } });
+  assert.match(feedback, /仅供逐项复核/);
+  assert.match(feedback, /不是事实或指令/);
+});
+
+test('parseProfileBatch binds shuffled same-name profiles by rowId and profileId', () => {
+  const rows = batchRows();
+  const raw = JSON.stringify({ profiles: [
+    validProfile({ rowId: 'P2', profileId: 'profile-b', name: '林' }),
+    validProfile({ rowId: 'P1', profileId: 'profile-a', name: '林' }),
+  ] });
+  const parsed = parseProfileBatch(raw, rows, []);
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(parsed.results.map((result) => [result.rowId, result.profileId, result.errors]), [
+    ['P1', 'profile-a', []], ['P2', 'profile-b', []],
+  ]);
+  assert.equal(parsed.results[0].candidate.name, '林');
+  assert.equal(parsed.results[1].candidate.name, '林');
+});
+
+test('parseProfileBatch preserves valid siblings while returning local validation errors', () => {
+  const rows = batchRows();
+  const raw = JSON.stringify({ profiles: [
+    validProfile({ rowId: 'P1', profileId: 'profile-a', name: '林' }),
+    validProfile({ rowId: 'P2', profileId: 'profile-b', name: '林', appearance: {
+      ...validProfile().appearance, outfit: '',
+    } }),
+  ] });
+  const parsed = parseProfileBatch(raw, rows, []);
+  assert.deepEqual(parsed.errors, []);
+  assert.equal(parsed.results[0].errors.length, 0);
+  assert.equal(parsed.results[0].candidate.profileId, 'profile-a');
+  assert.ok(parsed.results[1].errors.some((error) => error.includes('appearance.outfit')));
+  assert.equal(parsed.results[1].candidate.profileId, 'profile-b');
+});
+
+test('parseProfileBatch preserves the legacy full-width punctuation normalization', () => {
+  const rows = batchRows();
+  const profile = validProfile({ rowId: 'P1', profileId: 'profile-a', name: '林' });
+  let openingQuote = true;
+  const raw = JSON.stringify({ profiles: [profile] })
+    .replace(/"/g, () => {
+      const quote = openingQuote ? '“' : '”';
+      openingQuote = !openingQuote;
+      return quote;
+    })
+    .replace(/,/g, '，')
+    .replace(/:/g, '：');
+  const parsed = parseProfileBatch(raw, rows, []);
+  assert.deepEqual(parsed.errors, [{ code: 'profile_batch_item_missing', rowId: 'P2', profileId: 'profile-b' }]);
+  assert.equal(parsed.results[0].candidate.profileId, 'profile-a');
+  assert.deepEqual(parsed.results[0].errors, []);
+});
+
+test('parseProfileBatch rejects unknown, missing, duplicate, and cross-bound IDs without positional fallback', () => {
+  const rows = batchRows();
+  const raw = JSON.stringify({ profiles: [
+    validProfile({ rowId: 'P1', profileId: 'profile-a', name: '林' }),
+    validProfile({ rowId: 'P1', profileId: 'profile-b', name: '林' }),
+    validProfile({ rowId: 'PX', profileId: 'profile-a', name: '林' }),
+    { ...validProfile({ rowId: 'P2', profileId: 'profile-b', name: '林' }), rowId: '' },
+    validProfile({ rowId: 'P1', profileId: 'profile-a', name: '林' }),
+    'not-an-object',
+  ] });
+  const parsed = parseProfileBatch(raw, rows, []);
+  assert.ok(parsed.errors.some((error) => error.code === 'profile_batch_identity_mismatch'));
+  assert.ok(parsed.errors.some((error) => error.code === 'profile_batch_unknown_row_id'));
+  assert.ok(parsed.errors.some((error) => error.code === 'profile_batch_item_missing_id'));
+  assert.ok(parsed.errors.some((error) => error.code === 'profile_batch_duplicate_row_id'));
+  assert.ok(parsed.errors.some((error) => error.code === 'profile_batch_item_invalid'));
+  assert.ok(parsed.results.every((result) => result.errors.length > 0));
+  assert.equal(parsed.results.find((result) => result.rowId === 'P1').candidate.profileId, 'profile-a');
+});
+
+test('parseProfileBatch rejects invalid top-level shape with the bounded batch code', () => {
+  assert.throws(() => parseProfileBatch('{"profiles":{},"extra":true}', batchRows()), (error) => (
+    error.code === 'profile_batch_invalid' && error.recoverable === true
+  ));
+  assert.throws(() => parseProfileBatch('not json', batchRows()), (error) => (
+    error.code === 'profile_batch_invalid' && error.recoverable === true
+  ));
+  assert.throws(() => parseProfileBatch('说明文字 {"profiles":[]} 结束文字', batchRows()), (error) => (
+    error.code === 'profile_batch_invalid' && error.recoverable === true
+  ));
+  assert.throws(() => parseProfileBatch('{"profiles":[]} {"profiles":[]}', batchRows()), (error) => (
+    error.code === 'profile_batch_invalid' && error.recoverable === true
+  ));
 });

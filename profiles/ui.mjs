@@ -63,6 +63,11 @@ export function createProfileUi({ host, version, onRetry, onCancel, onSettings }
     detail.textContent = state.detail || (state.status === 'idle' ? '等待本轮已接受正文' : '');
     body.appendChild(detail);
 
+    const calls = document.createElement('p');
+    calls.className = 'mvu-profiles-muted';
+    calls.textContent = `本次档案处理已发起 ${Number(state.requestCount) || 0} 次请求；每次最多 ${Number(state.requestLimit) || 2} 次，失败不自动重试。`;
+    body.appendChild(calls);
+
     const actions = document.createElement('div');
     actions.className = 'mvu-profiles-actions';
     const retry = document.createElement('button');

@@ -1,2 +1,4 @@
+.gitattributes text eol=lf
 check-world.mjs text eol=lf
 check-world-native.mjs text eol=lf
+check-profiles.mjs text eol=lf

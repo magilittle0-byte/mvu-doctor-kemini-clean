@@ -66,34 +66,77 @@ function discoveryRaw() {
   ], noCharacterReason: '' });
 }
 
-function candidateFromPrompt(prompt, name, suffix = '') {
-  const source = String(prompt);
-  const start = source.indexOf('\nrow:\n') + '\nrow:\n'.length;
-  const end = source.indexOf('\n\nprevious:', start);
-  const row = source.slice(start, end < 0 ? source.length : end);
-  const value = key => row.match(new RegExp(`\\"${key}\\"\\s*:\\s*\\"([^\\"]+)\\"`))?.[1];
-  return JSON.stringify(profile(value('profileId'), value('rowId'), name, suffix));
+function jsonArrayAfter(source, marker) {
+  const start = source.indexOf(marker);
+  assert.ok(start >= 0, `missing prompt marker: ${marker}`);
+  const open = source.indexOf('[', start + marker.length);
+  let depth = 0, quoted = false, escaped = false;
+  for (let index = open; index < source.length; index++) {
+    const char = source[index];
+    if (quoted) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === '"') quoted = false; continue; }
+    if (char === '"') { quoted = true; continue; }
+    if (char === '[') depth++;
+    if (char === ']' && --depth === 0) return JSON.parse(source.slice(open, index + 1));
+  }
+  throw new Error('unterminated prompt rows');
 }
 
-test('一次发现中第一人补填失败仍保留旧完整档案，第二人成功独立保存', async () => {
+function batchFromPrompt(prompt, { invalid = [], suffix = '', extra = false } = {}) {
+  const rows = jsonArrayAfter(String(prompt), 'rows（每项只对应自己的绑定资料）：\n')
+    .map(row => ({ rowId: row.rowId, profileId: row.profileId }));
+  const profiles = rows.reverse().map(row => invalid.includes(row.profileId)
+    ? { ...row }
+    : profile(row.profileId, row.rowId, row.profileId === 'old-person' ? '甲' : '乙', suffix));
+  if (extra) profiles.push(profile('unknown-profile', 'P99', '额外人物', suffix));
+  return JSON.stringify({ profiles });
+}
+
+test('一次发现中第一人批量补全失败仍保留旧完整档案，第二人成功独立保存', async () => {
   const calls = [];
-  let firstProfileCall = true;
   const { host, store, receipt, old } = fixture({ model: async (_r, prompt) => {
     if (prompt.includes('人物发现器')) { calls.push('discovery'); return discoveryRaw(); }
-    if (prompt.includes('定向格式/缺项修复')) { calls.push('repair'); return '{}'; }
-    calls.push('profile');
-    if (firstProfileCall) { firstProfileCall = false; return '{}'; }
-    return candidateFromPrompt(prompt, '乙', '-新档案');
+    calls.push('profile-batch');
+    return batchFromPrompt(prompt, { invalid: ['old-person'], suffix: '-新档案' });
   }});
   const runtime = createProfileRuntime({ host, store });
   await runtime.run(receipt);
   const result = store.current();
-  assert.deepEqual(calls, ['discovery', 'profile', 'repair', 'profile']);
+  assert.deepEqual(calls, ['discovery', 'profile-batch']);
   assert.equal(result.status, 'partial');
   assert.equal(result.profiles.find(p => p.profileId === 'old-person').name, old.name);
   assert.equal(result.profiles.find(p => p.name === '乙').name, '乙');
   assert.equal(result.tasks.find(t => t.profileId === 'old-person').status, 'failed');
   assert.equal(result.tasks.find(t => t.sourceName === '乙').status, 'complete');
+  assert.equal(runtime.snapshot().requestCount, 2);
+  assert.equal(result.review.requests.length, 2);
+});
+
+test('无人发现时只发送一次 discovery 请求并保存完成态', async () => {
+  const calls = [];
+  const { host, store, receipt } = fixture({ model: async (_r, prompt) => {
+    calls.push('discovery');
+    assert.match(prompt, /人物发现器/);
+    return JSON.stringify({ people: [], noCharacterReason: '本轮没有需要建档的人物' });
+  }});
+  const runtime = createProfileRuntime({ host, store });
+  await runtime.run(receipt);
+  assert.deepEqual(calls, ['discovery']);
+  assert.equal(store.current().status, 'complete');
+  assert.equal(store.current().review.requests.length, 1);
+  assert.equal(runtime.snapshot().requestCount, 1);
+});
+
+test('unknown batch item leaves valid sibling saved but keeps the round partial', async () => {
+  const { host, store, receipt } = fixture({ model: async (_r, prompt) =>
+    prompt.includes('人物发现器') ? discoveryRaw() : batchFromPrompt(prompt, { extra: true }) });
+  await createProfileRuntime({ host, store }).run(receipt);
+  const result = store.current();
+  assert.equal(result.status, 'partial');
+  assert.ok(result.profiles.some(value => value.name === '乙'));
+  assert.equal(result.profiles.some(value => value.profileId === 'unknown-profile'), false);
+  assert.ok(result.review.batchErrors.some(error => error.code === 'profile_batch_unknown_row_id'
+    || error.code === 'profile_batch_unknown_profile_id'));
+  assert.equal(result.tasks.filter(task => task.status === 'complete').length, 2);
 });
 
 test('手动修复产生新发现/新档案调用，旧档案在新候选成功前保留', async () => {
@@ -101,17 +144,16 @@ test('手动修复产生新发现/新档案调用，旧档案在新候选成功�
   let round = 0;
   const { host, store, receipt } = fixture({ model: async (_r, prompt) => {
     if (prompt.includes('人物发现器')) { calls.push(`discovery-${round}`); return discoveryRaw(); }
-    calls.push(`profile-${round}`);
-    if (round === 0) return '{}';
-    return candidateFromPrompt(prompt, '甲', '-修订档案');
+    calls.push(`profile-batch-${round}`);
+    return round === 0 ? batchFromPrompt(prompt, { invalid: ['old-person'] })
+      : batchFromPrompt(prompt, { suffix: '-修订档案' });
   }});
   const runtime = createProfileRuntime({ host, store });
   await runtime.run(receipt);
   assert.equal(store.current().profiles.find(p => p.profileId === 'old-person').name, '旧人物');
   round = 1;
   await runtime.run(receipt, true);
-  assert.deepEqual(calls, ['discovery-0', 'profile-0', 'profile-0', 'profile-0', 'profile-0',
-    'discovery-1', 'profile-1', 'profile-1']);
+  assert.deepEqual(calls, ['discovery-0', 'profile-batch-0', 'discovery-1', 'profile-batch-1']);
   assert.equal(store.current().profiles.find(p => p.profileId === 'old-person').name, '甲');
 });
 
@@ -138,7 +180,7 @@ test('取消或 stale_mvu 不保存新完整档案', async t => {
   await t.test('stale_mvu', async () => {
     let checks = 0;
     const { host, store, receipt, old } = fixture({
-      model: async (_r, prompt) => prompt.includes('人物发现器') ? discoveryRaw() : JSON.stringify(profile('new-person', 'P2', '乙')),
+      model: async (_r, prompt) => prompt.includes('人物发现器') ? discoveryRaw() : batchFromPrompt(prompt),
       assertReceipt: async () => { checks += 1; if (checks > 1) throw Object.assign(new Error('stale'), { code: 'stale_mvu' }); },
     });
     const runtime = createProfileRuntime({ host, store });
@@ -168,7 +210,7 @@ test('manual retry corrects an omitted person, preserves the complete old profil
       discoveryPrompts.push(prompt);
       return manual ? onlyNewDiscovery() : onlyOldDiscovery();
     }
-    return manual ? candidateFromPrompt(prompt, '乙', '-manual') : '{}';
+    return manual ? batchFromPrompt(prompt, { suffix: '-manual' }) : batchFromPrompt(prompt, { invalid: ['old-person'] });
   }});
   const runtime = createProfileRuntime({ host, store });
   await runtime.run(receipt);
@@ -188,6 +230,44 @@ test('manual retry corrects an omitted person, preserves the complete old profil
   assert.equal(result.tasks.find(task => task.sourceName === '乙')?.status, 'complete');
   assert.deepEqual(await runtime.read(), result);
   assert.equal(runtime.snapshot().readback, true);
+});
+
+test('malformed discovery and batch transport failure do not trigger automatic retries', async t => {
+  await t.test('malformed discovery', async () => {
+    const calls = [];
+    const { host, store, receipt, old } = fixture({ model: async (_r, prompt) => {
+      calls.push(prompt.includes('人物发现器') ? 'discovery' : 'profile-batch'); return '{}';
+    }});
+    await createProfileRuntime({ host, store }).run(receipt);
+    assert.deepEqual(calls, ['discovery']);
+    assert.deepEqual(store.current().profiles.map(value => value.name), [old.name]);
+  });
+  await t.test('batch transport failure', async () => {
+    const calls = [];
+    const { host, store, receipt, old } = fixture({ model: async (_r, prompt) => {
+      if (prompt.includes('人物发现器')) { calls.push('discovery'); return discoveryRaw(); }
+      calls.push('profile-batch'); throw new Error('transport');
+    }});
+    await createProfileRuntime({ host, store }).run(receipt);
+    assert.deepEqual(calls, ['discovery', 'profile-batch']);
+    assert.deepEqual(store.current().profiles.map(value => value.name), [old.name]);
+  });
+});
+
+test('batch result rejected after stale receipt is not committed', async () => {
+  let stale = false;
+  const calls = [];
+  const { host, store, receipt, old } = fixture({
+    model: async (_r, prompt) => {
+      if (prompt.includes('人物发现器')) { calls.push('discovery'); return discoveryRaw(); }
+      calls.push('profile-batch'); stale = true; return batchFromPrompt(prompt);
+    },
+    assertReceipt: async () => { if (stale) throw Object.assign(new Error('stale'), { code: 'stale_mvu' }); },
+  });
+  await createProfileRuntime({ host, store }).run(receipt);
+  assert.deepEqual(calls, ['discovery', 'profile-batch']);
+  assert.deepEqual(store.current().profiles.map(value => value.name), [old.name]);
+  assert.equal(store.current().tasks.some(task => task.status === 'complete'), false);
 });
 
 for (const [label, mutate] of [

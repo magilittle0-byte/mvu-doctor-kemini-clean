@@ -1,7 +1,8 @@
 import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
-import { discoveryPrompt, parseDiscovery, profilePrompt, parseJsonResponse, validateProfile } from './content.mjs';
+import { discoveryPrompt, parseDiscovery, profileBatchPrompt, parseProfileBatch, validateProfile } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.3';
+export const PROFILE_VERSION = '0.1.0-candidate.4';
+export const PROFILE_CALL_LIMIT = 2;
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready', 'variable_evidence_changed']);
@@ -20,14 +21,14 @@ function previousDiscoveryForRetry(exact, input, receipt) {
 
 export function createProfileRuntime({ host, store, notify = () => {} }) {
   let epoch = 0, controller = null, current = null, runPromise = null, refreshToken = 0;
-  let state = { status: 'idle', detail: '等待本轮变量检查完成', busy: false, profiles: [], tasks: [], readback: false };
+  let state = { status: 'idle', detail: '等待本轮变量检查完成', busy: false, profiles: [], tasks: [], readback: false, requestCount: 0 };
   let recall = null, acceptedRecall = null, recallGeneration = null;
   const listeners = [];
   function settings() {
     const value = host.context().extensionSettings?.[SETTINGS_KEY] || {};
     return { enabled: value.enabled !== false, recallEnabled: value.recallEnabled !== false };
   }
-  const snapshot = () => ({ ...clone(state), ...settings() });
+  const snapshot = () => ({ ...clone(state), ...settings(), requestLimit: PROFILE_CALL_LIMIT });
   const publish = values => { state = { ...state, ...values }; notify(snapshot()); };
   function clearRecall() {
     host.context().setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false);
@@ -45,6 +46,7 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
     current = saved;
     publish({ profiles: clone(saved?.profiles || []), tasks: clone(saved?.tasks || []),
       readback: !!saved, restored: !!saved, durationMs: saved?.durationMs || 0,
+      requestCount: saved?.review?.requests?.length || 0,
       status: saved ? (saved.status === 'complete' ? 'restored' : saved.status === 'partial' ? 'partial' : 'waiting') : 'idle',
       detail: saved ? (saved.status === 'complete' ? '已读回当前聊天分支的完整人物档案' : '本轮档案尚未全部完成，可点击修复继续') : '本聊天尚无人物档案' });
   }
@@ -106,7 +108,7 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       if (token !== epoch || !draft) return;
       current = clone(draft);
       publish({ status: draft.status, profiles: clone(draft.profiles), tasks: clone(draft.tasks),
-        readback: true, restored: false, durationMs: Date.now() - startedAt });
+        readback: true, restored: false, durationMs: Date.now() - startedAt, requestCount: draft.review.requests.length });
     };
     const persist = async () => {
       draft.durationMs = Date.now() - startedAt;
@@ -114,13 +116,16 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       revision = draft.revision; show();
     };
     const call = async (kind, prompt, row = null) => {
+      await assert();
+      if (draft.review.requests.length >= PROFILE_CALL_LIMIT) throw fault('profile_call_limit', '本次档案处理已达到调用上限，请按需点击修复');
       const request = { kind, row: clone(row), promptHash: await digest(prompt), prompt, raw: '', startedAt: Date.now() };
       draft.review.requests.push(request);
+      publish({ requestCount: draft.review.requests.length });
       try { request.raw = await host.callModel(receipt, prompt, ctl.signal); return request.raw; }
       finally { request.durationMs = Date.now() - request.startedAt; }
     };
     try {
-      publish({ status: 'waiting', detail: '正在读取本轮已确认变量和已有档案', busy: true, restored: false });
+      publish({ status: 'waiting', detail: '正在读取本轮已确认变量和已有档案', busy: true, restored: false, requestCount: 0 });
       await assert();
       settleRecall(receipt);
       const branches = await host.branches();
@@ -131,50 +136,46 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       if (!manual && exact?.status === 'complete' && exact.version === PROFILE_VERSION
         && exact.variableIdentity === receipt.identity && exact.mvuHash === receipt.afterHash) {
         await assert(); current = exact;
-        publish({ status: 'restored', detail: '本轮完整档案已保存，已读回现有结果', profiles: clone(exact.profiles), tasks: clone(exact.tasks), readback: true });
+        publish({ status: 'restored', detail: '本轮完整档案已保存，已读回现有结果', profiles: clone(exact.profiles), tasks: clone(exact.tasks), readback: true,
+          requestCount: exact.review?.requests?.length || 0 });
         return;
       }
       const profiles = clone(previous?.profiles || []);
       const input = await host.inputFor(receipt, profiles, host.settings().globalPrompt, ctl.signal);
       draft = { version: PROFILE_VERSION, variableIdentity: receipt.identity, mvuHash: receipt.afterHash,
         profiles, tasks: [], status: 'discovering', reason: manual ? 'manual' : 'auto',
-        review: { input, requests: [], previousRecall: acceptedRecall?.targetIdentity === receipt.identity
+        review: { input, requests: [], requestLimit: PROFILE_CALL_LIMIT, automaticRetries: 0, previousRecall: acceptedRecall?.targetIdentity === receipt.identity
           && acceptedRecall.scopeKey === receipt.target.scopeKey ? clone(acceptedRecall) : null }, durationMs: 0 };
       await persist();
       publish({ detail: '正在从正文识别人，并核对已有身份' });
       const prompt = discoveryPrompt(input, manual ? previousDiscoveryForRetry(exact, input, receipt) : null);
-      let discoveryRaw = await call('discovery', prompt), discovered;
-      try { discovered = parseDiscovery(discoveryRaw, input); }
-      catch (error) {
-        discoveryRaw = await call('discovery-repair', `${prompt}\n\n仅修复这份发现结果的格式或绑定错误，保留正确人物，不为消除错误删掉真实人物。\n错误：${String(error.message)}\n原结果：${discoveryRaw}`);
-        discovered = parseDiscovery(discoveryRaw, input);
-      }
+      const discovered = parseDiscovery(await call('discovery', prompt), input);
       draft.noCharacterReason = discovered.noCharacterReason;
       draft.tasks = discovered.people.map((person, index) => ({ ...person, rowId: `P${index + 1}`,
         profileId: person.existingProfileId || crypto.randomUUID(), status: 'pending', code: null }));
       draft.status = 'generating'; await persist();
+      let batch = { results: [], errors: [] };
+      if (draft.tasks.length) {
+        const rows = draft.tasks.map(({ rowId, profileId, sourceName, evidence, presence }) => ({ rowId, profileId, sourceName, evidence, presence }));
+        draft.tasks.forEach(task => { task.status = 'generating'; });
+        publish({ status: 'generating', detail: `正在一次填写${rows.length}位人物的完整档案`, tasks: clone(draft.tasks) });
+        const sameEvidence = manual && exact && !exact.tombstone && exact.variableIdentity === receipt.identity && exact.mvuHash === receipt.afterHash;
+        const previousBatch = sameEvidence && exact.review?.requests?.findLast(request => request.kind === 'profile-batch');
+        const feedback = previousBatch ? { raw: previousBatch.raw, tasks: exact.tasks.map(({ rowId, profileId, errors }) => ({ rowId, profileId, errors })),
+          errors: exact.review.batchErrors || [] } : null;
+        batch = parseProfileBatch(await call('profile-batch', profileBatchPrompt(input, rows, feedback), rows), rows, input.players);
+        draft.review.batchErrors = clone(batch.errors);
+      }
       for (let taskIndex = 0; taskIndex < draft.tasks.length; taskIndex++) {
         const task = draft.tasks[taskIndex];
-        await assert(); task.status = 'generating';
-        publish({ status: 'generating', detail: `正在填写第${taskIndex + 1}/${draft.tasks.length}位人物的完整档案` });
-        const row = { rowId: task.rowId, profileId: task.profileId, sourceName: task.sourceName, evidence: task.evidence, presence: task.presence };
-        const previousProfile = draft.profiles.find(profile => profile.profileId === task.profileId) || null;
+        await assert();
+        publish({ status: 'generating', detail: `正在核对并保存第${taskIndex + 1}/${draft.tasks.length}位人物的完整档案` });
         try {
-          let raw = await call('profile', profilePrompt(input, row, previousProfile), row), candidate, errors;
-          const parse = value => {
-            const parsed = parseJsonResponse(value);
-            const validation = validateProfile(parsed, input.players);
-            if (parsed?.rowId !== row.rowId || parsed?.profileId !== row.profileId) validation.push('人物行或身份与本次指定对象不一致');
-            return { candidate: parsed, errors: validation };
-          };
-          try { ({ candidate, errors } = parse(raw)); } catch (error) { errors = [String(error.message)]; }
-          if (errors.length) {
-            raw = await call('profile-repair', profilePrompt(input, row, previousProfile, { raw, errors }), row);
-            ({ candidate, errors } = parse(raw));
-          }
+          const result = batch.results.find(value => value.rowId === task.rowId && value.profileId === task.profileId);
+          const candidate = result?.candidate, errors = result?.errors || ['批量结果缺少该人物'];
           if (errors.length) {
             task.errors = errors; task.candidate = clone(candidate);
-            throw fault('profile_incomplete', '该人物补填后仍不完整，可再次修复');
+            throw fault('profile_incomplete', '该人物档案未通过完整性或身份校验，可再次修复');
           }
           await assert();
           const profile = { ...clone(candidate), presence: task.presence, lastSeenIndex: receipt.target.index,
@@ -189,7 +190,7 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
           draft.status = 'generating'; await persist();
         }
       }
-      draft.status = draft.tasks.some(task => task.status !== 'complete') ? 'partial' : 'complete';
+      draft.status = batch.errors.length || draft.tasks.some(task => task.status !== 'complete') ? 'partial' : 'complete';
       await persist();
       publish({ detail: draft.status === 'partial' ? '部分人物未完成；已完成档案已保存，可点击修复本轮档案'
         : draft.tasks.length ? '本轮人物档案已完整填表并读回' : '模型判定本轮没有需要建档的人物，理由已保存' });
@@ -197,6 +198,10 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       if (token !== epoch) return;
       if (draft && branch && !INVALIDATED.has(error.code) && !/^profile_store|profile_revision/.test(error.code || '')) {
         draft.status = 'failed'; draft.failureCode = 'profile_generation_failed';
+        draft.review.failure = { code: error.code || 'profile_generation_failed', message: String(error.message || error) };
+        for (const task of draft.tasks) if (['pending', 'generating'].includes(task.status)) {
+          task.status = 'failed'; task.code = 'profile_batch_failed';
+        }
         await persist().catch(() => {});
       }
       publish({ status: ctl.signal.aborted ? 'cancelled' : 'failed', detail: INVALIDATED.has(error.code)

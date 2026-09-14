@@ -1,36 +1,8 @@
 {
-  "locked": true,
+  "locked": false,
   "stage": 2,
-  "version": "0.1.0-candidate.2",
-  "fingerprint": "fc2e81eb7e8402e3eb2bf6a4f0b24be0a654e147cbb2da4581548d1d5ef027be",
-  "files": {
-    "profiles/content.mjs": "f3b9b890090f9f665bdea36d1b05ed8527f4dc4d4b7c0ab17af850a7b77f1f8b",
-    "profiles/entry.js": "749d5e16a9c9c35c50a7218ecddf7c3f46eb24fab20f813ce87f6d9423421b8b",
-    "profiles/host.mjs": "0cc58f8a069e722e907e30a7fc83dc24c8c3f50977974a05c76e32ad91045308",
-    "profiles/install.json": "2b424b48690b753c1aafe466e4b6d10d3101afedfd1afab33c507ff9121a040e",
-    "profiles/loader.js": "738555c918d00958628ef747a87527ed5ff657b25ca8a11928df7f29894ed1d4",
-    "profiles/manifest.json": "b8f182eb8af1e0297345a5212fb9e3c3a0b30a8e475b5b34168e4212d3eca4ea",
-    "profiles/runtime.mjs": "b7c48f2e7bb4c62ecae949e8dc949aafc8af02bd80ed6508bf01b2ffce8caf1c",
-    "profiles/store.mjs": "1d21fe4f7fabe701508480fc4ca2ae71df5c76512622c812f85de009be64a264",
-    "profiles/style.css": "61618891e01068845a08eb95b1c963161cbb4748f4b186621c2157da4b4ebaf4",
-    "profiles/ui.mjs": "d91b303ee1660890020f0e8b0a8fcee791012a730993b279e732b358e67be61c"
-  },
-  "p1Dependencies": {
-    "locks/phase1.json": "3f80c7769b6abf1c88d1018b6b42577ea41e98e841643f864929b7838075f305",
-    "locks/phase1-evidence.json": "ba7b82465d62fa9c72a5bfa41b21a462ead5d25ed9ad650002b4afc573b346b8",
-    "locks/phase1-supporting-files.json": "76d1fee3bafdaac271323b765bf090d2a47a80da8ab8c6c58bee9639a1436113"
-  },
-  "supportingFiles": {
-    "profiles/.gitattributes": "a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9",
-    "scripts/check-profiles.mjs": "5f68cc35d8b75ab985248e3b00a286fed3ad03892393f89403fc6d7f3e230afd",
-    "tests/profiles-content.test.mjs": "a2cd0229c9fcffa00b35380230583e7a2e7a49ce9a25d931d3a334d7bd4243bf",
-    "tests/profiles-store.test.mjs": "b0507771b8db1b1ecd8c44a917022bc7de10d7174d969c952e97b293f82b672e",
-    "tests/profiles-recall.test.mjs": "6bb7bd13a02f0df2a26edadf38100107330e0571858eb1ec946b5d72bbdf435d",
-    "tests/profiles-runtime.test.mjs": "0377e7396dba73cec4e33027e239354feb19a95805d072584cd73ab9c928717f",
-    "docs/profiles/PHASE2_SOURCE_MAP.md": "f16c8628420d5d8fbe84eba8e1aa6ac8048aa6bacebcfb09d0d7b0cc48eef500",
-    "docs/profiles/README.md": "b0509916f41e51bba0b0a26b9d5c5942dac100e9021fa08aada3cf8a064b7e51"
-  },
-  "realAcceptance": {
-    "summarySha256": "31a9b3fd09ca9dbf431d2fa3cdea06e9421d53f048b43bc271003ec32b0c73d5"
-  }
+  "version": "0.1.0-candidate.4",
+  "realAcceptance": false,
+  "previousLock": "locks/history/phase2-candidate.2.json",
+  "reason": "Batch profile generation and a two-call limit require current-candidate real Tavern verification."
 }
