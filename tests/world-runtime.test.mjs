@@ -19,9 +19,9 @@ function kvFixture() {
 }
 function source() { const listeners = new Map(); return { on: (n, f) => listeners.set(n, f), removeListener: (n, f) => { if (listeners.get(n) === f) listeners.delete(n); }, emit: async (n, ...a) => listeners.get(n)?.(...a) }; }
 const makeBranch = (scopeKey = 'chat-a', index = 10) => ({ scopeKey, lineage: `${scopeKey}-lineage-${index}`, index });
-function makeHarness({ existing = null, p2Busy = false, engineMode = 'success', startBranch = makeBranch() } = {}) {
-  const f = kvFixture(); const store = createWorldStore(f.kv); const events = source(); const branch = startBranch; let currentBranch = branch; let branchHistory = [branch];
-  const receipt = { identity: 'target-a', afterHash: 'mvu-a', readback: true, target: { index: branch.index, scopeKey: branch.scopeKey, scopeSignature: scopeSignature(branch.scopeKey), identity: 'target-a', swipeId: 0, content: 'accepted body' }, content: 'accepted body' }; let currentReceipt = receipt;
+function makeHarness({ existing = null, p2Busy = false, engineMode = 'success', startBranch = makeBranch(), priorBranches = [] } = {}) {
+  const f = kvFixture(); const store = createWorldStore(f.kv); const events = source(); const branch = startBranch; let currentBranch = branch; let branchHistory = [...priorBranches, branch];
+  const receipt = { identity: 'target-a', afterHash: 'mvu-a', readback: true, target: { index: branch.index, userIndex: branch.index - 1, scopeKey: branch.scopeKey, scopeSignature: scopeSignature(branch.scopeKey), identity: 'target-a', swipeId: 0, content: 'accepted body' }, content: 'accepted body' }; let currentReceipt = receipt;
   let profile = { branch, profileRecordHash: 'profile-a', heldProfiles: [], profiles: [{ profileId: 'p1' }], variableIdentity: receipt.identity, mvuHash: receipt.afterHash, index: branch.index, scopeKey: branch.scopeKey, lineage: branch.lineage, revision: 1 };
   let p2 = { status: p2Busy ? 'running' : 'complete', busy: p2Busy, readback: !p2Busy }; let p1 = { status: 'applied', busy: false, readback: true }; let doctorCallback = null;
   const context = { eventSource: events, extensionSettings: {}, prompt: '', chat: [], setExtensionPrompt(_key, value) { context.prompt = value; } };
@@ -112,12 +112,24 @@ test('recall settles only for the bound target, and a different chat reads null'
     await h.runtime.bind(); await h.events.emit('generation_started', 'normal');
     assert.match(h.context.prompt, /公开事件/u);
     await h.events.emit('chat_completion_prompt_ready', h.context.prompt);
-    const next = makeBranch('chat-a', 10); h.addBranch(next);
-    h.receipt.target.index = 10; h.receipt.target.content = '公开事件'; h.receipt.target.identity = 'accepted-target-b';
-    h.setProfiles({ ...h.host.profilesApi().record(), index: 10, branch: next, lineage: next.lineage });
+    const next = makeBranch('chat-a', 11); h.addBranch(next);
+    h.receipt.target.index = 11; h.receipt.target.userIndex = 10;
+    h.receipt.target.content = '公开事件'; h.receipt.target.identity = 'accepted-target-b';
+    h.receipt.identity = 'accepted-target-b';
+    h.setProfiles({ ...h.host.profilesApi().record(), variableIdentity: h.receipt.identity, index: 11, branch: next, lineage: next.lineage });
+    // A global END (including an auxiliary request END) is not authoritative
+    // for recall. The injection remains until the accepted P1 receipt settles it.
     await h.events.emit('generation_ended');
-    if (mismatch) h.receipt.target.identity = 'replacement-target-c';
+    assert.match(h.context.prompt, /公开事件/u);
     await h.runtime.run(h.receipt, true);
+    if (mismatch) {
+      // The accepted B receipt has already settled the recall. A later C
+      // receipt cannot borrow B's proof, even on the same branch and floor.
+      h.receipt.target.identity = 'replacement-target-c'; h.receipt.identity = 'replacement-target-c';
+      h.setProfiles({ ...h.host.profilesApi().record(), variableIdentity: h.receipt.identity,
+        profileRecordHash: 'profile-c', revision: 2 });
+      await h.runtime.run(h.receipt, true);
+    }
     return { h, saved: await h.store.read(next) };
   }
   const valid = await prepare(false);
@@ -129,4 +141,75 @@ test('recall settles only for the bound target, and a different chat reads null'
     wrong.h.setBranch(makeBranch('chat-b', 20)); await wrong.h.runtime.refresh();
     assert.equal(wrong.h.runtime.record(), null);
   } finally { wrong.h.runtime.destroy(); }
+});
+
+for (const type of ['regenerate', 'continue', 'swipe']) test(`accepted receipt settles ${type} recall only on the same target index`, async () => {
+  const b = makeBranch('chat-a', 10);
+  const prior = makeBranch('chat-a', 9);
+  const d = { id: `d-${type}`, kind: 'event', content: '同楼事件', status: 'pending', evidenceTerms: ['同楼事件'] };
+  const h = makeHarness({ startBranch: b, priorBranches: [prior], existing: recordFor(prior, { deliveries: [d], baseDeliveries: [d] }) });
+  try {
+    await h.runtime.bind(); await h.events.emit('generation_started', type);
+    await waitFor(() => h.context.prompt.includes('同楼事件'));
+    await h.events.emit('chat_completion_prompt_ready', h.context.prompt);
+    h.receipt.target.content = '同楼事件'; h.receipt.target.identity = `${type}-target`;
+    await h.runtime.run(h.receipt, true);
+    assert.equal((await h.store.read(b)).deliveries[0].status, 'consumed');
+  } finally { h.runtime.destroy(); }
+});
+
+test('invalid accepted receipt does not settle recall', async () => {
+  const b = makeBranch('chat-a', 10);
+  const d = { id: 'd-invalid', kind: 'event', content: '无效回合事件', status: 'pending', evidenceTerms: ['无效回合事件'] };
+  const h = makeHarness({ startBranch: b, existing: recordFor(b, { deliveries: [d], baseDeliveries: [d] }) });
+  try {
+    await h.runtime.bind(); await h.events.emit('generation_started', 'normal');
+    await h.events.emit('chat_completion_prompt_ready', h.context.prompt);
+    const prompt = h.context.prompt, next = makeBranch('chat-a', 12); h.addBranch(next);
+    h.receipt.target.index = 12; h.receipt.target.userIndex = 11;
+    h.receipt.target.content = '无效回合事件'; h.receipt.target.identity = 'invalid-target';
+    h.host.assertSnapshot = async () => { throw Object.assign(new Error('P1 not ready'), { code: 'variables_not_ready' }); };
+    await h.runtime.run(h.receipt, true);
+    assert.equal((await h.store.read(b)).deliveries[0].status, 'pending');
+    assert.equal(h.context.prompt, prompt);
+    assert.equal(h.counters.model, 0);
+  } finally { h.runtime.destroy(); }
+});
+
+test('auxiliary END and old normal receipts keep recall until validated current profiles settle once', async () => {
+  const b = makeBranch('chat-a', 9);
+  const d = { id: 'd-aux', kind: 'event', content: '门外信使抵达', status: 'pending', evidenceTerms: ['门外信使抵达'] };
+  const h = makeHarness({ startBranch: b, existing: recordFor(b, { deliveries: [d], baseDeliveries: [d] }) });
+  try {
+    await h.runtime.bind(); await h.events.emit('generation_started', 'normal');
+    const prompt = h.context.prompt;
+    await h.events.emit('generation_ended'); await h.events.emit('generation_ended');
+    await h.notifyDoctor();
+    assert.equal(h.context.prompt, prompt); assert.equal(h.counters.factory, 0);
+    const next = makeBranch('chat-a', 11); h.addBranch(next);
+    h.receipt.target.index = 11; h.receipt.target.content = '门外信使抵达';
+    h.receipt.target.identity = 'target-current'; h.receipt.identity = 'target-current';
+    h.setProfiles({ ...h.host.profilesApi().record(), variableIdentity: h.receipt.identity,
+      index: 11, branch: next, lineage: next.lineage, revision: 2 });
+    for (const userIndex of [undefined, 9]) {
+      h.receipt.target.userIndex = userIndex; await h.notifyDoctor();
+      assert.equal(h.context.prompt, prompt); assert.equal(h.counters.factory, 0);
+    }
+    h.receipt.target.userIndex = 10;
+    h.setP2({ status: 'generating', busy: true });
+    await h.events.emit('chat_completion_prompt_ready', { messages: [{ content: prompt }] });
+    await h.events.emit('generation_ended'); await h.notifyDoctor();
+    assert.equal(h.context.prompt, prompt); assert.equal(h.counters.factory, 0);
+    h.setP2({ status: 'complete', busy: false, readback: true }); await h.notifyDoctor();
+    await waitFor(() => h.runtime.snapshot().status === 'complete' && !h.runtime.snapshot().busy);
+    assert.equal(h.context.prompt, ''); assert.equal(h.counters.model, 1);
+    const saved = await h.store.read(next), proof = saved.review.incomingRecall;
+    assert.equal(proof.targetIdentity, h.receipt.target.identity);
+    assert.equal(proof.promptObserved, true); assert.ok(proof.generationId);
+    assert.equal(proof.sourceScopeKey, b.scopeKey); assert.equal(proof.text, undefined);
+    assert.equal(saved.deliveries[0].status, 'consumed');
+    assert.equal(saved.deliveries[0].semanticConsumptionProven, false);
+    await h.events.emit('generation_ended'); await h.notifyDoctor(); await h.notifyDoctor();
+    assert.equal(h.counters.model, 1); assert.deepEqual(await h.store.read(next), saved);
+  } finally { h.runtime.destroy(); }
 });

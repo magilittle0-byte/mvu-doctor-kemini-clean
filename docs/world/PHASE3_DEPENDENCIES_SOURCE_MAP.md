@@ -1,5 +1,20 @@
 # P3 world dependencies source map
 
+## 2026-09-14 当前批量人物模块与低调用变量模块适配
+
+当前 P1 0.10.30 和 P2 0.1.0-candidate.4 已依用户机制验收标准分别锁定；P2 元数据已随测试提交 0ab63ef38b1490be2e24dd9639237aab6fcb492d 安装读回。现有 P3 依赖仍绑定旧 P1 0.10.26/P2 candidate.2，必然在初始化前拒绝。必须只更新 P3 的依赖，不修改已锁模块或以旧 P3 回合充当当前验收。
+
+修改前已完整重读本模块 dependencies、entry、runtime、host、store、engine、content、recall、manifest、loader/install、check-world/check-world-native 和 dependency tests；同时重新检索世界引擎 vendor、旧 Doctor 及项目 reference archive，继续采用既有 native factory 和同一持久化/召回链。P3 一次 native evolve 的 apiAutoRetries 固定 0；同输入上游忙碌恢复仍走 execute 的 exact inputIdentity 存档恢复分支，在创建 engine 和请求之前返回。不删除此恢复行为，不增加重试器或第二调度器。
+
+依赖适配仅更新 dependencies 固定版本、指纹、锁原始字节 SHA 与 P2 supporting 数量 8→12，并同步 manifest、既有测试期望和本说明。P3 标记为 0.1.0-candidate.2，使用既有 check-world --write-loader 生成同一 loader 的版本标识。同一候选开测前另发现的辅助 END 过早清理召回，按 PHASE3_SOURCE_MAP.md 的 2026-09-14 映射最小适配；推进、裁决、保存、UI 和按钮算法保持原样。
+
+- P1 version：0.10.30；fingerprint：39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e。
+- P2 version：0.1.0-candidate.4；fingerprint：8384403869d445d6ac3e70e3f6ccd930e1a6c6540959d29066a0b9662ca5dc57。
+- P2 lock 原始字节 SHA-256：e4fa66d694bf2a560cb0cc0e6e7f7ef646c658477f2a3037bcb63c8a4622d237。
+- P2 runtime 仍为 10 项，supporting 为 12 项；P1 三份锁依赖与 supporting 11 项继续逐字节核验。
+
+受控检查只证明依赖和既有机制回归，不证明世界模型语义正确或真实可用；新 P3 指纹必须另开真实同聊天 12 正常回合验收。模型幻觉保留失败并使用既有修复按钮，不无限改代码或付费重抽。
+
 ## 2026-09-11 当前 P2 锁的必要适配
 
 P2 `0.1.0-candidate.2` 已完成独立真实验收并写入 canonical `locks/phase2.json`。旧 P3 固定读取 `.1` 的锁哈希，因此会正确拒绝当前安装；必须更新这一依赖才能开始新的三模块组合验收。

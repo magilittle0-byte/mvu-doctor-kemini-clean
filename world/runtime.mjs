@@ -3,7 +3,7 @@ import { createNativeWorldEngine } from './engine.mjs';
 import { worldInstruction } from './content.mjs';
 import { buildDeliveries, makeRecall, settleDeliveries } from './recall.mjs';
 
-export const WORLD_VERSION = '0.1.0-candidate.1';
+export const WORLD_VERSION = '0.1.0-candidate.2';
 const PROMPT_KEY = 'mvu_doctor_world_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready',
   'variable_evidence_changed', 'stale_profiles', 'profiles_pending', 'profiles_unavailable']);
@@ -66,6 +66,22 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
       scope: ticket.scope, baselineIndex: ticket.baselineIndex, sourceScopeKey: saved.scopeKey };
     host.context().setExtensionPrompt(PROMPT_KEY, recall.text, 1, 0, false);
   }
+  function generationMatchesReceipt(receipt) {
+    const ticket = generation, target = receipt?.target;
+    if (!ticket || !target || ticket.scope !== canonical(host.scope())
+      || ticket.scope !== target.scopeSignature || !target.identity || !Number.isInteger(target.index)) return false;
+    return ticket.type === 'normal'
+      ? target.index > ticket.baselineIndex && Number.isInteger(target.userIndex) && target.userIndex > ticket.baselineIndex
+      : target.index === ticket.baselineIndex;
+  }
+  function settleRecall(receipt) {
+    const ticket = generation, target = receipt?.target;
+    if (!ticket || ticket.ended || receipt?.readback !== true || !generationMatchesReceipt(receipt)) return;
+    const prepared = recall ? clone(recall) : null;
+    ticket.ended = true;
+    endedRecall = prepared ? { ...prepared, text: undefined, targetIdentity: target.identity } : null;
+    clearRecall();
+  }
   async function boundRecall(receipt) {
     const candidate = endedRecall;
     if (!candidate || !candidate.promptObserved || candidate.scope !== receipt.target.scopeSignature) return null;
@@ -93,6 +109,7 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
       publish({ status: 'loading', stage: '读取本轮完整输入', detail: '正在核对正文、变量、人物档案和世界存档', busy: true, error: null, restored: false });
       profileSnapshot = await host.captureProfiles(receipt, ctl.signal); branch = profileSnapshot.branch;
       await assert();
+      settleRecall(receipt);
       lastAttempt = attemptKey(receipt, host.profilesApi()?.record?.());
       const branches = await host.branches(), exact = await store.read(branch);
       const previous = await store.latest(branches.filter(item => item.index < branch.index));
@@ -161,10 +178,11 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
     return running;
   }
   async function observe() {
-    if (disposed || observing || (generation && !generation.ended)) return;
+    if (disposed || observing) return;
     observing = true;
     try {
       const receipt = host.receipt(), p1 = host.doctor()?.status?.(), p2 = host.profilesApi()?.status?.();
+      if (generation && !generation.ended && !generationMatchesReceipt(receipt)) return;
       if (p1?.busy || p1?.inFlight || p2?.busy) {
         lastAttempt = null; // Revalidate the stored result when upstream repair finishes, even if its input is unchanged.
         if (state.busy) cancel('变量或人物档案正在重新修复，旧世界候选停止');
@@ -212,20 +230,6 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
     });
     on('CHAT_COMPLETION_PROMPT_READY', 'chat_completion_prompt_ready', payload => {
       if (recall?.text && promptContains(payload, recall.text)) recall.promptObserved = true;
-    });
-    on('GENERATION_ENDED', 'generation_ended', async () => {
-      const ticket = generation;
-      if (!ticket || ticket.ended || ticket.scope !== canonical(host.scope())) return;
-      ticket.ended = true;
-      const prepared = recall ? { ...clone(recall), text: undefined } : null; clearRecall();
-      // Only bind identity here; the authoritative accepted fact is still P1's later receipt.
-      try {
-        await host.delay(500);
-        if (generation !== ticket || disposed) return;
-        const target = await host.capture();
-        if (generation === ticket && target && target.scopeSignature === ticket.scope)
-          endedRecall = prepared ? { ...prepared, targetIdentity: target.identity } : null;
-      } catch { if (generation === ticket) endedRecall = null; }
     });
     on('MESSAGE_DELETED', 'message_deleted', index => {
       const ticket = generation;

@@ -1,5 +1,15 @@
 # 第三阶段接口适配来源
 
+## 2026-09-14 辅助结束事件不得提前清理世界召回
+
+当前真实组合的辅助 END 会早于主正文请求和 accepted receipt；P2 r4 seq13 仍记录三个 END，首个早于主正文结束约 47 秒。旧 P3 在第一次全局 END 立即清除 World_Recall、再捕获一次目标，因而同样存在主提示漏召回及绑定旧正文的代码缺陷。此前 P2 r6 的拒绝属于 P2 本身，不能把那份拒绝伪作 P3 实测；本次结论来自当前 P3 全控制流与已证宿主事件顺序。此项必要修复发生在 P3 新候选首次安装前，不修改两个已锁模块。
+
+修改前重新检索并全文阅读 profiles/runtime.mjs、profiles/host.mjs、modular/runtime.mjs、tests/profiles-recall.test.mjs、当前 world/runtime/host/store/recall 与原 P2_RECALL_REPAIR_SOURCE_AUDIT.md；成熟来源是现已锁定 P2 的 settleRecall(receipt) 和 assertReceipt。直接复用其收据结算边界，不复制 P1 的 500/150ms 接受流程，不用辅助 END 猜测目标。
+
+最小适配：移除 P3 全局 END 清理和额外 capture；observe 仍只等待 P1 合法终态及 P2 exact profile record，同时用当前 generation 的 scope、normal 新用户/新助手楼号或其他类型同楼号约束排除旧 receipt。execute 在 captureProfiles/assertSnapshot 成功后，才按 receipt.target.identity 结算当前 generation、保存原 generationId/sourceScopeKey/promptObserved 并清理自己的提示。boundRecall 和 settleDeliveries 的 exact target 证明继续使用现有代码。上游失败时保留至正常修复成功或原失效事件清理；新正文、切聊、编辑、停止和 regenerate 单次预期删除边界不变。
+
+定向回归应证明辅助 END 后主提示仍存在、valid receipt 后只清一次、正常旧楼不能启动、失败输入不结算、同楼 regenerate/continue/swipe 和跨身份隔离。调用仍为一次 native evolve、自动重试 0；语义消费仍须独立真实核验，不把 promptObserved 当作语义成功。
+
 P1 与 P2 已分别锁定。P3 独立新增代码，不修改两个模块或其配套文件。本文记录已经选定并完整阅读的接入机制；世界推演与召回的详细映射随其实现补充，不能以本文宣称阶段验收。
 
 | 数据路径 | 完整读取的来源 | 采用方式和适配边界 |
