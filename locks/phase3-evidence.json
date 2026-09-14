@@ -1,0 +1,356 @@
+{
+  "schema": "mvu-p3-mechanism-freeze/v1",
+  "stage": 3,
+  "version": "0.1.0-candidate.2",
+  "sourceHead": "fd6c5f238d6a4b35e1e6a1746802b019f9ecba07",
+  "sourceFingerprint": "8bc218e7418bcf8e2a365ba1933e609aac57cd94b2f66ecab309312b765592fd",
+  "p1Fingerprint": "39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e",
+  "p2Fingerprint": "8384403869d445d6ac3e70e3f6ccd930e1a6c6540959d29066a0b9662ca5dc57",
+  "mechanismAcceptance": true,
+  "fullDoctorAcceptance": false,
+  "strictProtocolAcceptance": false,
+  "unresolvedRuntimeFaultsObserved": 0,
+  "normalRounds": 12,
+  "pressureRounds": 1,
+  "rounds": [
+    {
+      "sequence": 1,
+      "kind": "first",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 6,
+      "doctorCalls": 4,
+      "otherCalls": 2,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq1-root-review.json",
+          "sha256": "6a12ffdef6a2160104e74250e4a2e8f8c44add65186b7ec08c27455336bbd420"
+        },
+        {
+          "file": "seq1-review-release.json",
+          "sha256": "29dbf7ac319a02db44096e81afd40260a7240579b307cfe0e55f332a5b572787"
+        }
+      ]
+    },
+    {
+      "sequence": 2,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 7,
+      "doctorCalls": 4,
+      "otherCalls": 3,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq2-root-review.json",
+          "sha256": "a8556bede52ff426ace4f19900fd08901a8164b845d560f2ecfbdffc41d8e3dc"
+        },
+        {
+          "file": "seq2-review-release.json",
+          "sha256": "f8772aac49f9866ede83c74aeb21c075b3f164d709fffb232de58d34d72d9d73"
+        }
+      ]
+    },
+    {
+      "sequence": 3,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 10,
+      "doctorCalls": 7,
+      "otherCalls": 3,
+      "buttonChainCalls": 3,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq3-root-review.json",
+          "sha256": "b6d380c6be05bd446881a6b7556dc2c4f1748e13e4107a80a8154728c7ae662f"
+        },
+        {
+          "file": "seq3-review-release.json",
+          "sha256": "5b682cb6f08a4f925d17e26e664d616359106e3f30a0c5252a07d46fd3723d15"
+        }
+      ]
+    },
+    {
+      "sequence": 4,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 7,
+      "doctorCalls": 4,
+      "otherCalls": 3,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq4-root-review.json",
+          "sha256": "12509389cc8b2d7e4e92853349b724eb8d4f9578b6e4548a84f25aa728c6e483"
+        },
+        {
+          "file": "seq4-review-release.json",
+          "sha256": "7242b398db10207dbbf431080467642eefcca3df2f0bf97a1e28eea6d1c3f617"
+        }
+      ]
+    },
+    {
+      "sequence": 5,
+      "kind": "pressure",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 8,
+      "doctorCalls": 5,
+      "otherCalls": 3,
+      "buttonChainCalls": 3,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq5-root-review.json",
+          "sha256": "f6686639db6335fa7a714122b00ad035c7d9ebec43dae0839afb7d3b2e63ab37"
+        },
+        {
+          "file": "seq5-review-release.json",
+          "sha256": "e2848b4ef82f6e9aa925be677a720c4c569618a1404ff831a16e780e4f0a0125"
+        }
+      ]
+    },
+    {
+      "sequence": 6,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 7,
+      "doctorCalls": 4,
+      "otherCalls": 3,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq6-root-review.json",
+          "sha256": "461104373b1d81bfb4bc36f8d0ee87e1d962306cced78e99e94cc280a8b0af52"
+        },
+        {
+          "file": "seq6-review-release.json",
+          "sha256": "d86ff0f974e416ff45ab2aa9a16162398687e8d14d40959ee091f1678d81db3a"
+        }
+      ]
+    },
+    {
+      "sequence": 7,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 9,
+      "doctorCalls": 5,
+      "otherCalls": 4,
+      "buttonChainCalls": 4,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq7-root-review.json",
+          "sha256": "77a8b2c01636cb320d3c104ac5f07fd5c2851b83992af5a4a831ca0ec8349260"
+        },
+        {
+          "file": "seq7-review-release.json",
+          "sha256": "cef05617e72c33419838ebfc7e3659ddd818001fd27cc15df34bd8a7bd1f5564"
+        }
+      ]
+    },
+    {
+      "sequence": 8,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 9,
+      "doctorCalls": 4,
+      "otherCalls": 5,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": false,
+      "evidence": [
+        {
+          "file": "seq8-root-review.json",
+          "sha256": "6fda81f84d297610db9e50c2822a5f4bafca2991f43dacb3b5213b8202a63345"
+        },
+        {
+          "file": "seq8-review-release.json",
+          "sha256": "7375a013aadf1aca7a8a4fd80a5e478b12a0301067ef640bc76ae79fc8c26b64"
+        }
+      ]
+    },
+    {
+      "sequence": 9,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 7,
+      "doctorCalls": 4,
+      "otherCalls": 3,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq9-root-review.json",
+          "sha256": "baccee5d0db90c4e4242b095af928febfbec93200c67f725daca328a96d6e882"
+        },
+        {
+          "file": "seq9-review-release.json",
+          "sha256": "a36303e506820cf67132a53d0c7e127c47b6073774582e9e8a05506eb76f4e6f"
+        }
+      ]
+    },
+    {
+      "sequence": 10,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 8,
+      "doctorCalls": 5,
+      "otherCalls": 3,
+      "buttonChainCalls": 1,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq10-root-review.json",
+          "sha256": "93bd3b2c4a3ddac6791aa09f5ee3ff7f5a89c2e9666686b44801d8f74f097a01"
+        },
+        {
+          "file": "seq10-review-release.json",
+          "sha256": "df733371ef04a3184d4861f0f59ff7f5966fc90f312d882520e482cc80704e27"
+        }
+      ]
+    },
+    {
+      "sequence": 11,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 7,
+      "doctorCalls": 4,
+      "otherCalls": 3,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq11-root-review.json",
+          "sha256": "94d2e82d962eb21d425e615aa88efcbecc01038ef8dba65a68b235fbeb024d23"
+        },
+        {
+          "file": "seq11-review-release.json",
+          "sha256": "40594c0c4f31658d020b10f68eda6e08eed7ee8a3cdc83946ba25afeeead7392"
+        }
+      ]
+    },
+    {
+      "sequence": 12,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 7,
+      "doctorCalls": 4,
+      "otherCalls": 3,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq12-root-review.json",
+          "sha256": "0083fd976bec21633913691f9650cd5414ce2048e1b3c2e6b2af1319cd46310a"
+        },
+        {
+          "file": "seq12-review-release.json",
+          "sha256": "691e8db3dfb3a34a7265b2259886be50192ba09520e8b697b129fd47c4ceaef9"
+        }
+      ]
+    },
+    {
+      "sequence": 13,
+      "kind": "next",
+      "mechanismReviewComplete": true,
+      "nativeCalls": 7,
+      "doctorCalls": 4,
+      "otherCalls": 3,
+      "buttonChainCalls": 0,
+      "allExpectedDoctorRequestsExact": true,
+      "evidence": [
+        {
+          "file": "seq13-root-review.json",
+          "sha256": "3856e6d75fb79bc454ea78dd848a2c784ddc96d60b103c0f12341bedc312bf16"
+        },
+        {
+          "file": "seq13-review-release.json",
+          "sha256": "afc7fa8a7bdab252a9889e7b367f48c2fbe127f846a1ac6f1be9cf7e62b80ab3"
+        }
+      ]
+    }
+  ],
+  "finalReadback": {
+    "reloadAttempts": 1,
+    "extraModelCalls": 0,
+    "historicalRoundsVerified": 13,
+    "allTypedRecordsPreserved": true,
+    "profileCount": 7,
+    "fieldsPerProfile": 44,
+    "structuredWorldUiFieldsVerified": 21,
+    "strictWorldUiTextHashPassed": false,
+    "strictFailureRetained": true,
+    "displayOrderDifferenceDocumented": true,
+    "foregroundNativeVisibilityProven": false,
+    "evidence": [
+      {
+        "file": "0130-p3-final-snapshot-pre.json",
+        "sha256": "e241b0f395a2d8be00b73dd8a998bf031a2d95f0e1b7755f40ca8a7c1811ec6a"
+      },
+      {
+        "file": "0130-p3-final-reload-intent.json",
+        "sha256": "452f9b58b8f217238be29cee0db9fa938bba5d27c36823b7f7ad1c4b5d2a6712"
+      },
+      {
+        "file": "0130-p3-final-post-first-failure.json",
+        "sha256": "323250efdc5fc2c9639d69f7fd5e1e0182a50f3c24e1b3af9794893fa613d31c"
+      },
+      {
+        "file": "0130-p3-final-post-diagnostic.json",
+        "sha256": "17fa30dcc64a7590c5e69ae8ef149e063007f2da5542417785461b308a72b626"
+      },
+      {
+        "file": "0130-p3-final-ui-assessment.json",
+        "sha256": "983102cedd0cb43994fa2c182683bc0040af26444ee0048d446376e622b50e1b"
+      },
+      {
+        "file": "0130-p3-final-image-cleanup.json",
+        "sha256": "090abac50be592d351a81a10b923e94455f9b075e550b65f0b717377f82b99ee"
+      }
+    ]
+  },
+  "cost": {
+    "totalCalls": 99,
+    "doctorCalls": 58,
+    "otherExtensionsAndNarrativeCalls": 41,
+    "initialFlowCalls": 88,
+    "buttonChainCalls": 11,
+    "buttonClicks": 4,
+    "doctorAutomaticRetries": 0,
+    "normalDoctorRequestLimit": 4
+  },
+  "repairMechanisms": {
+    "variableFreshRepair": true,
+    "profileBatchRepair": true,
+    "worldSameRoundRepair": true,
+    "modelMistakesMayRemain": true,
+    "evidence": [
+      {
+        "file": "seq7-p1-manual-freshness.json",
+        "sha256": "c5ec25cdc8bccfb786760328461273b9b47a861bf4ce720d236bb96886dd2344"
+      },
+      {
+        "file": "seq5-profile-failure-containment.json",
+        "sha256": "7ddd8cef89088710c09218b1b8cdf566a1fc67fef8587cf93d08f4d4536f8302"
+      },
+      {
+        "file": "seq10-world-manual-readback.json",
+        "sha256": "bc9cfee1dff431cb64b5136ebfede2521c281af691076d4b3d98759b238e61cf"
+      }
+    ]
+  },
+  "limitations": [
+    "World public consequences were injected and retained; narrative semantic consumption was not demonstrated.",
+    "Full profile fields do not guarantee correct identity granularity, motives or model facts.",
+    "A pressure-round model failure remained contained after one repair; failed candidates did not replace complete saved profiles.",
+    "Variable semantic mistakes and a prior suppression mismatch remain recorded.",
+    "Early P1 native wire evidence in sequence8 was evicted; its local record and persistence checks do not replace that missing wire.",
+    "The strict world UI text-hash comparison failed across reload. Canonical stored keys change JSON display order; actual structured DOM values and stored records match.",
+    "Native foreground window visibility was not tested; minimized compositor images show no lower white band."
+  ],
+  "scope": "Freeze current implementation under the user-approved execution-and-repair criterion. This does not certify full semantic acceptance or zero hallucinations."
+}

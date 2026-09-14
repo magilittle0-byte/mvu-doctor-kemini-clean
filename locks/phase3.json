@@ -1,0 +1,78 @@
+{
+  "locked": true,
+  "stage": 3,
+  "version": "0.1.0-candidate.2",
+  "fingerprint": "8bc218e7418bcf8e2a365ba1933e609aac57cd94b2f66ecab309312b765592fd",
+  "files": {
+    "world/content.mjs": "92f3269f337f95494c7c04a5cbac509925f3d13961c8e415cfe0d51fa3069393",
+    "world/dependencies.mjs": "391d50fc3e5fe4f808f4352dc308c7d6092144289fc65afb7cd0a308b0d34f52",
+    "world/engine.mjs": "f09a06301a481028f34e07ac63ea339786b51512764886747fb7633c9791f693",
+    "world/entry.js": "75d154bce582ff5fa58e676dad936a1168403a9737ba6bc0e9073007e385d7b0",
+    "world/host.mjs": "e5ad364063d0f8f19ba320a2c8268199f5136cc951e0bd33e9c8a89219c8a3d7",
+    "world/install.json": "f556a97d789f08a5e2cee77c53b01b1beca2a5dcc1ac712dafc911a72ac8bb16",
+    "world/loader.js": "9899cdcd09eed8f50b109a6477fccc175f2966d6e96932400f1412d9501d3166",
+    "world/manifest.json": "778d5d33237fec45c803c3d804f192840cce8de967a938141b16221d1ce4b079",
+    "world/native/core.mjs": "053767507acee24d662969fab46839e4abb3a0922605f9afb3a1e7238fd284a3",
+    "world/native/evolution.mjs": "7edddd05e58ac2e7b5443290f312cd42edd5f7f7a649afa1152f635cd703c834",
+    "world/native/ledger.mjs": "cf87d24d5beba1d4c408baec6a2c7b190130eeba5c850b8326be038fd1451799",
+    "world/native/rules.mjs": "204ae4ec6a866dea98019b821581fb60bd1fe11e7146bc2e212ee1c83d2c11f2",
+    "world/recall.mjs": "f7fbd895f78eb0333b0b8fea238773048dd7e1d6a260a70acf982e6ee65ef6d7",
+    "world/runtime.mjs": "35213af119a6781d799dcd1aec1bd56244177f92553e5e99b3080c7b9f75d4a4",
+    "world/store.mjs": "271d3ce540c2497b2b57b0ca567a32d7e5bf1daa82737bbb175b1e1062fc91fb",
+    "world/style.css": "609aecce7a202d22c23e5e3cf18f99f3f60659ef025ef94f3702dd27a7ab4325",
+    "world/surface.mjs": "eb7c7b55394d562ba4764e3476ab204fa23e8e7e97a383acdc742f66fa8fce23"
+  },
+  "supportingFiles": {
+    "docs/world/.gitattributes": "d2eb1a317920a1e2fd04a1b7352ef04bfb1f0b9f4d0594f4dc395a87ce2ccfba",
+    "docs/world/PHASE3_DEPENDENCIES_SOURCE_MAP.md": "c16f9e703889d7ab890d42d2cebb8c0d0c27b3c8cf1faf8864b801878a701637",
+    "docs/world/PHASE3_ENGINE_SOURCE_MAP.md": "e6e2db00214a57bc4fccddd812e0fa583103dc8edcd9ab165a9f6f2b93ea10d3",
+    "docs/world/PHASE3_NATIVE_SOURCE_MAP.md": "fb316b0bc8e64f5b39fb309307ed62844aa6d8d497103e6ca79c0e8daa983e75",
+    "docs/world/PHASE3_RECALL_SOURCE_MAP.md": "68654a550f46c5ca6d9b98688a17debecc1566b4f49f2e29b7338bf2cea11f2a",
+    "docs/world/PHASE3_SOURCE_MAP.md": "3bf6ac0bc870ae7d6d906c9bcf22b0d51996933211177fb0aa311f12f54670ba",
+    "docs/world/PHASE3_SURFACE_SOURCE_MAP.md": "3efa613966317daf421164068ff2f1afbe4f355b9e819adc873991f660cd58c2",
+    "docs/world/README.md": "97d38c4a89b63278c9ba91dd1d104016bd2f14309c82d1dd0e526e786edfefa0",
+    "docs/world/P3_BUTTON_THEME_SOURCE_MAP.md": "00137c90d62aa5ae3449b903f8c896bcebfe21f34668dc9d3df5cb2ddf6470c9",
+    "scripts/.gitattributes": "19d2c970b78892931bf6749843d25f96d91fd54aa9b594d59f1ac33616dd8952",
+    "scripts/check-world-native.mjs": "72d3887f12b371cfd6367beb3645c775cb21035b459b96289ae1b248238ca63a",
+    "scripts/check-world.mjs": "2baa5c228cf1f07af5090dfc1389aae2f013900a2352a42ae2308064e9c1790d",
+    "tests/.gitattributes": "6e514e4d0bcd8473b6d72ecaebbcb95af7712ece86d3ca5567be8eff41c209a0",
+    "tests/world-dependencies.test.mjs": "64e0f40e049a9cf8930cbeaae923bd24902c0cbfd7b8a4c2497b3e97208e5ed2",
+    "tests/world-engine.test.mjs": "83ae58933cd6ae49f5f9e04211ed91c01de185b51424d5a73a2893eb62e95686",
+    "tests/world-host.test.mjs": "7a6710933ce71e312d5a54f193eb2c85360d9a5efa7932af457c323583761082",
+    "tests/world-recall.test.mjs": "378c4c0d3a6af2b47345a722e9868ba67e3ff0e93cbf6d15b7fd438b9bb68297",
+    "tests/world-runtime.test.mjs": "5fa06185bdb011977c8ab56f72b178fc46f3392a6be402faba1cd579b68cfdbf",
+    "tests/world-store.test.mjs": "eebf95e24f8a77cbf2d78326fcea930f730af63c5931ddca2405efcabbb768bc",
+    "tests/world-surface.test.mjs": "228427862f609fd94c8bf9498e3cfff6024cadb9e4ff0411d5f290711f7946e2",
+    "world/.gitattributes": "5545e3e6c89119ae93cafa039df5fe8303ade63b80d50812e78e5326c7860e9b",
+    "world/native/.gitattributes": "56d8ded7c58e9d5e697981f5b706ee4e493447d638840451870de12248d2c114"
+  },
+  "dependencies": {
+    "p1": {
+      "version": "0.10.30",
+      "fingerprint": "39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e",
+      "lockDocuments": {
+        "locks/phase1.json": "71c569c61b5186c85143bd30d6cb28c3eb658078bc496148604726158a23d8a6",
+        "locks/phase1-evidence.json": "48f1625d29677240f496fc8045a1cf3bf347a0bc4033955bf72094679873b4c8",
+        "locks/phase1-supporting-files.json": "905be6fcb2d190a5957fcfaf1b841faa3f0f66c5296806ff007910e73c0bd5f3"
+      }
+    },
+    "p2": {
+      "version": "0.1.0-candidate.4",
+      "fingerprint": "8384403869d445d6ac3e70e3f6ccd930e1a6c6540959d29066a0b9662ca5dc57",
+      "lockSha256": "e4fa66d694bf2a560cb0cc0e6e7f7ef646c658477f2a3037bcb63c8a4622d237"
+    }
+  },
+  "lockScope": "implementation-and-repair-mechanism",
+  "realAcceptance": {
+    "complete": false,
+    "mechanismAcceptance": true,
+    "fullDoctorAcceptance": false,
+    "strictProtocolAcceptance": false,
+    "normalRounds": 12,
+    "pressureRounds": 1,
+    "modelFailuresRetained": true,
+    "sourceFingerprint": "8bc218e7418bcf8e2a365ba1933e609aac57cd94b2f66ecab309312b765592fd",
+    "summaryPath": "locks/phase3-evidence.json",
+    "summarySha256": "a73cb1cc855598094d80e530bebfb1e1dccaeb96755543129e924afce4bcd4dc"
+  }
+}
