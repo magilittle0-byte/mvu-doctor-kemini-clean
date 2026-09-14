@@ -144,8 +144,11 @@ export function createHost(getContext = () => globalThis.SillyTavern?.getContext
       const api = service.validateProfile(profile);
       const manager = ctx.getPresetManager(api.selected);
       const preset = profile.preset ? manager?.getCompletionPresetByName(profile.preset) : null;
-      const defaults = api.selected === 'openai' ? ctx.chatCompletionSettings : ctx.textCompletionSettings;
+      const defaults = clone(api.selected === 'openai' ? ctx.chatCompletionSettings : ctx.textCompletionSettings);
       if (!defaults || (profile.preset && !manager)) throw new Error('missing native settings');
+      // P1 callProfile explicitly sends stream:false. The native display toggle
+      // can change during other generations and cannot alter this request.
+      if (api.selected === 'openai') delete defaults.stream_openai;
       const proxy = api.selected === 'openai' && profile.proxy
         ? (await getProxies()).find(entry => entry.name === profile.proxy) : null;
       return await digest(clone({ profile, api, preset: preset ?? null, defaults, proxy: proxy ?? null, requestDefaults: service.defaultSendRequestParams }));

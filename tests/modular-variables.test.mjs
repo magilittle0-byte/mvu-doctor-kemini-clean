@@ -286,7 +286,7 @@ test('official receipt binds both event identities and removes only its listener
 function harness(overrides = {}) {
   let current = { stat_data: { coins: 7 } }, stale = false, scopeDrift = false, schemaDrift = false, saveFailure = false;
   const profile = { id: 'synthetic-model', api: 'custom', model: 'original', preset: 'synthetic-preset', proxy: 'synthetic-proxy', 'api-url': 'https://synthetic.invalid' };
-  const preset = { temperature: 0.7 }, defaults = { top_p: 0.9 }, proxies = [{ name: 'synthetic-proxy', url: 'https://proxy.invalid', password: 'synthetic-password' }];
+  const preset = { temperature: 0.7 }, defaults = { top_p: 0.9, stream_openai: false }, proxies = [{ name: 'synthetic-proxy', url: 'https://proxy.invalid', password: 'synthetic-password' }];
   const routeContext = { chatCompletionSettings: defaults, getPresetManager: () => ({ getCompletionPresetByName: () => preset }),
     ConnectionManagerRequestService: { getProfile(id) { if (profile.id !== id) throw Error('missing'); return profile; }, validateProfile: () => ({ selected: 'openai', source: 'custom' }) } };
   const routeHost = createHost(() => routeContext, async () => proxies);
@@ -817,10 +817,19 @@ test('rule changes during a response or immediately before write discard all old
 });
 test('same profile ID cannot hide model, endpoint, preset, fallback sampler or proxy changes', async () => {
   for (const change of [h => { h.profile.model = 'changed'; }, h => { h.profile['api-url'] += '/changed'; }, h => { h.preset.temperature = 0.2; }, h => { h.defaults.top_p = 0.5; }, h => { h.proxies[0].url += '/changed'; }, h => { h.proxies[0].password += '-changed'; }]) {
-    const h = harness({ reply() { change(h); return '[]'; } });
+    const h = harness({ reply() { h.defaults.stream_openai = true; change(h); return '[]'; } });
     await assert.rejects(h.module.run(h.target), { code: 'model_config_changed' });
     assert.equal(h.calls.length, 1); assert.equal(h.parsed.length, 0); assert.equal(h.writes.length, 0);
   }
+});
+test('fixed non-streaming doctor request tolerates stream display default drift without mutating defaults', async () => {
+  const h = harness({
+    reply() { h.defaults.stream_openai = true; return '[{"op":"delta","path":"/coins","value":5}]'; },
+  });
+  const receipt = await h.module.run(h.target);
+  assert.equal(receipt.status, 'applied');
+  assert.equal(h.calls.length, 1); assert.equal(h.parsed.length, 1); assert.equal(h.writes.length, 1);
+  assert.equal(h.defaults.stream_openai, true, 'the route host must not restore or mutate the native defaults object');
 });
 test('resolved connection changes invalidate a settled receipt and force a new model request', async () => {
   const h = harness({ reply: () => '[]' }); const receipt = await h.module.run(h.target);
