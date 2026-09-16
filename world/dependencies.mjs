@@ -2,9 +2,9 @@ import { loadModuleLock } from '../modular/lock.mjs';
 
 const P1_VERSION = '0.10.30';
 const P1_FINGERPRINT = '39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e';
-const P2_VERSION = '0.1.0-candidate.4';
-const P2_FINGERPRINT = '8384403869d445d6ac3e70e3f6ccd930e1a6c6540959d29066a0b9662ca5dc57';
-const P2_LOCK_SHA256 = 'e4fa66d694bf2a560cb0cc0e6e7f7ef646c658477f2a3037bcb63c8a4622d237';
+const P2_VERSION = '0.1.0-candidate.5';
+const P2_FINGERPRINT = '0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33';
+const P2_LOCK_SHA256 = '49a674502a759ad166b940fae27392739e32e199e008eb3c0922013cbfc813f5';
 const HASH = /^[0-9a-f]{64}$/u;
 const P1_DEPENDENCY_PATHS = ['locks/phase1.json', 'locks/phase1-evidence.json', 'locks/phase1-supporting-files.json'];
 const KNOWN_FAILURES = new Set(['unsafe_dependency_path', 'dependency_missing', 'dependency_read_failed', 'crypto_unavailable', 'text_decoder_unavailable', 'text_encoder_unavailable', 'p2_lock_malformed', 'p1_supporting_malformed']);

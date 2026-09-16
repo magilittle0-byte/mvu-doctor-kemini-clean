@@ -1,3 +1,11 @@
+## 2026-09-17 P2 candidate.5 lock dependency transition
+
+P2 candidate.5 completed the prescribed13-sequence mechanism review and one final reload; model failures remain explicitly retained. Its2formal metadata files were pushed and installed at5b1dd20d944b4cef72ad270f2457f34837bfe0c8 with55served hashes exact and zero model calls. The current P3 pins candidate.4 and must reject the new lock until its explicit dependency constants are updated.
+
+Fresh source lookup and complete reading reused modular/lock.mjs -> world/dependencies.mjs -> world/entry.js, the existing check-world loader generator and dependency regression suite. Only P2 version/fingerprint/lock byte SHA, P3 version labels, manifest requires and exact test expectation change. P1/P2 protected files and all world evolution, storage, recall, UI and call-budget algorithms remain byte-identical. P3 becomes0.1.0-candidate.4 and requires fresh combined real-host evidence; previous rounds do not transfer.
+
+P2 version:0.1.0-candidate.5; fingerprint:0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33; phase2.json raw SHA-256:49a674502a759ad166b940fae27392739e32e199e008eb3c0922013cbfc813f5. Runtime10/supporting12/P1 dependencies3 remain unchanged in count and verified individually. Existing dependency rejection tests keep their assertions. No new scheduler or retry loop. 尚未完成真实门禁。
+
 # P3 world dependencies source map
 
 ## 2026-09-14 当前批量人物模块与低调用变量模块适配

@@ -1,12 +1,12 @@
 {
   "name": "MVU Doctor 世界引擎",
   "stage": 3,
-  "version": "0.1.0-candidate.3",
+  "version": "0.1.0-candidate.4",
   "entry": "world/entry.js",
   "loader": "world/install.json",
   "requires": [
     { "stage": 1, "version": "0.10.30", "fingerprint": "39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e" },
-    { "stage": 2, "version": "0.1.0-candidate.4", "fingerprint": "8384403869d445d6ac3e70e3f6ccd930e1a6c6540959d29066a0b9662ca5dc57" }
+    { "stage": 2, "version": "0.1.0-candidate.5", "fingerprint": "0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33" }
   ],
   "locked": false,
   "realAcceptance": false
