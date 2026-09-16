@@ -11,7 +11,7 @@ const quietConsole = Object.freeze({
 
 function json(value) {
   try {
-    const encoded = JSON.stringify(value ?? null, null, 2);
+    const encoded = JSON.stringify(value ?? null);
     if (typeof encoded !== 'string') throw new Error('not_string');
     return encoded;
   } catch {
@@ -37,7 +37,15 @@ export function createNativeWorldEngine({
   const memory = new Map();
   const localWindow = {};
   const localConsole = quietConsole;
-  const serializedInput = json(input);
+  // The native dialogue segment already carries the accepted projections.
+  // Keep raw receipt text local; including it here bypasses that projection.
+  // See docs/world/P3_INPUT_COST_SOURCE_MAP_2026-09-16.md.
+  const { narrative: _narrative, userText: _userText, target, ...material } = input;
+  if (target) {
+    const { content: _content, userText: _rawUserText, ...identity } = target;
+    material.target = identity;
+  }
+  const serializedInput = json(material);
   const localChat = Array.from({ length: Math.max(1, Number(chatLength) || 1) }, () => ({}));
   const localSillyTavern = Object.freeze({
     getContext: () => ({ chatId: String(chatId), chat: localChat }),
@@ -74,7 +82,7 @@ export function createNativeWorldEngine({
   localWindow.WORLD_ENGINE_WORLDBOOK = {
     getChatId: () => String(chatId),
     buildPromptSection: async () => [
-      'P3完整输入（正文、MVU、完整P2档案、权威设定）：', serializedInput,
+      'P3完整输入（MVU、完整P2档案、权威设定；本轮正文与用户输入见下方近期对话段）：', serializedInput,
     ].join('\n'),
   };
   localWindow.WORLD_ENGINE_PRESET = { getOverrides: () => null };

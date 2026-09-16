@@ -68,6 +68,36 @@ test('native failure rolls state back and does not retry', async () => {
   engine.dispose();
 });
 
+test('native request uses accepted dialogue once and keeps receipt-only text local', async () => {
+  const input = {
+    ...structuredClone(baseInput),
+    narrative: 'FIXTURE_ACCEPTED_NARRATIVE_ONLY', userText: 'FIXTURE_ACCEPTED_USER_ONLY',
+    target: { identity: 'receipt-identity', scopeKey: 'receipt-scope', index: 2,
+      content: 'RAW_RECEIPT_MECHANISM_ONLY', userText: 'RAW_USER_WRAPPER_ONLY' },
+    globalPrompt: 'full global instruction', heldProfiles: [{ profileId: 'held-1', reason: 'profile_incomplete' }],
+  };
+  const original = structuredClone(input);
+  let prompt, calls = 0;
+  const engine = engineWith(async value => {
+    calls++; prompt = value;
+    return JSON.stringify({ world_digest: 'fixture world', events: [] });
+  }, { input });
+  const result = await engine.evolve();
+  assert.equal(result.ok, true);
+  assert.equal(calls, 1);
+  for (const text of [input.narrative, input.userText]) assert.equal(prompt.split(text).length - 1, 1);
+  assert.ok(!prompt.includes(input.target.content));
+  assert.ok(!prompt.includes(input.target.userText));
+  const segments = engine.window.WORLD_ENGINE_EVOLUTION.getLastDebug().segments;
+  const material = JSON.parse(segments.find(segment => segment.key === 'worldbook').content.split('\n').slice(1).join('\n'));
+  for (const key of ['mvu', 'profiles', 'authority', 'globalPrompt', 'heldProfiles']) assert.deepEqual(material[key], input[key]);
+  assert.deepEqual(material.target, { identity: input.target.identity, scopeKey: input.target.scopeKey, index: 2 });
+  assert.equal('narrative' in material, false);
+  assert.equal('userText' in material, false);
+  assert.deepEqual(input, original);
+  engine.dispose();
+});
+
 test('abort propagates to the one native call and releases running state', async () => {
   const controller = new AbortController();
   let calls = 0;
