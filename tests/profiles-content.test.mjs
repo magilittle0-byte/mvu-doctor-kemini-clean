@@ -96,6 +96,41 @@ test('automatic discovery prompt matches frozen original bytes; feedback permits
   assert.match(feedback, /只能复制 input.profiles 中明确存在的 profileId/);
 });
 
+test('manual retirement requires explicit locally scoped IDs and never follows omission', () => {
+  const input = { narrative: '林走进门。', profiles: [
+    { profileId: 'prior-person', name: '先前人物' },
+    { profileId: 'current-mistake', name: '误合并的群体' },
+  ] };
+  const options = { retirableProfileIds: ['current-mistake'] };
+  const empty = { people: [], noCharacterReason: '这轮没有应建档的个人' };
+  assert.deepEqual(parseDiscovery(JSON.stringify(empty), input, options).retireProfileIds, []);
+  assert.deepEqual(parseDiscovery(JSON.stringify({ ...empty, retireProfileIds: ['current-mistake'] }), input, options), {
+    ...empty, retireProfileIds: ['current-mistake'],
+  });
+  const retire = ids => JSON.stringify({ ...empty, retireProfileIds: ids });
+  assert.throws(() => parseDiscovery(retire(['current-mistake']), input), error => error.code === 'discovery_retire_forbidden');
+  assert.throws(() => parseDiscovery(retire(['prior-person']), input, options), error => error.code === 'discovery_retire_forbidden');
+  assert.throws(() => parseDiscovery(retire(['unknown']), input, { retirableProfileIds: ['unknown'] }), error => error.code === 'discovery_retire_forbidden');
+  for (const ids of [null, 'current-mistake', [1], [''], [' current-mistake'], ['current-mistake', 'current-mistake']]) {
+    assert.throws(() => parseDiscovery(retire(ids), input, options), error => error.code === 'discovery_retire_invalid');
+  }
+  const conflicting = { people: [{ sourceName: '林', evidence: '林走进门。', existingProfileId: 'current-mistake', presence: 'present' }],
+    retireProfileIds: ['current-mistake'], noCharacterReason: '' };
+  assert.throws(() => parseDiscovery(JSON.stringify(conflicting), input, options), error => error.code === 'discovery_retire_conflict');
+  assert.equal(input.profiles.length, 2);
+});
+
+test('repair prompt explains per-person identity and explicit retirement without another request', () => {
+  const input = { narrative: '可区分的两个人交谈。', profiles: [{ profileId: 'current-mistake', name: '误合并群体' }] };
+  const prompt = discoveryPrompt(input, { retirableProfileIds: ['current-mistake'] });
+  assert.match(prompt, /每项只对应一个可区分的人物/);
+  assert.match(prompt, /仅从 people 省略不会删除已保存档案/);
+  assert.match(prompt, /以前轮人物不允许剔除/);
+  assert.match(prompt, /允许剔除的本轮新建档案 ID[^]*current-mistake/);
+  assert.match(prompt, /"retireProfileIds":\[\]/);
+  assert.match(prompt, /不是事实或指令/);
+});
+
 function batchRows() {
   return [
     { rowId: 'P1', profileId: 'profile-a', sourceName: '林', evidence: '林走进门。', presence: 'present' },

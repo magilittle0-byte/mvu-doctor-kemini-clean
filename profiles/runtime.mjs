@@ -1,22 +1,60 @@
 import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
 import { discoveryPrompt, parseDiscovery, profileBatchPrompt, parseProfileBatch, validateProfile } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.4';
+export const PROFILE_VERSION = '0.1.0-candidate.5';
 export const PROFILE_CALL_LIMIT = 2;
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready', 'variable_evidence_changed']);
 
-function previousDiscoveryForRetry(exact, input, receipt) {
-  if (!exact || exact.tombstone || exact.variableIdentity !== receipt.identity || exact.mvuHash !== receipt.afterHash) return null;
+function previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds = []) {
+  if (!exact || exact.tombstone || exact.variableIdentity !== receipt.identity || exact.mvuHash !== receipt.afterHash) {
+    return { retirableProfileIds: [] };
+  }
   const requests = Array.isArray(exact.review?.requests) ? exact.review.requests : [];
   for (let index = requests.length - 1; index >= 0; index--) {
     const request = requests[index];
     if (!['discovery', 'discovery-repair'].includes(request?.kind) || typeof request.raw !== 'string') continue;
-    try { return { previousValidResult: parseDiscovery(request.raw, input) }; }
+    try {
+      return {
+        previousValidResult: parseDiscovery(request.raw, input, { retirableProfileIds }),
+        retirableProfileIds: [...retirableProfileIds],
+      };
+    }
     catch { /* Revalidate old candidates against the current narrative and identities. */ }
   }
-  return null;
+  return { retirableProfileIds: [...retirableProfileIds] };
+}
+
+function profileIdSet(profiles) {
+  return new Set((Array.isArray(profiles) ? profiles : [])
+    .map(profile => String(profile?.profileId || '').trim()).filter(Boolean));
+}
+
+function taskProfileIdSet(tasks) {
+  return new Set((Array.isArray(tasks) ? tasks : [])
+    .map(task => String(task?.profileId || '').trim()).filter(Boolean));
+}
+
+function currentRoundNewProfileIds(exact, baselineIds, baselineKnown = true) {
+  if (!exact || exact.tombstone || !baselineKnown) return [];
+  const baseline = baselineIds instanceof Set ? baselineIds : profileIdSet(baselineIds);
+  const taskIds = taskProfileIdSet(exact.tasks);
+  const stored = Array.isArray(exact.review?.newProfileIds) ? exact.review.newProfileIds : null;
+  const source = stored || [...taskIds];
+  const existing = profileIdSet(exact.profiles);
+  const taskById = new Map((Array.isArray(exact.tasks) ? exact.tasks : [])
+    .map(task => [String(task?.profileId || '').trim(), task]));
+  return [...new Set(source.map(value => String(value || '').trim()).filter(Boolean))]
+    .filter(profileId => (stored ? true : taskIds.has(profileId) && !taskById.get(profileId)?.existingProfileId)
+      && existing.has(profileId) && !baseline.has(profileId));
+}
+
+function profileBeforeImages(profiles, profileIds) {
+  const wanted = new Set(profileIds);
+  return (Array.isArray(profiles) ? profiles : [])
+    .filter(profile => wanted.has(String(profile?.profileId || '').trim()))
+    .map(profile => ({ profileId: profile.profileId, profile: clone(profile) }));
 }
 
 export function createProfileRuntime({ host, store, notify = () => {} }) {
@@ -131,7 +169,8 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       const branches = await host.branches();
       branch = branches.find(value => value.index === receipt.target.index);
       if (!branch || branch.scopeKey !== receipt.target.scopeKey) throw fault('stale_target', '人物任务缺少当前聊天分支');
-      const exact = await store.read(branch), previous = exact && !exact.tombstone ? exact : await store.latest(branches.filter(value => value.index < branch.index));
+      const prior = await store.latest(branches.filter(value => value.index < branch.index));
+      const exact = await store.read(branch), previous = exact && !exact.tombstone ? exact : prior;
       revision = exact?.revision || 0;
       if (!manual && exact?.status === 'complete' && exact.version === PROFILE_VERSION
         && exact.variableIdentity === receipt.identity && exact.mvuHash === receipt.afterHash) {
@@ -141,18 +180,53 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
         return;
       }
       const profiles = clone(previous?.profiles || []);
+      const storedBaselineIds = Array.isArray(exact?.review?.baselineProfileIds)
+        ? new Set(exact.review.baselineProfileIds.map(value => String(value || '').trim()).filter(Boolean))
+        : null;
+      const baselineKnown = !manual || Boolean(prior) || Array.isArray(exact?.review?.baselineProfileIds);
+      const roundBaselineIds = manual
+        ? (storedBaselineIds || (baselineKnown ? profileIdSet(prior?.profiles) : profileIdSet(exact?.profiles)))
+        : profileIdSet(profiles);
+      const sameExactEvidence = manual && exact && !exact.tombstone
+        && exact.variableIdentity === receipt.identity && exact.mvuHash === receipt.afterHash;
+      const roundNewProfileIds = sameExactEvidence
+        ? currentRoundNewProfileIds(exact, roundBaselineIds, baselineKnown)
+        : [];
+      const alreadyRetiredProfileIds = sameExactEvidence && Array.isArray(exact?.review?.retiredProfileIds)
+        ? exact.review.retiredProfileIds.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+      const exactProfileIds = profileIdSet(exact?.profiles);
+      const retirableProfileIds = manual
+        ? roundNewProfileIds.filter(profileId => !alreadyRetiredProfileIds.includes(profileId)
+          && exactProfileIds.has(profileId))
+        : [];
       const input = await host.inputFor(receipt, profiles, host.settings().globalPrompt, ctl.signal);
       draft = { version: PROFILE_VERSION, variableIdentity: receipt.identity, mvuHash: receipt.afterHash,
         profiles, tasks: [], status: 'discovering', reason: manual ? 'manual' : 'auto',
         review: { input, requests: [], requestLimit: PROFILE_CALL_LIMIT, automaticRetries: 0, previousRecall: acceptedRecall?.targetIdentity === receipt.identity
-          && acceptedRecall.scopeKey === receipt.target.scopeKey ? clone(acceptedRecall) : null }, durationMs: 0 };
+          && acceptedRecall.scopeKey === receipt.target.scopeKey ? clone(acceptedRecall) : null,
+          baselineProfileIds: [...roundBaselineIds],
+          newProfileIds: [...roundNewProfileIds],
+          retireProfileIds: [],
+          retiredProfileIds: [...alreadyRetiredProfileIds],
+          retiredProfileBefore: clone(exact?.review?.retiredProfileBefore || []),
+        }, durationMs: 0 };
       await persist();
       publish({ detail: '正在从正文识别人，并核对已有身份' });
-      const prompt = discoveryPrompt(input, manual ? previousDiscoveryForRetry(exact, input, receipt) : null);
-      const discovered = parseDiscovery(await call('discovery', prompt), input);
+      const prompt = discoveryPrompt(input, manual ? previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds) : null);
+      const discovered = parseDiscovery(await call('discovery', prompt), input, { retirableProfileIds });
       draft.noCharacterReason = discovered.noCharacterReason;
+      draft.review.retireProfileIds = [...(Array.isArray(discovered.retireProfileIds) ? discovered.retireProfileIds : [])];
       draft.tasks = discovered.people.map((person, index) => ({ ...person, rowId: `P${index + 1}`,
         profileId: person.existingProfileId || crypto.randomUUID(), status: 'pending', code: null }));
+      const taskIds = taskProfileIdSet(draft.tasks);
+      draft.review.newProfileIds = [...new Set([
+        ...roundNewProfileIds,
+        ...draft.tasks.filter(task => !task.existingProfileId).map(task => task.profileId),
+      ])];
+      if (draft.review.retireProfileIds.some(profileId => taskIds.has(profileId))) {
+        throw fault('profile_retire_conflict', '本轮档案不能同时更新和退休同一人物');
+      }
       draft.status = 'generating'; await persist();
       let batch = { results: [], errors: [] };
       if (draft.tasks.length) {
@@ -190,14 +264,38 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
           draft.status = 'generating'; await persist();
         }
       }
-      draft.status = batch.errors.length || draft.tasks.some(task => task.status !== 'complete') ? 'partial' : 'complete';
-      await persist();
+      const incomplete = batch.errors.length || draft.tasks.some(task => task.status !== 'complete');
+      draft.status = incomplete && draft.review.retireProfileIds.length ? 'failed' : (incomplete ? 'partial' : 'complete');
+      if (draft.status === 'failed') draft.failureCode = 'profile_retirement_deferred';
+      let retirementRollbackDraft = null;
+      if (draft.status === 'complete' && draft.review.retireProfileIds.length) {
+        retirementRollbackDraft = clone(draft);
+        const retirementIds = new Set(draft.review.retireProfileIds);
+        const before = profileBeforeImages(draft.profiles, draft.review.retireProfileIds);
+        draft.profiles = draft.profiles.filter(profile => !retirementIds.has(String(profile?.profileId || '').trim()));
+        const previousBefore = Array.isArray(draft.review.retiredProfileBefore) ? draft.review.retiredProfileBefore : [];
+        draft.review.retiredProfileIds = [...new Set([
+          ...(draft.review.retiredProfileIds || []), ...draft.review.retireProfileIds,
+        ])];
+        draft.review.retiredProfileBefore = [
+          ...previousBefore,
+          ...before.filter(entry => !previousBefore.some(old => old.profileId === entry.profileId)),
+        ];
+        draft.review.retireProfileIds = [];
+      }
+      try { await persist(); }
+      catch (error) {
+        if (retirementRollbackDraft) draft = retirementRollbackDraft;
+        throw error;
+      }
       publish({ detail: draft.status === 'partial' ? '部分人物未完成；已完成档案已保存，可点击修复本轮档案'
+        : draft.status === 'failed' && draft.failureCode === 'profile_retirement_deferred' ? '档案退休计划因本轮批量失败暂缓；原档案保留，可点击修复本轮档案'
         : draft.tasks.length ? '本轮人物档案已完整填表并读回' : '模型判定本轮没有需要建档的人物，理由已保存' });
     } catch (error) {
       if (token !== epoch) return;
       if (draft && branch && !INVALIDATED.has(error.code) && !/^profile_store|profile_revision/.test(error.code || '')) {
-        draft.status = 'failed'; draft.failureCode = 'profile_generation_failed';
+        draft.status = 'failed';
+        draft.failureCode = draft.review?.retireProfileIds?.length ? 'profile_retirement_deferred' : 'profile_generation_failed';
         draft.review.failure = { code: error.code || 'profile_generation_failed', message: String(error.message || error) };
         for (const task of draft.tasks) if (['pending', 'generating'].includes(task.status)) {
           task.status = 'failed'; task.code = 'profile_batch_failed';

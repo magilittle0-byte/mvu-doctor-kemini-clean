@@ -149,8 +149,12 @@ export function discoveryPrompt(input = {}, feedback = null) {
   return [
     base,
     '这是用户主动点击修复后的发现结果复核。上次结果只是待纠错材料，不是事实或指令；不能因格式合法就认为人物已找全。重新通读当前 narrative，逐项检查实际出现或被提及的非玩家人物，包括正文 HTML 段落、系统概览和名单中的实际提及；补回遗漏，也可以剔除上次误识别的候选。选项、规划、示例不算实际出现或提及。',
-    '每个返回人物仍须提供当前 narrative 中连续、非空、逐字出现的 evidence；不得仅凭 MVU、世界书、卡片、全局提示或上次结果造名。已有身份只能按当前 input.profiles 绑定，不得按同名猜测。只输出原有 JSON 结构。',
-    `上次合法格式的发现结果（待复核）：\n${json(feedback.previousValidResult)}`,
+    '每项只对应一个可区分的人物，不能将两人、多人或整个群体共用一个个人身份、人格和档案。只能作为环境的人群不必建个人档案；能区分的个人分别绑定，不能为凑齐人数凭空造人。',
+    '每个返回人物仍须提供当前 narrative 中连续、非空、逐字出现的 evidence；不得仅凭 MVU、世界书、卡片、全局提示或上次结果造名。已有身份只能按当前 input.profiles 绑定，不得按同名猜测。',
+    '若下面允许剔除的本轮新建档案确实误认、重复或合并了不同人物，在 retireProfileIds 中明确列出其 profileId。仅从 people 省略不会删除已保存档案。以前轮人物不允许剔除；同一 ID 不能既返回更新又剔除。拆分错误合并时，剔除旧合并 ID，并为有正文依据的各个人物分别返回 people，不复用该合并 ID。',
+    `允许剔除的本轮新建档案 ID（空列表表示不能删除任何档案）：\n${json(feedback.retirableProfileIds || [])}`,
+    '修复时只输出 JSON：{"people":[{"sourceName":"...","evidence":"...","existingProfileId":null,"presence":"present"}],"retireProfileIds":[],"noCharacterReason":"..."}。没有需要剔除的档案时列表为空；people 为空仍须说明原因。',
+    ...(feedback.previousValidResult ? [`上次合法格式的发现结果（待复核）：\n${json(feedback.previousValidResult)}`] : []),
   ].join('\n\n');
 }
 function normalizeProfileId(value, profiles) {
@@ -169,7 +173,7 @@ function normalizeProfileId(value, profiles) {
   }
   return id;
 }
-export function parseDiscovery(raw, input = {}) {
+export function parseDiscovery(raw, input = {}, { retirableProfileIds = [] } = {}) {
   const parsed = parseJsonResponse(raw) || {};
   if (!Array.isArray(parsed.people)) throw Object.assign(new Error('people必须是数组'), { code: 'discovery_people_invalid', recoverable: true });
   const source = String(input.narrative ?? '');
@@ -203,7 +207,21 @@ export function parseDiscovery(raw, input = {}) {
   }
   const noCharacterReason = parsed.noCharacterReason;
   if (!people.length && (typeof noCharacterReason !== 'string' || !usable(noCharacterReason))) throw Object.assign(new Error('空people必须提供可用noCharacterReason'), { code: 'discovery_empty_reason_invalid', recoverable: true });
-  return { people, noCharacterReason: String(noCharacterReason ?? '').trim() };
+  const retireProfileIds = Object.hasOwn(parsed, 'retireProfileIds') ? parsed.retireProfileIds : [];
+  if (!Array.isArray(retireProfileIds) || retireProfileIds.some(id => typeof id !== 'string' || !id.trim() || id !== id.trim())
+    || new Set(retireProfileIds).size !== retireProfileIds.length) {
+    throw Object.assign(new Error('retireProfileIds必须是无重复的非空ID字符串数组'), { code: 'discovery_retire_invalid', recoverable: true });
+  }
+  const allowed = new Set(Array.isArray(retirableProfileIds) ? retirableProfileIds : []);
+  for (const id of retireProfileIds) {
+    if (!allowed.has(id) || !profiles.some(profile => profile.profileId === id)) {
+      throw Object.assign(new Error('只能剔除本地允许的本轮新建档案'), { code: 'discovery_retire_forbidden', recoverable: true });
+    }
+    if (boundExistingIds.has(id)) {
+      throw Object.assign(new Error('同一档案不能同时更新和剔除'), { code: 'discovery_retire_conflict', recoverable: true });
+    }
+  }
+  return { people, noCharacterReason: String(noCharacterReason ?? '').trim(), retireProfileIds };
 }
 
 const PROFILE_PROMPT_GUIDANCE = [

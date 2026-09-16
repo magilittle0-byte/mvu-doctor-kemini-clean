@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProfileRuntime } from '../profiles/runtime.mjs';
+import { createProfileStore } from '../profiles/store.mjs';
 import { PROFILE_FIELDS, validateProfile } from '../profiles/content.mjs';
 
 function setPath(target, path, value) {
@@ -38,10 +39,10 @@ function memoryStore(initial = null) {
   };
 }
 
-function fixture({ model, assertReceipt } = {}) {
+function fixture({ model, assertReceipt, store: providedStore } = {}) {
   const branch = { index: 10, scopeKey: 'scope-a', lineage: 'lineage-a' };
   const old = profile('old-person', 'P1', '旧人物', '-旧档案');
-  const store = memoryStore({ version: '0.1.0-candidate.1', scopeKey: branch.scopeKey, lineage: branch.lineage, index: 10, revision: 1, status: 'complete', profiles: [old], tasks: [] });
+  const store = providedStore || memoryStore({ version: '0.1.0-candidate.1', scopeKey: branch.scopeKey, lineage: branch.lineage, index: 10, revision: 1, status: 'complete', profiles: [old], tasks: [] });
   const ctx = { extensionSettings: {}, chat: [], setExtensionPrompt() {}, eventSource: { on() {}, removeListener() {} } };
   const host = {
     context: () => ctx,
@@ -116,6 +117,7 @@ test('无人发现时只发送一次 discovery 请求并保存完成态', async 
   const { host, store, receipt } = fixture({ model: async (_r, prompt) => {
     calls.push('discovery');
     assert.match(prompt, /人物发现器/);
+    assert.doesNotMatch(prompt, /retirableProfileIds/);
     return JSON.stringify({ people: [], noCharacterReason: '本轮没有需要建档的人物' });
   }});
   const runtime = createProfileRuntime({ host, store });
@@ -232,6 +234,259 @@ test('manual retry corrects an omitted person, preserves the complete old profil
   assert.equal(runtime.snapshot().readback, true);
 });
 
+test('manual retry explicitly retires a current-round new profile while preserving prior and valid sibling profiles', async () => {
+  let manual = false;
+  let retiredProfileId = '';
+  const { host, store, receipt, old } = fixture({ model: async (_r, prompt) => {
+    if (prompt.includes('人物发现器')) {
+      if (!manual) return discoveryRaw();
+      return JSON.stringify({ people: [
+        { sourceName: '甲', evidence: '甲在门内', existingProfileId: 'old-person', presence: 'present' },
+      ], retireProfileIds: [retiredProfileId], noCharacterReason: '' });
+    }
+    if (manual) {
+      const rows = jsonArrayAfter(String(prompt), 'rows（每项只对应自己的绑定资料）：\n')
+        .map(row => ({ rowId: row.rowId, profileId: row.profileId }));
+      return JSON.stringify({ profiles: rows.map(row => profile(row.profileId, row.rowId, '旧人物', '-保留')) });
+    }
+    return batchFromPrompt(prompt, { suffix: '-初次' });
+  }});
+  const runtime = createProfileRuntime({ host, store });
+  await runtime.run(receipt);
+  retiredProfileId = store.current().profiles.find(profile => profile.name === '乙').profileId;
+  assert.ok(store.current().review.newProfileIds.includes(retiredProfileId));
+  manual = true;
+  await runtime.retry();
+  const result = store.current();
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(result.profiles.map(profile => profile.profileId), ['old-person']);
+  assert.equal(result.profiles.find(profile => profile.profileId === 'old-person').name, old.name);
+  assert.deepEqual(result.review.retiredProfileIds, [retiredProfileId]);
+  assert.equal(result.review.retiredProfileBefore[0].profileId, retiredProfileId);
+  assert.equal(result.review.retireProfileIds.length, 0);
+  assert.deepEqual(await runtime.read(), result);
+});
+
+test('manual retirement rejects prior-round or unknown IDs without changing profiles', async () => {
+  let manual = false;
+  let invalidId = 'old-person';
+  const { host, store, receipt } = fixture({ model: async (_r, prompt) => {
+    if (prompt.includes('人物发现器')) {
+      if (!manual) return discoveryRaw();
+      return JSON.stringify({ people: [], retireProfileIds: [invalidId], noCharacterReason: '没有新的可建档人物' });
+    }
+    return batchFromPrompt(prompt);
+  }});
+  const runtime = createProfileRuntime({ host, store });
+  await runtime.run(receipt);
+  const before = store.current();
+  manual = true;
+  await runtime.retry();
+  assert.equal(store.current().status, 'failed');
+  assert.deepEqual(store.current().profiles, before.profiles);
+  invalidId = 'unknown-profile';
+  await runtime.retry();
+  assert.equal(store.current().status, 'failed');
+  assert.deepEqual(store.current().profiles, before.profiles);
+});
+
+test('legacy records without a baseline cannot retire an existing profile across repeated retries or changed evidence', async t => {
+  const makeLegacyStore = () => {
+    const old = profile('old-person', 'P1', '旧人物', '-旧档案');
+    return memoryStore({ version: '0.1.0-candidate.4', variableIdentity: 'identity-a', mvuHash: 'mvu-a',
+      scopeKey: 'scope-a', lineage: 'lineage-a', index: 10, revision: 1, status: 'complete', profiles: [old],
+      tasks: [{ rowId: 'P1', profileId: 'old-person', sourceName: '甲', evidence: '甲在门内',
+        existingProfileId: 'old-person', presence: 'present', status: 'complete' }], review: { requests: [] } });
+  };
+  const makeModel = () => {
+    let discoveries = 0;
+    return async (_r, prompt) => {
+      if (!prompt.includes('人物发现器')) return batchFromPrompt(prompt);
+      return JSON.stringify(++discoveries === 1
+        ? { people: [{ sourceName: '甲', evidence: '甲在门内', existingProfileId: 'old-person', presence: 'present' }], noCharacterReason: '' }
+        : { people: [], retireProfileIds: ['old-person'], noCharacterReason: '重新核对身份' });
+    };
+  };
+  await t.test('same receipt twice', async () => {
+    const store = makeLegacyStore();
+    const { host, receipt } = fixture({ store, model: makeModel() });
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.retry();
+    assert.equal(store.current().status, 'complete');
+    await runtime.retry();
+    assert.equal(store.current().review.failure.code, 'discovery_retire_forbidden');
+    assert.equal(store.current().profiles.some(value => value.profileId === 'old-person'), true);
+    assert.deepEqual(store.current().review.retiredProfileIds, []);
+    assert.deepEqual(store.current().review.newProfileIds, []);
+  });
+  await t.test('changed receipt twice', async () => {
+    const store = makeLegacyStore();
+    const branch = { index: 10, scopeKey: 'scope-a', lineage: 'lineage-a' };
+    const saved = store.current();
+    saved.review.baselineProfileIds = [];
+    saved.review.newProfileIds = ['old-person'];
+    await store.commit(branch, saved, saved.revision, async () => {});
+    const { host, receipt } = fixture({ store, model: makeModel() });
+    receipt.identity = 'identity-b'; receipt.afterHash = 'mvu-b';
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.retry();
+    assert.equal(store.current().status, 'complete');
+    await runtime.retry();
+    assert.equal(store.current().review.failure.code, 'discovery_retire_forbidden');
+    assert.equal(store.current().profiles.some(value => value.profileId === 'old-person'), true);
+    assert.deepEqual(store.current().review.retiredProfileIds, []);
+    assert.deepEqual(store.current().review.newProfileIds, []);
+  });
+});
+
+test('partial or transport failure keeps an explicit retirement pending and retains its profile', async t => {
+  await t.test('partial batch', async () => {
+    let manual = false;
+    let manualAttempt = 0;
+    let retiredProfileId = '';
+    const discoveryPrompts = [];
+    const { host, store, receipt } = fixture({ model: async (_r, prompt) => {
+      if (prompt.includes('人物发现器')) {
+        if (!manual) return discoveryRaw();
+        manualAttempt += 1;
+        discoveryPrompts.push(prompt);
+        if (manualAttempt === 2) return JSON.stringify({ people: [
+          { sourceName: '甲', evidence: '甲在门内', existingProfileId: 'old-person', presence: 'present' },
+        ], noCharacterReason: '' });
+        return JSON.stringify({ people: [
+          { sourceName: '甲', evidence: '甲在门内', existingProfileId: 'old-person', presence: 'present' },
+        ], retireProfileIds: [retiredProfileId], noCharacterReason: '' });
+      }
+      return manualAttempt === 1 ? batchFromPrompt(prompt, { invalid: ['old-person'] }) : batchFromPrompt(prompt);
+    }});
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.run(receipt);
+    retiredProfileId = store.current().profiles.find(profile => profile.name === '乙').profileId;
+    manual = true;
+    await runtime.retry();
+    const result = store.current();
+    assert.equal(result.status, 'failed');
+    assert.equal(result.failureCode, 'profile_retirement_deferred');
+    assert.ok(result.profiles.some(profile => profile.profileId === retiredProfileId));
+    assert.deepEqual(result.review.retiredProfileIds, []);
+    assert.deepEqual(result.review.retireProfileIds, [retiredProfileId]);
+    await runtime.retry();
+    const omitted = store.current();
+    assert.equal(omitted.status, 'complete');
+    assert.ok(omitted.profiles.some(profile => profile.profileId === retiredProfileId));
+    assert.deepEqual(omitted.review.retiredProfileIds, []);
+    assert.ok(omitted.review.newProfileIds.includes(retiredProfileId));
+    assert.match(discoveryPrompts[1], /上次合法格式的发现结果/);
+    assert.match(discoveryPrompts[1], /允许剔除的本轮新建档案 ID/);
+    assert.match(discoveryPrompts[1], new RegExp(retiredProfileId));
+    await runtime.retry();
+    const recovered = store.current();
+    assert.equal(recovered.status, 'complete');
+    assert.equal(recovered.profiles.some(profile => profile.profileId === retiredProfileId), false);
+    assert.deepEqual(recovered.review.retiredProfileIds, [retiredProfileId]);
+    assert.match(discoveryPrompts[2], new RegExp(retiredProfileId));
+  });
+  await t.test('transport failure', async () => {
+    let manual = false;
+    let retiredProfileId = '';
+    const { host, store, receipt } = fixture({ model: async (_r, prompt) => {
+      if (prompt.includes('人物发现器')) {
+        if (!manual) return discoveryRaw();
+        return JSON.stringify({ people: [
+          { sourceName: '甲', evidence: '甲在门内', existingProfileId: 'old-person', presence: 'present' },
+        ], retireProfileIds: [retiredProfileId], noCharacterReason: '' });
+      }
+      if (manual) throw new Error('batch transport failed');
+      return batchFromPrompt(prompt);
+    }});
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.run(receipt);
+    retiredProfileId = store.current().profiles.find(profile => profile.name === '乙').profileId;
+    manual = true;
+    await runtime.retry();
+    const result = store.current();
+    assert.equal(result.status, 'failed');
+    assert.ok(result.profiles.some(profile => profile.profileId === retiredProfileId));
+    assert.deepEqual(result.review.retiredProfileIds, []);
+    assert.deepEqual(result.review.retireProfileIds, [retiredProfileId]);
+  });
+});
+
+test('manual retirement conflicts with updating the same profile and does not delete it', async () => {
+  let manual = false;
+  let retiredProfileId = '';
+  const { host, store, receipt } = fixture({ model: async (_r, prompt) => {
+    if (prompt.includes('人物发现器')) {
+      if (!manual) return discoveryRaw();
+      return JSON.stringify({ people: [
+        { sourceName: '乙', evidence: '乙站在门外', existingProfileId: retiredProfileId, presence: 'present' },
+      ], retireProfileIds: [retiredProfileId], noCharacterReason: '' });
+    }
+    return batchFromPrompt(prompt);
+  }});
+  const runtime = createProfileRuntime({ host, store });
+  await runtime.run(receipt);
+  retiredProfileId = store.current().profiles.find(profile => profile.name === '乙').profileId;
+  manual = true;
+  await runtime.retry();
+  const result = store.current();
+  assert.equal(result.status, 'failed');
+  assert.ok(result.profiles.some(profile => profile.profileId === retiredProfileId));
+  assert.deepEqual(result.review.retiredProfileIds, []);
+});
+
+test('failed final retirement commit restores the unfiltered draft and leaves the profile available', async () => {
+  const data = new Map();
+  let failedRetirementWrite = false;
+  const kv = {
+    async read(key) { return data.has(key) ? structuredClone(data.get(key)) : null; },
+    async write(key, value) {
+      const candidate = structuredClone(value);
+      if (!failedRetirementWrite && candidate.status === 'complete'
+        && candidate.review?.retiredProfileIds?.length) {
+        failedRetirementWrite = true;
+        throw Object.assign(new Error('injected final retirement write failure'), { code: 'store_write' });
+      }
+      data.set(key, candidate);
+      return structuredClone(candidate);
+    },
+  };
+  const store = createProfileStore(kv);
+  const branch = { index: 10, scopeKey: 'scope-a', lineage: 'lineage-a' };
+  const old = profile('old-person', 'P1', '旧人物', '-旧档案');
+  await store.commit(branch, { version: '0.1.0-candidate.4', scopeKey: branch.scopeKey,
+    lineage: branch.lineage, index: branch.index, status: 'complete', profiles: [old], tasks: [],
+  }, 0, async () => {});
+  let manual = false;
+  let retiredProfileId = '';
+  const { host, receipt } = fixture({ store, model: async (_r, prompt) => {
+    if (prompt.includes('人物发现器')) {
+      if (!manual) return discoveryRaw();
+      return JSON.stringify({ people: [
+        { sourceName: '甲', evidence: '甲在门内', existingProfileId: 'old-person', presence: 'present' },
+      ], retireProfileIds: [retiredProfileId], noCharacterReason: '' });
+    }
+    if (manual) {
+      const rows = jsonArrayAfter(String(prompt), 'rows（每项只对应自己的绑定资料）：\n')
+        .map(row => ({ rowId: row.rowId, profileId: row.profileId }));
+      return JSON.stringify({ profiles: rows.map(row => profile(row.profileId, row.rowId, '旧人物', '-保留')) });
+    }
+    return batchFromPrompt(prompt, { suffix: '-初次' });
+  }});
+  const runtime = createProfileRuntime({ host, store });
+  await runtime.run(receipt);
+  retiredProfileId = (await store.read(branch)).profiles.find(value => value.name === '乙').profileId;
+  manual = true;
+  await runtime.retry();
+  const result = await store.read(branch);
+  assert.equal(failedRetirementWrite, true);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failureCode, 'profile_retirement_deferred');
+  assert.ok(result.profiles.some(value => value.profileId === retiredProfileId));
+  assert.deepEqual(result.review.retiredProfileIds, []);
+  assert.deepEqual(result.review.retireProfileIds, [retiredProfileId]);
+});
+
 test('malformed discovery and batch transport failure do not trigger automatic retries', async t => {
   await t.test('malformed discovery', async () => {
     const calls = [];
@@ -291,6 +546,7 @@ for (const [label, mutate] of [
     await runtime.retry();
     assert.equal(discoveryPrompts.length, 2);
     assert.doesNotMatch(discoveryPrompts[1], /上次合法格式的发现结果/);
+    assert.match(discoveryPrompts[1], /允许剔除的本轮新建档案 ID[\s\S]*?\[\]/);
     assert.ok(store.current().profiles.some(p => p.profileId === 'old-person'));
   });
 }
