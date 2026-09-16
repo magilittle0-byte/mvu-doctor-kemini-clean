@@ -1,12 +1,12 @@
 {
-  "schema": "mvu-p2-r4-public-summary/v1",
+  "schema": "mvu-p2-r5-public-summary/v1",
   "stage": 2,
   "complete": true,
   "mechanismAcceptance": true,
   "fullDoctorAcceptance": false,
-  "version": "0.1.0-candidate.4",
-  "sourceHead": "68c2db519dd170c7acdd07a6e992d91bc791458f",
-  "sourceFingerprint": "8384403869d445d6ac3e70e3f6ccd930e1a6c6540959d29066a0b9662ca5dc57",
+  "version": "0.1.0-candidate.5",
+  "sourceHead": "eb538a2942a751df2f9958cb8b2aa4972df1cbcb",
+  "sourceFingerprint": "0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33",
   "p1Fingerprint": "39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e",
   "normalCount": 12,
   "pressureCount": 1,
@@ -17,48 +17,57 @@
       "index": 2,
       "swipeId": 0,
       "p2Status": "complete",
-      "failedTaskCount": null,
-      "reviewOutcome": null,
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": null,
-      "mode": "manual",
-      "buttonClicks": 1,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 1,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 1,
-      "repairRecovered": null,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": null,
+          "code": null,
+          "sourceSequence": null,
+          "inherited": false,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": 1,
+          "repairRecovered": true,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": false
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq1-cost-summary.json",
+        "sequence": 1,
+        "wholeTavernCalls": 7,
+        "doctorCalls": 5,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 2,
+        "manualButtonClicks": 1,
+        "automaticRetries": 0,
+        "totalTokens": 389248
+      },
       "evidence": {
         "release": {
           "file": "seq1-review-release.json",
-          "sha256": "6304ae51b760252f1edf9662d0018506a29ec984c1cef0542746dc7ba3979a67"
+          "sha256": "537dfbb9776573bc28aa3b0973b18a317c52a870da8e131286ae638e6e10868d"
         },
         "root": {
           "file": "seq1-root-review.json",
-          "sha256": "b82d5345631a2b046391890863d3332b36b35a0414df384f89369c76d29a1f2d"
+          "sha256": "70f6799d72c01815341d8720c6c701df4d94eb8ead68b2ef0f4ec499315210af"
         },
         "meta": {
           "file": "seq1-mvu-final-meta-manual.json",
-          "sha256": "42a6000684e219907e27570c3e1fac63595389610f11ee7db8337dc87ecaeb6b"
+          "sha256": "3a03e35fbd301803dd9451f84591d3afb3eb6237ce5ec6d95fbf5312a69bddd1"
         },
-        "manual": {
-          "click": {
-            "file": "seq1-profile-manual-click.json",
-            "sha256": "817c91de46fa6d813b4d36dcc498232d8a483230a95f1eb6d031ec9006ef2167"
-          },
-          "readback": {
-            "file": "seq1-profile-manual-readback.json",
-            "sha256": "832466cf30ec439967bb9527347a627f84b91603cc12095745450bca702f1875"
-          }
-        },
-        "containment": null
+        "additional": [],
+        "p1Failure": null
       }
     },
     {
@@ -67,39 +76,39 @@
       "index": 4,
       "swipeId": 0,
       "p2Status": "complete",
-      "failedTaskCount": null,
-      "reviewOutcome": null,
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": null,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 0,
-      "repairRecovered": null,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
-      ],
-      "pressure": null,
+      "modelExceptions": [],
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq2-cost-summary.json",
+        "sequence": 2,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 0,
+        "manualButtonClicks": 0,
+        "automaticRetries": 0,
+        "totalTokens": 283632
+      },
       "evidence": {
         "release": {
           "file": "seq2-review-release.json",
-          "sha256": "bce82d6b51c54b911e1eaef66c8161dd3deb0adedda14b038284cb09146173c3"
+          "sha256": "310e970da6f0fe5430e6b7326302f18bcfb90ddccfc6b86d8667b2838c7e05e7"
         },
         "root": {
           "file": "seq2-root-review.json",
-          "sha256": "4186596a5476842088d9be0a6e715a27548620c3058df953e59ac64709b83905"
+          "sha256": "be731059447491b2ac0990acc86e8451f0c8b29229ad8a077afcc10f160ee06f"
         },
         "meta": {
           "file": "seq2-mvu-final-meta-initial.json",
-          "sha256": "fac78c25a02c4ffb85c9696a28e04cc6f013101e145ea953d9cfdeacd0d1c575"
+          "sha256": "2036f3dde57d1586cdc7d7280e2a02c76864ba51de608c5017f8dc080b72fe83"
         },
-        "manual": null,
-        "containment": null
+        "additional": [],
+        "p1Failure": null
       }
     },
     {
@@ -108,39 +117,39 @@
       "index": 6,
       "swipeId": 0,
       "p2Status": "complete",
-      "failedTaskCount": null,
-      "reviewOutcome": null,
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": null,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 0,
-      "repairRecovered": null,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
-      ],
-      "pressure": null,
+      "modelExceptions": [],
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq3-cost-summary.json",
+        "sequence": 3,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 0,
+        "manualButtonClicks": 0,
+        "automaticRetries": 0,
+        "totalTokens": 309007
+      },
       "evidence": {
         "release": {
           "file": "seq3-review-release.json",
-          "sha256": "eb9af32d3f00fc49be4b95255b7bc9c83967ffec21d471d856c392c4eaea298e"
+          "sha256": "3d437d497d0a5164a6ed00a128a59471c01cfeb8d4dd667155da0d0b6b3d665a"
         },
         "root": {
           "file": "seq3-root-review.json",
-          "sha256": "f3e6dde54594e2223f7a43ac5fad94d1f62fe3a008a059fcc1d98a949893ea96"
+          "sha256": "7a763891f2e1e7e20fd8b98869a518d6fbca43a9837c609cb3acb333f31249a2"
         },
         "meta": {
           "file": "seq3-mvu-final-meta-initial.json",
-          "sha256": "a17e8884874957d522a30c0936e34f358219858239c85a7c10c16cb7bfff580d"
+          "sha256": "2f14804c5533f15d1d3fd7e73b564f40af72aa3802c10b5fa3b8afd3065343d3"
         },
-        "manual": null,
-        "containment": null
+        "additional": [],
+        "p1Failure": null
       }
     },
     {
@@ -148,40 +157,99 @@
       "kind": "next",
       "index": 8,
       "swipeId": 0,
-      "p2Status": "complete",
-      "failedTaskCount": null,
-      "reviewOutcome": null,
+      "p2Status": "restored",
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": null,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 0,
-      "repairRecovered": null,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": null,
+          "inherited": false,
+          "initialFailureRetained": true,
+          "repairAttempted": true,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": 1,
+          "repairRecovered": false,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq4-cost-final-summary.json",
+        "sequence": 4,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 2,
+        "manualDoctorCalls": 1,
+        "manualButtonClicks": 1,
+        "automaticRetries": 0,
+        "totalTokens": 334126
+      },
       "evidence": {
         "release": {
           "file": "seq4-review-release.json",
-          "sha256": "e2addbcc805b1228baeee1d0f02ca4832a6abdd1e15ee3efaebf26f520967281"
+          "sha256": "346b7214b6dabaab604db46d06acc6f1ddeabb38e8177deaa59fe8ce7812ffdf"
         },
         "root": {
           "file": "seq4-root-review.json",
-          "sha256": "bd1c9d6149371299285c82d47290e57b259efea302dcb364e507d49d8d1a57c7"
+          "sha256": "8c69394e3fb899426a2b646c6fa17f9242da1f1d38d4612d2b1a5c3562794eee"
         },
         "meta": {
           "file": "seq4-mvu-final-meta-initial.json",
-          "sha256": "bd7884eedfd553c389ce0a31b90f7cf5b4a48cdf5d822bbf6ee105083f464653"
+          "sha256": "57ae0ca33bbf4d0f51f5a4ee3d34d507c8cb7b44e197b5bd7e527a1db7109319"
         },
-        "manual": null,
-        "containment": null
+        "additional": [
+          {
+            "file": "checkpoint-4-failed.json",
+            "sha256": "4dfcc0b525ab11d3497296c84fde8221ff9318650306e9bcaa80f36804240e22"
+          },
+          {
+            "file": "seq4-p1-independent-review.json",
+            "sha256": "4cbd2b24afcd95f320910cb163320d3f8dc16707c2338052cd108c1c72193396"
+          },
+          {
+            "file": "seq4-p1-manual-independent-review.json",
+            "sha256": "af38a2a1f11f758a6d581c226e9b0647c72c4ca18f5f70d8530e471a69381255"
+          },
+          {
+            "file": "seq4-p2-independent-review.json",
+            "sha256": "0a460fcf6f00b1e90a97b1efdb4cbc0a92f70c1c6c60e7aaa978b2ce8c1ebb8a"
+          },
+          {
+            "file": "seq4-root-initial-review.json",
+            "sha256": "8dab0d6a2305c6a62ba6f3d13d3843f910fa4de1303cb722bad64a64c0a881d3"
+          },
+          {
+            "file": "seq4-root-manual-review.json",
+            "sha256": "a8ed59427de0bd59feb6d9247d667fcf0fd0ca625d151019578fdff228077256"
+          },
+          {
+            "file": "seq4-p1-manual-freshness.json",
+            "sha256": "598083af69ea83df7b3ab69486a039f8e4e001da6dad6117a064b90a7fc5fb1c"
+          },
+          {
+            "file": "seq4-cost-final-summary.json",
+            "sha256": "c07975fa9223f1b92b9b9acca4c8984b265110f39ff8f99d18d1808505a82f9f"
+          },
+          {
+            "file": "seq4-private-initial-reviewed-cleanup.json",
+            "sha256": "3e5e3d5959c110dc32e36239f74d230529d6dbc2bc935c948cc1195a8e90490c"
+          },
+          {
+            "file": "seq4-private-manual-reviewed-cleanup.json",
+            "sha256": "bd67330e5503a6e137db0a65fe3095689f073f893c87fa70ac9fa3bf30759d62"
+          }
+        ],
+        "p1Failure": null
       }
     },
     {
@@ -190,51 +258,90 @@
       "index": 10,
       "swipeId": 0,
       "p2Status": "complete",
-      "failedTaskCount": null,
-      "reviewOutcome": null,
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": null,
-      "mode": "manual",
-      "buttonClicks": 1,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 1,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 1,
-      "repairRecovered": null,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        }
       ],
-      "pressure": {
-        "dungeonEntered": true,
-        "multipleNewNpcsSameReply": true
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq5-cost-summary.json",
+        "sequence": 5,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 0,
+        "manualButtonClicks": 0,
+        "automaticRetries": 0,
+        "totalTokens": 360594
       },
       "evidence": {
         "release": {
           "file": "seq5-review-release.json",
-          "sha256": "f5fe5647f33b0bf09630c83dc6b8bdfb2074ca713d21ef615e238c8bdcaad6c7"
+          "sha256": "f03278ec0474cd74dea53e8df708f901a59e12b47e9e8c90eeed54cc2d5bf676"
         },
         "root": {
           "file": "seq5-root-review.json",
-          "sha256": "91dca4c60c35c5e451cf0d881e9985bdc97f25768ed8928adfcd6f7266cc2797"
+          "sha256": "19631e7d9a40f4a798b553318051de096cf9086cb1a7fa209ffbd04bc7c57f2a"
         },
         "meta": {
-          "file": "seq5-mvu-final-meta-manual.json",
-          "sha256": "431e157221798e6dafee2d74041378fee875ca25804705c9f1c0b5141b18faea"
+          "file": "seq5-mvu-final-meta-initial.json",
+          "sha256": "8fe8edc47912bcf49a1c6bd61c9fbe1eddff1ddf1fcf8685805fe83d4502e2ae"
         },
-        "manual": {
-          "click": {
-            "file": "seq5-profile-manual-click.json",
-            "sha256": "7bf619fcdfa85a885dc0089f809a936e9b8236173e80fc6f5d7c46fb816578fa"
+        "additional": [
+          {
+            "file": "seq5-p1-independent-review.json",
+            "sha256": "2d8f3f100ec75718fe9827ca5d44b2b33bb6ae0bbdaffc98201a067cb7f44357"
           },
-          "readback": {
-            "file": "seq5-profile-manual-readback.json",
-            "sha256": "7c4ad23eddb04a58f0a93806621b191f3314014a1de682824c16ba3a852ad68b"
+          {
+            "file": "seq5-p2-independent-review.json",
+            "sha256": "f0d47b722e0ea4ecbc4ee665e35ebe312aa545d5ec973267add80e8df94afca4"
+          },
+          {
+            "file": "seq5-root-body-recall-ui-review.json",
+            "sha256": "caf94ea20e533251a42a047434fec6f2dac6845a98da97c8f9abcee625aa513b"
+          },
+          {
+            "file": "seq5-root-viewport-review.json",
+            "sha256": "03adb9c760f875417e03e8979fb2f0301ed778349aee4b882242a6567bc6ac4d"
+          },
+          {
+            "file": "seq5-cost-summary.json",
+            "sha256": "fbf92fa69da2daa8e0e7617145fdd1e1a401c35fe0823fcb60eed248b3c463d8"
+          },
+          {
+            "file": "seq5-private-reviewed-cleanup.json",
+            "sha256": "ac10282fe8304c571448329d14ebd0d09050646896b792cdc6c5b62d6c2254f4"
+          },
+          {
+            "file": "seq5-initial-snapshot.json",
+            "sha256": "44168a6274b6777ed519a0318bf3a1ddff1a839992f341b68f24f37c413cbde7"
+          },
+          {
+            "file": "seq5-recall-meta-settled.json",
+            "sha256": "703d0fa26370183011f99f0c629e45e6ea9ab7cc53d37e5bb6bb622bdd829d05"
           }
-        },
-        "containment": null
+        ],
+        "p1Failure": null
       }
     },
     {
@@ -243,48 +350,86 @@
       "index": 12,
       "swipeId": 0,
       "p2Status": "complete",
-      "failedTaskCount": null,
-      "reviewOutcome": null,
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": null,
-      "mode": "p1-manual-recovery",
-      "buttonClicks": 1,
-      "p1ManualCalls": 1,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 2,
-      "wholeRoundButtonClicks": 1,
-      "repairRecovered": null,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq6-cost-summary.json",
+        "sequence": 6,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 0,
+        "manualButtonClicks": 0,
+        "automaticRetries": 0,
+        "totalTokens": 351227
+      },
       "evidence": {
         "release": {
           "file": "seq6-review-release.json",
-          "sha256": "634e2148ed388451a4cbc8823849865d47f5c247d9b61b1af35377d7e7caec09"
+          "sha256": "5780143a1192537af83bf62221ab385338fa3860f98e8cf3b92dd25c70b20ca4"
         },
         "root": {
           "file": "seq6-root-review.json",
-          "sha256": "126c3fcf31ee5a05b7ecafeebe852b4cfc19cc2d8e734c8229cbf0122b8c693e"
+          "sha256": "7d16230d4bbba87538951cf2ba9a4149f8c76d3ff8a25cc0a43be262970f6adb"
         },
         "meta": {
-          "file": "seq6-mvu-final-meta-manual.json",
-          "sha256": "78bd60bff4182520e7ff61a12c9927fa181bf99799fca580f72a67ec5b395cc8"
+          "file": "seq6-mvu-final-meta-initial.json",
+          "sha256": "3b261e817b7eb0171d333817cbab7f570cd587df9cf4b47558391b35f7cf8b5d"
         },
-        "manual": {
-          "click": {
-            "file": "seq6-manual-repair-click.json",
-            "sha256": "54fd27361630a083449d3af382240b2985e0501dd90942cc8d89912ece874c19"
+        "additional": [
+          {
+            "file": "seq6-p1-independent-review.json",
+            "sha256": "70b0c821f373e68fea6fdc11084035c93e98f176a47406060f96179d6eb7a705"
           },
-          "readback": {
-            "file": "seq6-p1-manual-freshness.json",
-            "sha256": "a04a93ee37f4bdbee74e262fff42fed76bb1c008f63be16fa82bb0237ae9f09f"
+          {
+            "file": "seq6-p2-independent-review.json",
+            "sha256": "d974f066634af72765bf6df64d821d425b3af5098cdded9570fb2497da626e57"
+          },
+          {
+            "file": "seq6-root-body-recall-ui-review.json",
+            "sha256": "d4eb3de84c64f5b0a77b99000a9fb779392e0ec3ee6101bce577801e7ab81321"
+          },
+          {
+            "file": "seq6-cost-summary.json",
+            "sha256": "121ae3bf1b29999897661a327a766bb879f2406302ddb8ae2f73559c8d40be0a"
+          },
+          {
+            "file": "seq6-private-reviewed-cleanup.json",
+            "sha256": "e35089c6a0abffb8b1f2f493f8b8b3ed3ca48de28f7e4ab9293447bd1caf8f83"
+          },
+          {
+            "file": "seq6-initial-snapshot.json",
+            "sha256": "0c70d06350cc2acfb0f12a327d528d7f7a71a9ad961800dc9817a85daf9f3c1f"
+          },
+          {
+            "file": "seq6-recall-meta-settled.json",
+            "sha256": "32ab002e6cc6b22b2be82a85a46912edc4f1510725992fceb7cd83b360ab0aef"
           }
-        },
-        "containment": null
+        ],
+        "p1Failure": null
       }
     },
     {
@@ -292,52 +437,170 @@
       "kind": "next",
       "index": 14,
       "swipeId": 0,
-      "p2Status": "partial",
-      "failedTaskCount": 3,
-      "reviewOutcome": "mechanism-verified-model-failure-contained",
+      "p2Status": "complete",
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": true,
-      "mode": "manual",
-      "buttonClicks": 1,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 1,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 1,
-      "repairRecovered": false,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "main",
+          "code": "body_time_marker_vs_main_patch_time_advance",
+          "sourceSequence": 7,
+          "inherited": false,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": false
+        },
+        {
+          "module": "p2",
+          "code": "profile_incomplete",
+          "sourceSequence": 7,
+          "inherited": false,
+          "initialFailureRetained": true,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": true,
+          "manualButtonClicks": 1,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": true,
+          "priorCandidateCompleted": false,
+          "recoveryMethod": "rediscovery-excluded-uncommitted-group",
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": false
+        },
+        {
+          "module": "p2",
+          "code": "grouped_distinguishable_opponents",
+          "sourceSequence": 7,
+          "inherited": false,
+          "initialFailureRetained": true,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": false
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq7-cost-final-summary.json",
+        "sequence": 7,
+        "wholeTavernCalls": 8,
+        "doctorCalls": 5,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 2,
+        "manualButtonClicks": 1,
+        "automaticRetries": 0,
+        "totalTokens": 543805
+      },
       "evidence": {
         "release": {
           "file": "seq7-review-release.json",
-          "sha256": "c0485e87a7a64191f561f5b31d848cf4236510e2e34615a1d9c26155289bde3a"
+          "sha256": "feacf583a2838ab9563ced359bc0609f940153adc932735df8be88a100558028"
         },
         "root": {
           "file": "seq7-root-review.json",
-          "sha256": "670ac8fe7c30521351a171eeba5d6accb2509576590d130f2c9b6d24e4c91b3c"
+          "sha256": "551c2283eaef9fd40534c77af551f5ee25e57ca927622dbff402c7e962cb8f08"
         },
         "meta": {
           "file": "seq7-mvu-final-meta-manual.json",
-          "sha256": "33f2187bf796c810f4bf640681ad222d829039e938916d2d47c1b88a6553bdb1"
+          "sha256": "353ba870216c1c29b07ea5876ec6d41b54d873d90c52c4dd23fae4e522e078e0"
         },
-        "manual": {
-          "click": {
-            "file": "seq7-profile-manual-click.json",
-            "sha256": "53c9f91aa9f1231b7a9ef6e4c060a9a3c743caa4044dc8249d9d7a125ae9b989"
+        "additional": [
+          {
+            "file": "seq7-p1-independent-review.json",
+            "sha256": "3ae1c18628e329bd82b67c54613569f12d6ee5906b3807f8435833abd0d28935"
           },
-          "readback": {
+          {
+            "file": "seq7-p2-initial-independent-review.json",
+            "sha256": "3fa7c3e90dd1394955059ddc5ea4a3b86df7dc8f151c06d0adbab8e022754e9d"
+          },
+          {
+            "file": "seq7-p2-manual-independent-review.json",
+            "sha256": "e2716a1db09c1256e95aa2d3ff22b4b0db0e5942112b33a4b30a3a1f695ac2c4"
+          },
+          {
+            "file": "seq7-root-initial-review.json",
+            "sha256": "2ea44d1b56150831b6e5eef7e448a0773dd14f173bd96bab930cbc52a22d6483"
+          },
+          {
+            "file": "seq7-root-pre-profile-repair-review.json",
+            "sha256": "9adc20dec50725dc4f9ec9cf6e60942407701cebd7df9ab3ed1553f731aa774c"
+          },
+          {
+            "file": "seq7-root-manual-review.json",
+            "sha256": "983d440dce5b715d060ca9fa0a19ca4c2ce5a11a18dae8ab2298071226ade2bb"
+          },
+          {
+            "file": "seq7-cost-final-summary.json",
+            "sha256": "1c00009fe364055035983ce11be4144d19c57ec95649943f81c139450a51d032"
+          },
+          {
+            "file": "seq7-cost-manual-observed.json",
+            "sha256": "f6f9858e27a64e8096f19199e6bb52d33f935184d0b913292abf1f9655e8327c"
+          },
+          {
+            "file": "seq7-private-initial-reviewed-cleanup.json",
+            "sha256": "b2e99a70179aaf2554d668a763d60c375d31d22782672b425872d36a39b415ed"
+          },
+          {
+            "file": "seq7-private-manual-reviewed-cleanup.json",
+            "sha256": "28a00657be572328cdf7a8aacf34af7fdbcb45cb22a84d5c20483b80ca760349"
+          },
+          {
+            "file": "seq7-initial-snapshot.json",
+            "sha256": "01c99e5478838354e60aa8edcd60b86eb07dd2f0f4726c27f2f3f26503a62813"
+          },
+          {
+            "file": "seq7-manual-snapshot.json",
+            "sha256": "c9f4a357f55aef04b6483b97ef214806e4b609f74bbfe67d2940b8bb3cff9a21"
+          },
+          {
+            "file": "seq7-recall-meta-settled.json",
+            "sha256": "4f7f2a5ea9736cce02bbaa2d32ed425f7567a919cfe5335451688e5905364755"
+          },
+          {
             "file": "seq7-profile-manual-readback.json",
-            "sha256": "fd63c996285f31b650ea831578d624dedde8d2aa8fc7f9f30de53384f08c5cc9"
+            "sha256": "ae75ce0717b0f15aab7adf605a29558e8f24fac1955fe0b775afd983aead16d1"
+          },
+          {
+            "file": "seq7-mvu-final-meta-manual.json",
+            "sha256": "353ba870216c1c29b07ea5876ec6d41b54d873d90c52c4dd23fae4e522e078e0"
           }
-        },
-        "containment": {
-          "file": "seq7-profile-failure-containment.json",
-          "sha256": "aac7559a7d984812e49422d567f06935efd6e60eb6ac35528762db4e301687c8"
-        }
+        ],
+        "p1Failure": null
       }
     },
     {
@@ -345,43 +608,95 @@
       "kind": "next",
       "index": 16,
       "swipeId": 0,
-      "p2Status": "partial",
-      "failedTaskCount": 3,
-      "reviewOutcome": "mechanism-verified-model-failure-contained",
+      "p2Status": "complete",
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": true,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 0,
-      "repairRecovered": false,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq8-cost-summary.json",
+        "sequence": 8,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 0,
+        "manualButtonClicks": 0,
+        "automaticRetries": 0,
+        "totalTokens": 404226
+      },
       "evidence": {
         "release": {
           "file": "seq8-review-release.json",
-          "sha256": "19ebd96b4152602956e8109f33ea565f254abc4a1665f01c54b5dd3b0b901ac2"
+          "sha256": "59ef020e5fbbde3349af345b6753ab0f31540d2279108c29c0ac811cf1e3b302"
         },
         "root": {
           "file": "seq8-root-review.json",
-          "sha256": "dc11eb8eac2f3820b6bedd914f3b26633d961574d9484904acbaa8f2329f4d8a"
+          "sha256": "5ec9d3cac3c129721b887b467a6d0b8fb712de0477a48d6752afdc494c1ba2e3"
         },
         "meta": {
           "file": "seq8-mvu-final-meta-initial.json",
-          "sha256": "5aca70ca337daf29df581c46d7cc57e29b8b7edee8f4707a5cf8821bd5a41ae0"
+          "sha256": "c748c19e217b14eb4fc32b8f2f45cd5dec9a5ac7ed6cf3b18d788d14c9bdaee0"
         },
-        "manual": null,
-        "containment": {
-          "file": "seq8-profile-auto-containment.json",
-          "sha256": "5c66ea6fefb5edc41d9ccc20af45f1c91546e694097bdbe447fd84fd22e1e383"
-        }
+        "additional": [
+          {
+            "file": "seq8-p1-independent-review.json",
+            "sha256": "46f3532437f81b2abb1ad8e3c0df3668d92bde529078bfc3b7db9574010de517"
+          },
+          {
+            "file": "seq8-p2-independent-review.json",
+            "sha256": "06b090d1c63e2180cb2faaa69447a46f352d86339afe97510d0d8124287f8c60"
+          },
+          {
+            "file": "seq8-root-body-recall-ui-review.json",
+            "sha256": "b9cd47adf3ee549bd57f01801badf077a2e30d3f1612a843945a6f2811fbf842"
+          },
+          {
+            "file": "seq8-cost-summary.json",
+            "sha256": "473b923b50828e9f873b541a19674f72159339a0cb8425d35a0ab12317e3c84b"
+          },
+          {
+            "file": "seq8-private-reviewed-cleanup.json",
+            "sha256": "ba93a2cd3bf682bbc569f058566150a8fe6fe7dff584d408c34f499e26cc4677"
+          },
+          {
+            "file": "seq8-initial-snapshot.json",
+            "sha256": "46bdbcc2ca3e615838752e629124037dd0574da3de30489817e211dde87c986e"
+          },
+          {
+            "file": "seq8-mvu-final-meta-initial.json",
+            "sha256": "c748c19e217b14eb4fc32b8f2f45cd5dec9a5ac7ed6cf3b18d788d14c9bdaee0"
+          },
+          {
+            "file": "seq8-recall-meta-settled.json",
+            "sha256": "770f4860e3d07828084e1a76d76a2fc745f91c0be35c0c724941bc04ace5bb8f"
+          },
+          {
+            "file": "seq8-viewport-capture.json",
+            "sha256": "7dd167b19f64a4af6e3707a3dad085f096e809caa9da07cdc2d2060fe704b8c7"
+          }
+        ],
+        "p1Failure": null
       }
     },
     {
@@ -389,43 +704,153 @@
       "kind": "next",
       "index": 18,
       "swipeId": 0,
-      "p2Status": "partial",
-      "failedTaskCount": 3,
-      "reviewOutcome": "mechanism-verified-model-failure-contained",
+      "p2Status": "complete",
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": true,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 0,
-      "repairRecovered": false,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p1",
+          "code": "body_header_vs_elapsed_minute_time_interpretation",
+          "sourceSequence": 9,
+          "inherited": false,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": false
+        },
+        {
+          "module": "p2",
+          "code": "profile_incomplete",
+          "sourceSequence": 9,
+          "inherited": false,
+          "initialFailureRetained": true,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": true,
+          "manualButtonClicks": 1,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": true,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": "fresh-batch-saves-three-independent-profiles-with-unspecified-age-values",
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq9-cost-final-summary.json",
+        "sequence": 9,
+        "wholeTavernCalls": 8,
+        "doctorCalls": 5,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 2,
+        "manualButtonClicks": 1,
+        "automaticRetries": 0,
+        "totalTokens": 559578
+      },
       "evidence": {
         "release": {
           "file": "seq9-review-release.json",
-          "sha256": "2b9c10fedd5306ce0cfccd63035dc6b9d6dc9814e8c2e0c0935e0268c5062588"
+          "sha256": "62cb9230917a94f77ff10abefa00f648f37951cfd6047dc62b17208f20a763bc"
         },
         "root": {
           "file": "seq9-root-review.json",
-          "sha256": "0f77d9ade0e2be75e659861c0a1001b9b961303043a978e4f89e20e9ee0fb240"
+          "sha256": "784173c9eeef3cdccaff338e4ced2965588fd38509f73c1b93371ff32c08bb65"
         },
         "meta": {
-          "file": "seq9-mvu-final-meta-initial.json",
-          "sha256": "4b67c6580032c437754c5ba29abe76d1db112854c7b29e376917a274854f11f1"
+          "file": "seq9-mvu-final-meta-manual.json",
+          "sha256": "19943d8fb120d03f7ad21dffeae68d143c212b26c95a6f2652824259286db534"
         },
-        "manual": null,
-        "containment": {
-          "file": "seq9-profile-auto-containment.json",
-          "sha256": "0c9e78577e874bca574bdb00c010a1092461c40eb90aa53cacfa900548a15916"
-        }
+        "additional": [
+          {
+            "file": "seq9-p1-independent-review.json",
+            "sha256": "e9142135e54a83504a0a90e2d836a0511e6612848ff140f1ffea2a4ce2322c8c"
+          },
+          {
+            "file": "seq9-p2-initial-independent-review.json",
+            "sha256": "558ef97611bc1be832d7695e089be617006c1f0b1c9b5bd9634ab797d2102b43"
+          },
+          {
+            "file": "seq9-p2-manual-independent-review.json",
+            "sha256": "9a45e8d412c4f4442a5e3de58ff353596d4b8369c442cc1dc86f5a915d587575"
+          },
+          {
+            "file": "seq9-root-initial-review.json",
+            "sha256": "38a35252bf1e391fcaeba8168b45683006c071485f6e20d840e68f8992bf46e5"
+          },
+          {
+            "file": "seq9-root-pre-profile-repair-review.json",
+            "sha256": "2fd530c952c1233af033b0888449f1bf32035de92a56695b28c0c4e389fd1bfa"
+          },
+          {
+            "file": "seq9-root-manual-review.json",
+            "sha256": "f480cd0370fd8c7efee62fb14c67e354e012e5169fce0c7fb16860c289527cb6"
+          },
+          {
+            "file": "seq9-cost-final-summary.json",
+            "sha256": "611b8957b9a1784fe76ce1a3177645084ef09cf8ed79abfbc478188ed58a399d"
+          },
+          {
+            "file": "seq9-private-initial-reviewed-cleanup.json",
+            "sha256": "44366cf6b72446acd9024da4589817359755a37fa56b35f107471e0ab48a1a9e"
+          },
+          {
+            "file": "seq9-private-manual-reviewed-cleanup.json",
+            "sha256": "ddba6a5c10e2ffa686a85187d89752d97f4d7b3cd49fe4e46cc837bf89430071"
+          },
+          {
+            "file": "seq9-initial-snapshot.json",
+            "sha256": "72707824146643919911ac4c8fbdfff944dea108081172f7b5af02dcc3549440"
+          },
+          {
+            "file": "seq9-manual-snapshot.json",
+            "sha256": "48ed6dc7bcd14ea93bfded9845c055c1711dbc86d708980e6eef3f8ea57d0a37"
+          },
+          {
+            "file": "seq9-mvu-final-meta-manual.json",
+            "sha256": "19943d8fb120d03f7ad21dffeae68d143c212b26c95a6f2652824259286db534"
+          },
+          {
+            "file": "seq9-recall-meta-settled.json",
+            "sha256": "03cf9c3b6605fa631b9904a6b77d29ddf5a0721968f3e90c056a10232fe0b4ce"
+          },
+          {
+            "file": "seq9-recall-ally-binding.json",
+            "sha256": "f069cdbafeca650664cdc52c63ebc54141307e7651ed203740d1a81f75e72594"
+          },
+          {
+            "file": "seq9-profile-manual-readback.json",
+            "sha256": "33693d862dd60ed91bfbfaf9d8f7297e3f3a8cc3e6cfc7c9461d0f380eca5387"
+          }
+        ],
+        "p1Failure": null
       }
     },
     {
@@ -433,43 +858,116 @@
       "kind": "next",
       "index": 20,
       "swipeId": 0,
-      "p2Status": "partial",
-      "failedTaskCount": 3,
-      "reviewOutcome": "mechanism-verified-model-failure-contained",
+      "p2Status": "complete",
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": true,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 0,
-      "repairRecovered": false,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p2",
+          "code": "age_placeholder_semantic_incompleteness",
+          "sourceSequence": 9,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq10-cost-summary.json",
+        "sequence": 10,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 0,
+        "manualButtonClicks": 0,
+        "automaticRetries": 0,
+        "totalTokens": 399134
+      },
       "evidence": {
         "release": {
           "file": "seq10-review-release.json",
-          "sha256": "da04074588d1159a6a72aac1a604275acfc3eae939e258ffd564e28dae31ff88"
+          "sha256": "1fe346fc90276921e7fb0778590f753bf10ae7a16ec1e838f619effde418f9f5"
         },
         "root": {
           "file": "seq10-root-review.json",
-          "sha256": "d7b78c8073425fc8ee68d8efc41f3d47c9e1f1db4f2aa8bc10f54470a868071a"
+          "sha256": "0e8e8ff7853292e53960caf830e4d0a7c23f396da06ede5dff566dc53cca65af"
         },
         "meta": {
           "file": "seq10-mvu-final-meta-initial.json",
-          "sha256": "655a0ff05d719724368da7b00343606838b333e79e586b5f874cac004eca8c18"
+          "sha256": "2554ddfb0b2bb01764f9708c55195aaf16b8d4f819fa2be95c0a69974ffc2e12"
         },
-        "manual": null,
-        "containment": {
-          "file": "seq10-profile-auto-containment.json",
-          "sha256": "06545fe9d96ac19ef52746e7f8dcb8de491ce6c7fbbb6a1501811f0c22e579ff"
-        }
+        "additional": [
+          {
+            "file": "seq10-p1-independent-review.json",
+            "sha256": "200af5f56c48daf0833c8b9158aa62e1b293357891dd07a788c3e8b037fd1aeb"
+          },
+          {
+            "file": "seq10-p2-independent-review.json",
+            "sha256": "99844f09078dd3635fee304dac29699291b7d0a4054866b103f340a72c1a2b70"
+          },
+          {
+            "file": "seq10-root-body-recall-ui-review.json",
+            "sha256": "df09df87ccae6d7668bf1bdb328a66d87d7ccdf41f14aa4bd0eb37672c027b6b"
+          },
+          {
+            "file": "seq10-cost-summary.json",
+            "sha256": "0ecd6eb45339b733f5bf3f9a1343864c5a07646cafb608cc2968fedd48a494b4"
+          },
+          {
+            "file": "seq10-private-reviewed-cleanup.json",
+            "sha256": "9e8dba04add2ecd12b8a48cdd04eaea2d50817286b12519aa2feb47413967683"
+          },
+          {
+            "file": "seq10-initial-snapshot.json",
+            "sha256": "9a0d5b70b45144f66c707efac7d2edd0e083ae4ba48734cc43293e5e5f400729"
+          },
+          {
+            "file": "seq10-mvu-final-meta-initial.json",
+            "sha256": "2554ddfb0b2bb01764f9708c55195aaf16b8d4f819fa2be95c0a69974ffc2e12"
+          },
+          {
+            "file": "seq10-recall-meta-settled.json",
+            "sha256": "35f911ddcb0843c7f2a9cf5d9c75391885e1637170124594d15e1ba4177dd519"
+          },
+          {
+            "file": "seq10-recall-actor-binding.json",
+            "sha256": "ee55dd5b59b4560d0b35e0f19c8bb18df8ea1e87ba440de9c5e13e0eb6b34b1b"
+          },
+          {
+            "file": "seq10-viewport-capture.json",
+            "sha256": "e93543d5dc5bd38f5dc4ca2543cef8f4090d89723d7012385376f59852e11ad2"
+          }
+        ],
+        "p1Failure": null
       }
     },
     {
@@ -477,51 +975,175 @@
       "kind": "next",
       "index": 22,
       "swipeId": 0,
-      "p2Status": "partial",
-      "failedTaskCount": 3,
-      "reviewOutcome": "mechanism-verified-model-failure-contained",
+      "p2Status": "cancelled",
+      "failedTaskCount": 0,
+      "reviewOutcome": "p1-model-failure-contained-p2-skipped",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": true,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 1,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 2,
-      "wholeRoundButtonClicks": 1,
-      "repairRecovered": false,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p2",
+          "code": "age_placeholder_semantic_incompleteness",
+          "sourceSequence": 9,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p1",
+          "code": "patch_outcome",
+          "sourceSequence": 11,
+          "inherited": false,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": false,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p2",
+          "code": "upstream_failed_skipped_current_round_update",
+          "sourceSequence": 11,
+          "inherited": false,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": false
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": true,
+      "mode": null,
+      "cost": {
+        "source": "seq11-cost-summary.json",
+        "sequence": 11,
+        "wholeTavernCalls": 5,
+        "doctorCalls": 2,
+        "automaticDoctorCalls": 1,
+        "manualDoctorCalls": 1,
+        "manualButtonClicks": 1,
+        "automaticRetries": 0,
+        "totalTokens": 321160
+      },
       "evidence": {
         "release": {
           "file": "seq11-review-release.json",
-          "sha256": "837dddd36474e7f864670b2baf1ee30160c7d3e371f4c9594e1e7b2a45f21228"
+          "sha256": "417c6dcf8c82ebf63e3093b446b346d6ceb102682fdd00be8456d1e77a775218"
         },
         "root": {
           "file": "seq11-root-review.json",
-          "sha256": "81d953892099c1e87544ae936acb671ab329d12bdab5aec9fcc6daa93b045309"
+          "sha256": "12825cfb33f1f32d93013ddc7b78b8949e8b9973fb52dd339a2ece0831c8b53a"
         },
-        "meta": {
-          "file": "seq11-mvu-final-meta-manual.json",
-          "sha256": "d89b2a2b2770c79d2ce5ab3d71e6db4f2f9789c7a386498291eac4e364230333"
-        },
-        "manual": {
-          "click": {
-            "file": "seq11-manual-repair-click.json",
-            "sha256": "c2f552c81ce58e390dabb334bca11c64b39197ed5b392856fb3f4c0d6e13de41"
+        "meta": null,
+        "additional": [
+          {
+            "file": "seq11-p1-initial-independent-review.json",
+            "sha256": "3e103a856df741f6bf1b86acf96270880684985dba2ade64ba2631bb49af3429"
           },
-          "readback": {
-            "file": "seq11-p1-manual-freshness.json",
-            "sha256": "0fff78e6b664ef93ea71d1c493a089477007d1b0a2b22d389ac39c4d725e4d89"
+          {
+            "file": "seq11-p2-independent-review.json",
+            "sha256": "531c27c5629d17a3571f84749e2e1fd4d99e315aa7cda8ab02532683441a31e6"
+          },
+          {
+            "file": "seq11-root-initial-review.json",
+            "sha256": "e6a396d2c853253f1c48648ffccb659ed51825e1922d6a528bc442e588b8b2d8"
+          },
+          {
+            "file": "seq11-root-manual-recall-ui-review.json",
+            "sha256": "4b88e1c8791eb57bd2b865cbb379461cabcc7ce3cea6f2e9ada932922ce81c00"
+          },
+          {
+            "file": "seq11-p1-failure-containment.json",
+            "sha256": "5662afb6a5ee9d01dfa72edbc7715b721c3822479e60cb3f7863ad91ded4b252"
+          },
+          {
+            "file": "seq11-cost-summary.json",
+            "sha256": "bbc561a3c8d9cae80ebe5eea1222f98d6d4be8b83e8ec3f4d4668cde8030fac5"
+          },
+          {
+            "file": "seq11-cost-observed.json",
+            "sha256": "ae9c157e4fb2ee778e7e4de2717e2568d463c825378ebf01d34f0596f32522cb"
+          },
+          {
+            "file": "seq11-private-reviewed-cleanup.json",
+            "sha256": "bb185882c5139bf83706e4a2cbaa0d0dadbf32f8dbd45d965235d3588f6671ca"
+          },
+          {
+            "file": "seq11-initial-failure.json",
+            "sha256": "e51dfaa3ca44ecf5b8fc7f53ab7bf956b8f765561f1850d336b7d58d866c2236"
+          },
+          {
+            "file": "seq11-p1-manual-failure.json",
+            "sha256": "7b1f5747b4eeb93c5282a7a2bb34f5ea085d28103fb21ece62ac2bc66accc6e6"
+          },
+          {
+            "file": "seq11-p1-manual-repair-click.json",
+            "sha256": "d6c1cda4b5b7926ea497cbb0d57c65d2d7c4480e170e3587555037ffce91dad4"
+          },
+          {
+            "file": "seq11-p1-repair-contract.json",
+            "sha256": "01c961024d19db09bc44b21ace7fb6dc4c72f7cc35913cf6f7d95c95d1051f50"
+          },
+          {
+            "file": "seq11-recall-meta-capture.json",
+            "sha256": "c2635c55a8df070fcb08e9f9fff82c9201a7549f8d76f1e706bbf1856ae8b094"
+          },
+          {
+            "file": "seq11-viewport-capture.json",
+            "sha256": "e93543d5dc5bd38f5dc4ca2543cef8f4090d89723d7012385376f59852e11ad2"
           }
-        },
-        "containment": {
-          "file": "seq11-profile-auto-containment.json",
-          "sha256": "0eb7ee3298d78f65e42bfe719e45e9ef6ec5d233d754a84918d334879e7afa5a"
+        ],
+        "p1Failure": {
+          "p1Status": "failed",
+          "p1Code": "patch_outcome",
+          "p1RecordHash": null,
+          "p1FailureEvidence": {
+            "file": "seq11-p1-failure-containment.json",
+            "sha256": "5662afb6a5ee9d01dfa72edbc7715b721c3822479e60cb3f7863ad91ded4b252"
+          },
+          "p1ReviewHash": "1e282508d647f5555602454cdbea9815360ca1eccbb5f937733650ba7ab24894",
+          "p1PendingHash": "e8d5ee7c7751ce3498b407de681c8725e39f5d3f017902a7b5af52fd191a1799",
+          "p2Skipped": true,
+          "p2Status": "cancelled",
+          "p2RequestCount": 0
         }
       }
     },
@@ -530,43 +1152,116 @@
       "kind": "next",
       "index": 24,
       "swipeId": 0,
-      "p2Status": "partial",
-      "failedTaskCount": 3,
-      "reviewOutcome": "mechanism-verified-model-failure-contained",
+      "p2Status": "complete",
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": true,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 0,
-      "repairRecovered": false,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p2",
+          "code": "age_placeholder_semantic_incompleteness",
+          "sourceSequence": 9,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq12-cost-summary.json",
+        "sequence": 12,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 0,
+        "manualButtonClicks": 0,
+        "automaticRetries": 0,
+        "totalTokens": 383896
+      },
       "evidence": {
         "release": {
           "file": "seq12-review-release.json",
-          "sha256": "4fab533a765bc226f4c4f3c90e9f94be749bade8987eb4c2c96ed9fa0672a260"
+          "sha256": "b7132fa7af4ea5494f1b47441921a5d0c54d2dc7d3e1d762ce6bfeb3abbc19ac"
         },
         "root": {
           "file": "seq12-root-review.json",
-          "sha256": "bc8a3ea53453452d01ef6d1e5ac00194f6a535f66d6750ff1a495c6a788c9f0e"
+          "sha256": "4528c8ad1b0c3bf8a3523e6230001cc4e507ee82ba66fb36766a1ed22025141d"
         },
         "meta": {
           "file": "seq12-mvu-final-meta-initial.json",
-          "sha256": "1df9385bae2ad4dcd5ca4be6272d0bfb75012f2cc5f69a79b2b054fab2fe2a47"
+          "sha256": "b3d14c09e0c3a7c536de7c17a68382ff47394d80b2708c3fdc70e83836140d00"
         },
-        "manual": null,
-        "containment": {
-          "file": "seq12-profile-auto-containment.json",
-          "sha256": "f44336769d4be3de82024c63cb6aa9b682ae30599d536a50067dabc4da48ea59"
-        }
+        "additional": [
+          {
+            "file": "seq12-p1-independent-review.json",
+            "sha256": "65f64f99de40ddc9753c40a714d34a4556e3eccdff69eb015552d6b79fac529e"
+          },
+          {
+            "file": "seq12-p2-independent-review.json",
+            "sha256": "8cf6ea3a4e1d2474478557e0f690516147d730d1da5696216208e91ab83e0d9e"
+          },
+          {
+            "file": "seq12-root-body-recall-ui-review.json",
+            "sha256": "10c0b8b96699e93f71fa554700a9d0328ff93aa2330fff3a5ae9f9c679f37175"
+          },
+          {
+            "file": "seq12-cost-summary.json",
+            "sha256": "be1e434a50de388113360ec0eb904469b89e37bdd8f35004f1e0629fd38028f9"
+          },
+          {
+            "file": "seq12-private-reviewed-cleanup.json",
+            "sha256": "3e66b71233bef2b98930f9c8c12c8438f3cd5ec614c914a5b405e17a33ad1d26"
+          },
+          {
+            "file": "seq12-initial-snapshot.json",
+            "sha256": "24e466bdbc2c17951096d8b173a46433a85bfbb168936fdd634d467e91b6acb5"
+          },
+          {
+            "file": "seq12-mvu-final-meta-initial.json",
+            "sha256": "b3d14c09e0c3a7c536de7c17a68382ff47394d80b2708c3fdc70e83836140d00"
+          },
+          {
+            "file": "seq12-recall-meta-settled.json",
+            "sha256": "b5f1dd68730b6b88c7cd09ab8c2dcfcfc3a751cf42ab30febde494595d5e4c7c"
+          },
+          {
+            "file": "seq12-recall-actor-binding.json",
+            "sha256": "5055f3a2d75cd8bfcf219410402a429f9bd1ef12a654c7be0175692808dbb47e"
+          },
+          {
+            "file": "seq12-viewport-capture.json",
+            "sha256": "46b66ca66c34b26396fe724a38816af5b33a5a3263fe8280f8f98bafee768594"
+          }
+        ],
+        "p1Failure": null
       }
     },
     {
@@ -574,64 +1269,156 @@
       "kind": "next",
       "index": 26,
       "swipeId": 0,
-      "p2Status": "partial",
-      "failedTaskCount": 3,
-      "reviewOutcome": "mechanism-verified-model-failure-contained",
+      "p2Status": "complete",
+      "failedTaskCount": 0,
+      "reviewOutcome": "complete-record-reviewed",
       "mechanismApproved": true,
       "modelExceptionsPresent": true,
-      "modelFailureContained": true,
-      "mode": "automatic",
-      "buttonClicks": 0,
-      "p1ManualCalls": 0,
-      "p2ManualButtonClicks": 0,
-      "p2FreshMvuSynchronizationCalls": 0,
-      "wholeRoundButtonClicks": 0,
-      "repairRecovered": false,
-      "p2RequestCount": 2,
-      "p2RequestKinds": [
-        "discovery",
-        "profile-batch"
+      "modelExceptions": [
+        {
+          "module": "p1",
+          "code": "premature_equipment_activation",
+          "sourceSequence": 4,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p2",
+          "code": "age_placeholder_semantic_incompleteness",
+          "sourceSequence": 9,
+          "inherited": true,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": false,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p1",
+          "code": "header_end_timestamp_ambiguity",
+          "sourceSequence": 13,
+          "inherited": false,
+          "initialFailureRetained": false,
+          "repairAttempted": false,
+          "repairAttemptedThisRound": false,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": false,
+          "continuedByExplicitUserAuthorization": true
+        }
       ],
-      "pressure": null,
+      "modelFailureContained": false,
+      "mode": null,
+      "cost": {
+        "source": "seq13-cost-summary.json",
+        "sequence": 13,
+        "wholeTavernCalls": 6,
+        "doctorCalls": 3,
+        "automaticDoctorCalls": 3,
+        "manualDoctorCalls": 0,
+        "manualButtonClicks": 0,
+        "automaticRetries": 0,
+        "totalTokens": 393923
+      },
       "evidence": {
         "release": {
           "file": "seq13-review-release.json",
-          "sha256": "23fb667c8d85ea01389d196bdab2a1b8b26c2611a3aa7af503dc6a2b79598803"
+          "sha256": "6bf733498b48322e657066214ddae789691d22835b39ae5aca38b2c9ea686bde"
         },
         "root": {
           "file": "seq13-root-review.json",
-          "sha256": "ce5c6b5c0528e8096c89b5666222cb4382151f534567abad68e255b54fe9aded"
+          "sha256": "33235efe22c7f7bb53d0f6ee4612e1ed47f99a3c9276e6097953628fda424d35"
         },
         "meta": {
           "file": "seq13-mvu-final-meta-initial.json",
-          "sha256": "6a627357685683668ae30c2477302f39239d97b2afc04ea191cdb3ee7092a5cd"
+          "sha256": "ad6543bbd86239df88614c47b14c0aee6260dc7abaacb55ac64646a5a7a12952"
         },
-        "manual": null,
-        "containment": {
-          "file": "seq13-profile-auto-containment.json",
-          "sha256": "5567f2e0182d929d8e86d8cc2eabda71e23459025f712189ed82bd4079f9b323"
-        }
+        "additional": [
+          {
+            "file": "seq13-p1-independent-review.json",
+            "sha256": "5f88024a0b72226628a0ace5883458ca64d2f2b574fccba0c8118e4a9149fb4a"
+          },
+          {
+            "file": "seq13-p2-independent-review.json",
+            "sha256": "48ab854d7931fc2d68caa87162f1417c76e9f160515c1be9a831eb38d0892b98"
+          },
+          {
+            "file": "seq13-root-body-recall-ui-review.json",
+            "sha256": "14d1345719126388b79148dc6d68e1d57c3bc46c9ca657a2ae9df5e10f196470"
+          },
+          {
+            "file": "seq13-cost-summary.json",
+            "sha256": "57893f508882f8703eca57caaaf35262a748926bd8c63706de08e0d1b759f9f0"
+          },
+          {
+            "file": "seq13-private-reviewed-cleanup.json",
+            "sha256": "45567d4fc349afb181bc07eaa96bc5a2d4ec5e90ca3af5f78f20d2a9a1ed44f2"
+          },
+          {
+            "file": "seq13-initial-snapshot.json",
+            "sha256": "984ce8654c44ac6334d32d81ea072f5a568631e8614bfb48e66743d2f5b4ea9b"
+          },
+          {
+            "file": "seq13-mvu-final-meta-initial.json",
+            "sha256": "ad6543bbd86239df88614c47b14c0aee6260dc7abaacb55ac64646a5a7a12952"
+          },
+          {
+            "file": "seq13-recall-meta-settled.json",
+            "sha256": "b7abdabd0c4e6ac8e3f6a32fa1eaf052df8c7fafde588f87adbec26e23c83af3"
+          },
+          {
+            "file": "seq13-recall-actor-binding.json",
+            "sha256": "ea62ec8950cfb421d02d82331f4facb1b491f1701e3c3d0600ea4a210a2d481a"
+          },
+          {
+            "file": "seq13-viewport-capture.json",
+            "sha256": "1ce8ef91fd7740458b133cd617fea2226fe3fe961aa7d7932bd2b33f240974d4"
+          }
+        ],
+        "p1Failure": null
       }
     }
   ],
   "finalReadback": {
     "p2-r4-final-snapshot-pre.json": {
       "file": "p2-r4-final-snapshot-pre.json",
-      "sha256": "0b159d29a1c58d2cca5bb8e79b7be123d6de44264e2d9006ddbabb67bba66789"
+      "sha256": "bb8ba58198541a4b89e98ed6a03515d319442c9f4b7286e7b1fd1ac11d434118"
     },
     "p2-r4-final-snapshot-post.json": {
       "file": "p2-r4-final-snapshot-post.json",
-      "sha256": "0260a0b4a197d9a7910c13bdcdcc1016f790fb47c5ea47b4cc4e3e5cd7740096"
+      "sha256": "dce12cf16b30894de158df3997585378ff1e5b4fa009037c1115173bcd1db789"
     },
     "p2-r4-final-reload-intent.json": {
       "file": "p2-r4-final-reload-intent.json",
-      "sha256": "91e013c99df30d6014b3654c017de180872e39c33c4412c08ec9013b67872bbf"
+      "sha256": "fe58f052b8550e56227edcbd7bfe4ffe10262b8b4914a9555cdb32326e528aea"
     },
     "p2-r4-final-reload-result.json": {
       "file": "p2-r4-final-reload-result.json",
-      "sha256": "98949b64df006ca5185a3581dc69251e56b321ce4c982a2e6af29f9137397b80"
+      "sha256": "4305651cb24c2e058c6418af4856006017cc51da4f34d00a078011d58ebc0f28"
     }
   },
-  "realAcceptance": false,
-  "modelFailuresRetained": true
+  "modelFailuresRetained": true,
+  "semanticCorrectnessProven": false,
+  "retirementExercised": null,
+  "realAcceptance": false
 }
