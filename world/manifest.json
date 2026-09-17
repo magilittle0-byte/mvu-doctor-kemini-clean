@@ -1,7 +1,7 @@
 {
   "name": "MVU Doctor 世界引擎",
   "stage": 3,
-  "version": "0.1.0-candidate.4",
+  "version": "0.1.0-candidate.5",
   "entry": "world/entry.js",
   "loader": "world/install.json",
   "requires": [

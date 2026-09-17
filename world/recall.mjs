@@ -104,7 +104,20 @@ export async function makeRecall(record) {
   const pending = deliveries.filter(item => ['pending', 'retained'].includes(item?.status) && item?.content && item?.id);
   if (!pending.length) return null;
   const unique = [...new Map(pending.map(item => [item.id, item])).values()];
-  const textValue = ['<World_Recall>', '以下是已有世界变化或可见后果，请沿当前场景自然呈现；不能替玩家选择、再次执行已发生成本或泄漏内幕。未呈现的记录会保留供后续召回，不代表事件再次发生。', ...unique.map(item => `- ${item.content}`), '</World_Recall>'].join('\n');
+  const textValue = [
+    '<World_Recall>',
+    '【模块化医生：公开世界衔接】',
+    '以下是已结算的外部世界状态及可观察入口，不是等待玩家选择才会发生的选项，也不是要求逐条播报的后台大纲。先结合最新正文、当前行动与条目中的时间、地点、传播条件，判断哪些影响已抵达当前场景。',
+    '已抵达的影响必须自然进入本轮环境、NPC行为或行动的外部后果，至少通过一个具体迹象体现；不能仅因玩家没有主动调查或选择这条支线就当它不存在。尚未抵达、没有传播渠道或已被后续事实消解的条目不强行入场，不制造巧合或额外任务。',
+    '时序：人物资料是既有快照，不能用旧快照抹掉之后已发生的外部变化；最新正文及权威规则中的明确事实仍优先，不能用后台条目覆盖或改写它们。已结算不等于玩家知情，只能写客观可见的物件、动作、声音、痕迹及有来源的消息，不能替玩家看见、理解、决定、说话、移动或产生感受。幕后身份、动机和因果答案继续保密。',
+    '待呈现不等于待发生。已经写过的动作和结果只作为现状及后续因果，不能重演行动、再次扣费或发奖；未呈现条目保留供后续衔接，不代表事件再次发生。不输出这些标签、账本或采用清单。',
+    ...unique.map(item => {
+      const scope = ['wind', 'regional'].includes(item.kind) ? text(item.public?.scope) : '';
+      const channel = item.kind === 'wind' ? text(item.public?.source) : '';
+      return [`- 可观察入口与当前影响：${item.content}`, scope && `作用范围：${scope}`, channel && `传播来源：${channel}`].filter(Boolean).join('；');
+    }),
+    '</World_Recall>',
+  ].join('\n');
   return { text: textValue, promptHash: await digest(textValue), deliveryIds: unique.map(item => item.id), sourceLineage: text(record?.lineage), sourceScopeKey: text(record?.scopeKey) };
 }
 

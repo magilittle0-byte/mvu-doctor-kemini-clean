@@ -1,23 +1,23 @@
 {
-  "locked": true,
+  "locked": false,
   "stage": 3,
-  "version": "0.1.0-candidate.4",
-  "fingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752",
+  "version": "0.1.0-candidate.5",
+  "fingerprint": "5262c0097e292177027d1d6897d53299b1506edf987c73d0b09b2e867827ebb3",
   "files": {
-    "world/content.mjs": "92f3269f337f95494c7c04a5cbac509925f3d13961c8e415cfe0d51fa3069393",
+    "world/content.mjs": "19eb05013b35ed9ddc263c21a345069e78c97178e565278fb899c34f7e890a05",
     "world/dependencies.mjs": "8f10c6a0a7822523b4f345ade79c5c5babf545e1e703120e8a4f591db55c21c1",
     "world/engine.mjs": "70e35f8b42ce14263d42201cf1c91abb39e9be46b8dbedcca02aa4dc59ab9dbf",
     "world/entry.js": "75d154bce582ff5fa58e676dad936a1168403a9737ba6bc0e9073007e385d7b0",
     "world/host.mjs": "e5ad364063d0f8f19ba320a2c8268199f5136cc951e0bd33e9c8a89219c8a3d7",
-    "world/install.json": "5863056cd762dbe7394f6593162d02d522df68bd253218b9b4549143f1928f0c",
+    "world/install.json": "5ecea474c93326066d874acaa392cc455e787097d639516a5b9e9c315fa48720",
     "world/loader.js": "9899cdcd09eed8f50b109a6477fccc175f2966d6e96932400f1412d9501d3166",
-    "world/manifest.json": "7c08dc14d1ea372ad3379e8c6a00f1f7bfc0ed357ff1a08b68a5a4a153831b37",
+    "world/manifest.json": "50cd7dbabcdd77d37504840c2cfdd42ecb860d69094395f4938fa88683dd1890",
     "world/native/core.mjs": "053767507acee24d662969fab46839e4abb3a0922605f9afb3a1e7238fd284a3",
     "world/native/evolution.mjs": "7edddd05e58ac2e7b5443290f312cd42edd5f7f7a649afa1152f635cd703c834",
     "world/native/ledger.mjs": "cf87d24d5beba1d4c408baec6a2c7b190130eeba5c850b8326be038fd1451799",
     "world/native/rules.mjs": "204ae4ec6a866dea98019b821581fb60bd1fe11e7146bc2e212ee1c83d2c11f2",
-    "world/recall.mjs": "f7fbd895f78eb0333b0b8fea238773048dd7e1d6a260a70acf982e6ee65ef6d7",
-    "world/runtime.mjs": "f99b900363bb749b3724f09a861c1588ecfbc24b6ce0bc53688e89bdd5b2d3d9",
+    "world/recall.mjs": "1e40a4b6a99be35d081a155bbd31bd21e17855932afacba5e433867bf44eebb6",
+    "world/runtime.mjs": "71715e5b6f963a13aa5bf80e264ed81ecb4d0753709532e95102ea0bf925ff7e",
     "world/store.mjs": "271d3ce540c2497b2b57b0ca567a32d7e5bf1daa82737bbb175b1e1062fc91fb",
     "world/style.css": "609aecce7a202d22c23e5e3cf18f99f3f60659ef025ef94f3702dd27a7ab4325",
     "world/surface.mjs": "eb7c7b55394d562ba4764e3476ab204fa23e8e7e97a383acdc742f66fa8fce23"
@@ -27,7 +27,7 @@
     "docs/world/PHASE3_DEPENDENCIES_SOURCE_MAP.md": "3f88b9ef3d67615697e15a22c796e2aebab3489322e65cfa0a7ad99662c3db78",
     "docs/world/PHASE3_ENGINE_SOURCE_MAP.md": "11904fa1a2a3afb255f8bc437045db0cae8499bf62c51f9525814c031eef0e49",
     "docs/world/PHASE3_NATIVE_SOURCE_MAP.md": "fb316b0bc8e64f5b39fb309307ed62844aa6d8d497103e6ca79c0e8daa983e75",
-    "docs/world/PHASE3_RECALL_SOURCE_MAP.md": "68654a550f46c5ca6d9b98688a17debecc1566b4f49f2e29b7338bf2cea11f2a",
+    "docs/world/PHASE3_RECALL_SOURCE_MAP.md": "96aa41e690889fdca34edbdf71c8522a407975b34da81f477372c304ff6ebe66",
     "docs/world/PHASE3_SOURCE_MAP.md": "3bf6ac0bc870ae7d6d906c9bcf22b0d51996933211177fb0aa311f12f54670ba",
     "docs/world/PHASE3_SURFACE_SOURCE_MAP.md": "3efa613966317daf421164068ff2f1afbe4f355b9e819adc873991f660cd58c2",
     "docs/world/README.md": "97d38c4a89b63278c9ba91dd1d104016bd2f14309c82d1dd0e526e786edfefa0",
@@ -39,7 +39,7 @@
     "tests/world-dependencies.test.mjs": "64e68e5569c53a531631d783dfccd45bd8fcefce34d606ae32f90ef336c5f209",
     "tests/world-engine.test.mjs": "188e6276dd9ac2ecf3c5a098c89e88129e63d29cc73a6fe89571ac4eb8c72041",
     "tests/world-host.test.mjs": "7a6710933ce71e312d5a54f193eb2c85360d9a5efa7932af457c323583761082",
-    "tests/world-recall.test.mjs": "378c4c0d3a6af2b47345a722e9868ba67e3ff0e93cbf6d15b7fd438b9bb68297",
+    "tests/world-recall.test.mjs": "3c80e99500ec881c67758c9b6481e0560aa49bbcef44609a5d92bdb5ea0dbed7",
     "tests/world-runtime.test.mjs": "5fa06185bdb011977c8ab56f72b178fc46f3392a6be402faba1cd579b68cfdbf",
     "tests/world-store.test.mjs": "eebf95e24f8a77cbf2d78326fcea930f730af63c5931ddca2405efcabbb768bc",
     "tests/world-surface.test.mjs": "228427862f609fd94c8bf9498e3cfff6024cadb9e4ff0411d5f290711f7946e2",
@@ -63,17 +63,22 @@
       "lockSha256": "49a674502a759ad166b940fae27392739e32e199e008eb3c0922013cbfc813f5"
     }
   },
-  "lockScope": "implementation-and-repair-mechanism",
+  "lockScope": "candidate-awaiting-real-acceptance",
   "realAcceptance": {
     "complete": false,
-    "mechanismAcceptance": true,
+    "mechanismAcceptance": false,
     "fullDoctorAcceptance": false,
     "strictProtocolAcceptance": false,
-    "normalRounds": 12,
-    "pressureRounds": 1,
-    "modelFailuresRetained": true,
-    "sourceFingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752",
-    "summaryPath": "locks/phase3-evidence.json",
-    "summarySha256": "98afcf0759bc115056e043d9e4c6b7287f39b4156c9c1a219f72d64425e091f3"
+    "normalRounds": 0,
+    "pressureRounds": 0,
+    "sourceFingerprint": "5262c0097e292177027d1d6897d53299b1506edf987c73d0b09b2e867827ebb3",
+    "reason": "Public world narrative handoff changed; all previous acceptance is historical only."
+  },
+  "previousCandidate": {
+    "version": "0.1.0-candidate.4",
+    "fingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752",
+    "lockSha256": "f9309fd4d77cab30161aa1a1323c7263c106d23515650c3f60d124c2c00b71a1",
+    "evidencePath": "locks/phase3-evidence.json",
+    "evidenceSha256": "98afcf0759bc115056e043d9e4c6b7287f39b4156c9c1a219f72d64425e091f3"
   }
 }

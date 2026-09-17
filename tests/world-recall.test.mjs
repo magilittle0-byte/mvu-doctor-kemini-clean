@@ -65,3 +65,19 @@ test('without an evidence term the delivery remains retained', async () => {
   assert.equal(settled[0].status, 'retained');
   assert.equal(settled[0].narrativeEvidenceMatched, false);
 });
+
+test('recall carries public scope and propagation channel without copying private world fields', async () => {
+  const world = {
+    winds: [{ id: 'notice', level: 3, topic: '通行公告', content: '渡口暂时封闭', scope: '东侧渡口', source: '渡口告示牌', privateReason: 'PRIVATE_REASON' }],
+    regionalIncident: { active: true, title: '道路积水', type: 'flood', scope: '城外低洼道路', impact: '路面已有积水', secret: 'PRIVATE_INCIDENT' },
+    blackbox: { secretActions: [{ action: 'PRIVATE_ACTION' }] },
+  };
+  const deliveries = await buildDeliveries({ world, source });
+  const original = structuredClone(deliveries);
+  const recall = await makeRecall({ deliveries, scopeKey: source.scopeKey, lineage: source.lineage });
+  for (const value of ['渡口暂时封闭', '东侧渡口', '渡口告示牌', '路面已有积水', '城外低洼道路']) assert.ok(recall.text.includes(value));
+  for (const value of ['PRIVATE_REASON', 'PRIVATE_INCIDENT', 'PRIVATE_ACTION']) assert.ok(!recall.text.includes(value));
+  assert.equal((recall.text.match(/<World_Recall>/g) || []).length, 1);
+  assert.deepEqual(recall.deliveryIds, deliveries.map(row => row.id));
+  assert.deepEqual(deliveries, original);
+});
