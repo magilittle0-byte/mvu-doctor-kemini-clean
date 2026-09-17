@@ -775,5 +775,161 @@
     "file": "lock-preparation/staging/phase3-evidence.json",
     "sha256": "0405a29c8c01bc74691302b4e023ba9721e172ae0da31c19bd4c54e4019d1985"
   },
-  "scope": "Freeze the reviewed implementation and bounded repair mechanisms under the user-approved continuation policy. This is not full semantic acceptance or a formal release."
+  "scope": "Freeze the reviewed implementation and bounded repair mechanisms under the user-approved continuation policy. This is not full semantic acceptance or a formal release.",
+  "targetedWorldFollowup": {
+    "schema": "mvu-world-bounded-followup/v1",
+    "date": "2026-09-17",
+    "sameChat": true,
+    "runtimeUnchanged": true,
+    "promptUnchanged": true,
+    "source": {
+      "sourceFiles": 88,
+      "presetExact": true,
+      "modulesExact": true,
+      "runtimeHead": "b5c15c8f7c14a10c8ea493be6ec3f06176b32c05",
+      "deliveryHead": "836d28f4cc91f5229fa8bfa07bc52e64c9d6d1aa",
+      "fingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752"
+    },
+    "manualWorldRepair": {
+      "tested": true,
+      "buttonClicks": 1,
+      "calls": 1,
+      "durationMs": 49391,
+      "worldRoundBefore": 11,
+      "worldRoundAfter": 11,
+      "upstreamUnchanged": true,
+      "savedAndReadback": true
+    },
+    "normalFollowup": {
+      "sequence": 14,
+      "calls": 7,
+      "doctorCalls": 4,
+      "worldRoundBefore": 11,
+      "worldRoundAfter": 12,
+      "allModuleReadbacks": true,
+      "worldRecallExactInActualRequest": true,
+      "worldRecallBlockCount": 1,
+      "bodyHash": "e7a6d9535545952de042b2f6cd5b8eb31d40c300a4cdd6c4d4c3b9bce179578e",
+      "worldRecordHash": "7bada6b92332446c6baf24ec0ab5e2956bdb8d5d7f21bb70d4f0f507e01aab39",
+      "profileCount": 5,
+      "profileFields": 44,
+      "profileChangedCount": 2,
+      "profileUnchangedCount": 3,
+      "independentReviewsComplete": true,
+      "worldUiFieldsMatched": 21,
+      "sendEnabled": true
+    },
+    "semantics": {
+      "distinctWorldConsequenceAdoptionProven": false,
+      "worldNarrativeAcceptance": false,
+      "observedPrivateRecallLeak": false,
+      "confirmedRuntimeRecallLoss": false,
+      "modelFailuresRetained": true
+    },
+    "calls": {
+      "added": 8,
+      "doctor": 5,
+      "automaticDoctor": 4,
+      "manualDoctor": 1,
+      "automaticRetries": 0,
+      "priorBatch": 91,
+      "combined": 99,
+      "knownTokenCalls": 6,
+      "unknownTokenCalls": 2,
+      "knownTokenSubtotal": 408299,
+      "completeTokenTotal": null
+    },
+    "durationMs": {
+      "manualWorld": 49391,
+      "mainNative": 51235,
+      "p1": 55909,
+      "p2Discovery": 14448,
+      "p2Batch": 29657,
+      "p3Request": 59035
+    },
+    "collectorFailure": {
+      "retained": true,
+      "code": "MAIN_REQUEST_NOT_FOUND",
+      "cause": "external collector rejected non-JSON streaming response during request selection",
+      "fixedUsingSameCapturedRequest": true,
+      "extraModelCalls": 0
+    },
+    "finalHost": {
+      "nativeLatest": 8496,
+      "extraCallsAfterSettle": 0,
+      "registeredPrivateProbeRemoved": true,
+      "doctorListenersUntouched": true,
+      "reloads": 0
+    },
+    "realAcceptance": false,
+    "evidence": [
+      {
+        "file": "world-followup-manual-result.json",
+        "sha256": "6534831c4c6a56180783e62d13e1773eb3f2f5b770ce718477538fbedfdc2474"
+      },
+      {
+        "file": "world-followup-manual-ui.json",
+        "sha256": "ccbfb4a4957124a9321ca3537be703331b058a1a7e3b415f12c80e2328bc75b3"
+      },
+      {
+        "file": "world-followup-manual-review.json",
+        "sha256": "29fbadc162f1fa2dce77fa6c443c267c11544a36e50f334b92978cbb87ded7a8"
+      },
+      {
+        "file": "world-followup-next-result.json",
+        "sha256": "f95ed8e8c2c2c4df1ea08113af6f41d8d10bc1251230d6c4137558e1142fb2d8"
+      },
+      {
+        "file": "world-followup-next-capture.json",
+        "sha256": "0a692472ffc4f107e09db224786819bb0a5dc53eb2aabfc125367d6d731d9ea5"
+      },
+      {
+        "file": "world-followup-next-pages.json",
+        "sha256": "1d824e11e0a1fd708cce7a4cdc5afd44648071b549c205a9a16a9bb54de8060b"
+      },
+      {
+        "file": "world-followup-next-root-review.json",
+        "sha256": "3ed0c6b1d1c98b3d0136363f79b71dac51161e6f7e4badee9bb8cf324439b610"
+      },
+      {
+        "file": "world-followup-next-world-review.json",
+        "sha256": "f44eeca2984db72da42b756045ae8b6c5bebca90a8d2c1ef76728ac06c2cc59d"
+      },
+      {
+        "file": "world-followup-next-mvu-review.json",
+        "sha256": "910f397d7536a98f4c758d43631c0ed2395cd91a6d34bb0e2cd9f8597f16c6a8"
+      },
+      {
+        "file": "world-followup-cost.json",
+        "sha256": "7f1ea2f6ef97a4bfa44a705fc0d0585e13e572af513282e0145e2e9eb7c71241"
+      },
+      {
+        "file": "world-followup-next-collector-attempt-1.json",
+        "sha256": "18279d224c5819347b4f54801755aa372c797824b782090ebb4b25f0a3b4f747"
+      },
+      {
+        "file": "world-followup-final-host.json",
+        "sha256": "fc843ad7c27eae3bea791edf775f03de8eb4fda29a82670fd31abb2bb3474b7c"
+      },
+      {
+        "file": "world-followup-next-mvu-value-review.json",
+        "sha256": "77e5d1f13f4c8daf1102218e4c47b96f2409ae80a8c03dac42f4f2fcfd4445cb"
+      },
+      {
+        "file": "world-followup-initial-image-cleanup.json",
+        "sha256": "2e18f62d217e8f787cd710ec2f5012b5804f33efd8d25f4233f15fb26faed853"
+      },
+      {
+        "file": "world-followup-final-image-cleanup.json",
+        "sha256": "ec4bbb958ceb5a5459a752a261ca98df418141ccaa6bf0f1f0cf35427d4f5ac4"
+      }
+    ],
+    "cleanup": {
+      "initialPrivateImagesRemoved": 85,
+      "followupPrivateImagesRemoved": 93,
+      "privateImagesRemaining": 0,
+      "registeredPrivateProbeRemoved": true,
+      "doctorAndUserHostPreserved": true
+    }
+  }
 }
