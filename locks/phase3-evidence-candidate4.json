@@ -1,0 +1,935 @@
+{
+  "schema": "mvu-p3-mechanism-freeze/v2",
+  "stage": 3,
+  "version": "0.1.0-candidate.4",
+  "sourceHead": "b5c15c8f7c14a10c8ea493be6ec3f06176b32c05",
+  "sourceFingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752",
+  "p1Fingerprint": "39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e",
+  "p2Fingerprint": "0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33",
+  "lockScope": "implementation-and-repair-mechanism",
+  "mechanismAcceptance": true,
+  "fullDoctorAcceptance": false,
+  "strictProtocolAcceptance": false,
+  "realAcceptance": false,
+  "normalRounds": 12,
+  "pressureRounds": 1,
+  "rounds": [
+    {
+      "sequence": 1,
+      "kind": "first",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "failed",
+      "p2Skipped": false,
+      "p3Skipped": true,
+      "p1FailureCode": null,
+      "p2FailureCode": "discovery_evidence_unbound",
+      "wholeTavernCalls": 7,
+      "doctorCalls": 5,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 1,
+      "manualButtonClicks": 1,
+      "automaticRetries": 0,
+      "totalTokens": 428105,
+      "modelExceptions": [
+        {
+          "kind": "main_negative_attribute_points",
+          "recovered": true
+        },
+        {
+          "kind": "main_unclaimed_item_in_inventory",
+          "recovered": true
+        },
+        {
+          "kind": "profile_missing_age_and_hobbies",
+          "recovered": false
+        },
+        {
+          "kind": "manual_discovery_evidence_unbound",
+          "recovered": false
+        },
+        {
+          "kind": "world_premature_private_contract_completion",
+          "recovered": false
+        },
+        {
+          "kind": "world_unclaimed_private_asset_ambiguity",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq1-root-review.json",
+          "sha256": "bdbf8c74dd859a031af0e5ce6258b3898cc3602ed9289d0d4aed9d5f008ca864"
+        },
+        {
+          "file": "seq1-review-release.json",
+          "sha256": "c47897369a2c5e0902c8204928bd332e78bedc5a4056465981ef9a097a6781ef"
+        },
+        {
+          "file": "seq1-cost-review.json",
+          "sha256": "f49388505577d63bf79b3839f580a8f8644ba1b40bdf34765d067ca9e948cfbb"
+        }
+      ]
+    },
+    {
+      "sequence": 2,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 421898,
+      "modelExceptions": [
+        {
+          "kind": "main_noop_after_explicit_pickup",
+          "recovered": true
+        },
+        {
+          "kind": "narrative_time_wording_without_clock_advance",
+          "recovered": false
+        },
+        {
+          "kind": "world_private_witness_classification_ambiguity",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq2-root-review.json",
+          "sha256": "f7ffc2fcf938a0b81f67b4924f4ba4bf4c46925087631b94d789cebf733c5984"
+        },
+        {
+          "file": "seq2-review-release.json",
+          "sha256": "40dfd280480b131c8d4a57264818248b4bb22928c74cb6fcd7849333a61e8c8f"
+        },
+        {
+          "file": "seq2-cost-review.json",
+          "sha256": "2a463eea1b488658c2c33bc58ee8b944d7aa35b3a4d6b96fb5af2d8b236ea644"
+        }
+      ]
+    },
+    {
+      "sequence": 3,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 402646,
+      "modelExceptions": [
+        {
+          "kind": "main_departure_timing_replay_ambiguity",
+          "recovered": false
+        },
+        {
+          "kind": "world_few_minutes_without_precise_clock_change",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq3-root-review.json",
+          "sha256": "04ec193b22d6f8f641bfa23b64af0be9b5507cbc23d5979c77e9e882c1dc2a4d"
+        },
+        {
+          "file": "seq3-review-release.json",
+          "sha256": "700ccef766bc0f9f89339742155b7525e8f13665637f235baaf200a19aa2dfed"
+        },
+        {
+          "file": "seq3-cost-review.json",
+          "sha256": "b6e340176391e9a62e5148b8489d098526fcc38b07c5535ede4ef0e9d00df4dc"
+        }
+      ]
+    },
+    {
+      "sequence": 4,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 443747,
+      "modelExceptions": [],
+      "evidence": [
+        {
+          "file": "seq4-root-review.json",
+          "sha256": "1b40d0ca7c7a7c27cd066d0355a39208f3a7dbfb66413b2d2cfb37c5f25ce4b5"
+        },
+        {
+          "file": "seq4-review-release.json",
+          "sha256": "986f68ce812dcc4f3f7adf92e6af6372fbb4dd12bb87b99ca834f39f78ed75f5"
+        },
+        {
+          "file": "seq4-cost-review.json",
+          "sha256": "55650e0588b576cff41026a0f13f865ef4972eaea65161b8da69ce0dc2eb8bfa"
+        }
+      ]
+    },
+    {
+      "sequence": 5,
+      "kind": "pressure",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 10,
+      "doctorCalls": 7,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 3,
+      "manualButtonClicks": 1,
+      "automaticRetries": 0,
+      "totalTokens": 725167,
+      "modelExceptions": [
+        {
+          "kind": "main-state-omission",
+          "recovered": true
+        },
+        {
+          "kind": "profile-incomplete",
+          "recovered": true
+        },
+        {
+          "kind": "offstage-causal-ambiguity",
+          "recovered": false
+        },
+        {
+          "kind": "stale-world-rumor",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq5-root-review.json",
+          "sha256": "c62ac7700c6d255041ef2c1ee9c558784860a74c74257a57c8aee8038f5f753e"
+        },
+        {
+          "file": "seq5-review-release.json",
+          "sha256": "0c6343e3c7e35a3887400f5c3ac1d010dd1a98fe677938e56afd122125e6cc1d"
+        },
+        {
+          "file": "seq5-cost-review.json",
+          "sha256": "3d478d3ee35495f25393bee5e0a9b3aa85503e2c3b744fc9bda034c0ced92fce"
+        }
+      ]
+    },
+    {
+      "sequence": 6,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 390906,
+      "modelExceptions": [
+        {
+          "kind": "retained-offstage-semantic-claim",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq6-root-review.json",
+          "sha256": "dd7f423d0738007f6ad2d433612af519a841f4ba8cf2f3d802262a829bc17b7d"
+        },
+        {
+          "file": "seq6-review-release.json",
+          "sha256": "4e747bbd441a1da31b929e292aa53ec090ef5eefe888b3963c9d539a706d96e0"
+        },
+        {
+          "file": "seq6-cost-review.json",
+          "sha256": "a8e1a62abf237f57e8e78b6bbed01bc93c565705db96bc1bdcdb0b77d4d1f527"
+        }
+      ]
+    },
+    {
+      "sequence": 7,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 391037,
+      "modelExceptions": [
+        {
+          "kind": "body-weapon-label-contradiction",
+          "recovered": false
+        },
+        {
+          "kind": "world-public-recall-not-used-in-body",
+          "recovered": false
+        },
+        {
+          "kind": "retained-offstage-semantic-claim",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq7-root-review.json",
+          "sha256": "f83b9cfb9f74b35062292cab27b08d82074ed377a4420f51a13f973987eb1e09"
+        },
+        {
+          "file": "seq7-review-release.json",
+          "sha256": "995c0176bbd68b72b49ae0084244e72b2d5e7b36f277336345d60e5b98bbfa43"
+        },
+        {
+          "file": "seq7-cost-review.json",
+          "sha256": "8d191415c06fd702de3f7de2750b5ef29a0aea5ad5dff769c4eac2fc1e947a98"
+        }
+      ]
+    },
+    {
+      "sequence": 8,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 377349,
+      "modelExceptions": [
+        {
+          "kind": "world-recall-partial-body-observation",
+          "recovered": false
+        },
+        {
+          "kind": "retained-offstage-semantic-claim",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq8-root-review.json",
+          "sha256": "e9a81bbaf219e2472740cc1c9164c4e2bd5506dd17fcb32c37e0206fa2c0cba2"
+        },
+        {
+          "file": "seq8-review-release.json",
+          "sha256": "e607a0fbc509015af469505922e84aeb4d3e68d2a34021a1dd4a6fe4f46bb2d6"
+        },
+        {
+          "file": "seq8-cost-review.json",
+          "sha256": "19a7c6903e52a5975bc2e2718823c78a49251139be71defebcc909069b360014"
+        }
+      ]
+    },
+    {
+      "sequence": 9,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": false,
+      "p1FailureContained": true,
+      "p2Status": "cancelled",
+      "p2Skipped": true,
+      "p3Skipped": true,
+      "p1FailureCode": "patch_structure_loss",
+      "p2FailureCode": null,
+      "wholeTavernCalls": 5,
+      "doctorCalls": 2,
+      "automaticDoctorCalls": 1,
+      "manualDoctorCalls": 1,
+      "manualButtonClicks": 1,
+      "automaticRetries": 0,
+      "totalTokens": 277984,
+      "modelExceptions": [
+        {
+          "kind": "enemy-title-schema-shape",
+          "recovered": false
+        },
+        {
+          "kind": "unconfirmed-anomaly-promoted-to-enemy",
+          "recovered": false
+        },
+        {
+          "kind": "body-events-unreflected-after-rejected-patch",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq9-root-review.json",
+          "sha256": "84735936c32141d6476e4d0ccb08ba9200dbe3e4bb975a2bff3506ed287f5b8c"
+        },
+        {
+          "file": "seq9-review-release.json",
+          "sha256": "060695b9a8987ae153f2448f38e832b0363058cb4d48bc5e78f33790e434ba24"
+        },
+        {
+          "file": "seq9-cost-review.json",
+          "sha256": "89ab2330b7dcf1376e30726b7082ac5211238c1ebab6b9266f77b8097b3a7463"
+        },
+        {
+          "file": "seq9-p1-initial-failure.json",
+          "sha256": "a1c5dc27a9f83a688112a3221051cb23a158e7b1a2ac16a61af1bad3d28eedef"
+        },
+        {
+          "file": "seq9-p1-manual-failure.json",
+          "sha256": "a4cf4ce222e9e733187acd11b8d43838c97b844256fa7aefaa8318017c11fda0"
+        },
+        {
+          "file": "seq9-p1-failure-containment.json",
+          "sha256": "ea96d95d03349cc5800f1cae98f8116f86c2417d5d668d838751e50bd6f77e5f"
+        }
+      ],
+      "upstreamFailureCode": "patch_structure_loss"
+    },
+    {
+      "sequence": 10,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "failed",
+      "p2Skipped": false,
+      "p3Skipped": true,
+      "p1FailureCode": null,
+      "p2FailureCode": "discovery_evidence_unbound",
+      "wholeTavernCalls": 6,
+      "doctorCalls": 3,
+      "automaticDoctorCalls": 1,
+      "manualDoctorCalls": 2,
+      "manualButtonClicks": 1,
+      "automaticRetries": 0,
+      "totalTokens": 348268,
+      "modelExceptions": [
+        {
+          "kind": "initial-redundant-computed-attribute-operation",
+          "recovered": null
+        },
+        {
+          "kind": "partial-manual-variable-repair",
+          "recovered": null
+        },
+        {
+          "kind": "discovery-evidence-unbound",
+          "recovered": false
+        },
+        {
+          "kind": "historical-private-world-model-exceptions",
+          "recovered": null
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq10-root-review.json",
+          "sha256": "7a1928b01ca253b7de1dab69bd8dd6b7a69ce87884961820a29649b2e9212ac0"
+        },
+        {
+          "file": "seq10-review-release.json",
+          "sha256": "0ac3195c3f82b45425427255d4194b4ff41ee8cc0f0f28618c2f2f1bb62d4f95"
+        },
+        {
+          "file": "seq10-cost-review.json",
+          "sha256": "30a42746e58f3b17ae653b13f9e51bbaf298269ee450500e9c09a39febaa7677"
+        },
+        {
+          "file": "seq10-p1-initial-failure.json",
+          "sha256": "4cecd59c1ed2c33ad8ce7337ddeff4ac672f1eea35d81edb33c21dbf251ae1a0"
+        }
+      ]
+    },
+    {
+      "sequence": 11,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 417086,
+      "modelExceptions": [
+        {
+          "kind": "persistent-prior-enemy-level-title-movement-omissions",
+          "recovered": false
+        },
+        {
+          "kind": "world-recall-partial-body-observation",
+          "recovered": false
+        },
+        {
+          "kind": "retained-offstage-semantic-claim",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq11-root-review.json",
+          "sha256": "c98cb4ad647655f60987db8e242691ae68459198343ea7bc037487becee30806"
+        },
+        {
+          "file": "seq11-review-release.json",
+          "sha256": "e43125960684e983f33b20251d79cfdecb1673ba8de5e568bf2ebab0354dd960"
+        },
+        {
+          "file": "seq11-cost-review.json",
+          "sha256": "552fa77ae9ca2211261a28ebce55ac88d4165227dde20a2ee8992deb36567266"
+        }
+      ]
+    },
+    {
+      "sequence": 12,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 421979,
+      "modelExceptions": [
+        {
+          "kind": "persistent-prior-enemy-level-title-movement-omissions",
+          "recovered": false
+        },
+        {
+          "kind": "possible-combat-resource-regeneration-omission",
+          "recovered": false
+        },
+        {
+          "kind": "stale-private-witness-description-after-public-trust-collapse",
+          "recovered": false
+        },
+        {
+          "kind": "world-recall-partial-body-observation",
+          "recovered": false
+        },
+        {
+          "kind": "retained-offstage-semantic-claim",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq12-root-review.json",
+          "sha256": "41bffbff9fad622ab174bf7f8f0325fad6b346a2a6f8587dd64b70ea282e7f1f"
+        },
+        {
+          "file": "seq12-review-release.json",
+          "sha256": "2c16231eb09bf2dda521d51cbe63897d5c07b84d2402ea1da8a5606dfbdb11d2"
+        },
+        {
+          "file": "seq12-cost-review.json",
+          "sha256": "8bef49b90c128f5df5572628c8570dda5f2d05a17d311f9859b053d70618f702"
+        }
+      ]
+    },
+    {
+      "sequence": 13,
+      "kind": "next",
+      "independentReviewComplete": true,
+      "historicalPersistenceVerified": true,
+      "p1CandidateCommitted": true,
+      "p1FailureContained": false,
+      "p2Status": "complete",
+      "p2Skipped": false,
+      "p3Skipped": false,
+      "p1FailureCode": null,
+      "p2FailureCode": null,
+      "wholeTavernCalls": 7,
+      "doctorCalls": 4,
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "manualButtonClicks": 0,
+      "automaticRetries": 0,
+      "totalTokens": 415822,
+      "modelExceptions": [
+        {
+          "kind": "persistent-prior-enemy-level-title-movement-omissions",
+          "recovered": false
+        },
+        {
+          "kind": "possible-combat-resource-regeneration-omission",
+          "recovered": false
+        },
+        {
+          "kind": "p1-explanation-attributes-prior-resource-changes-to-current-round",
+          "recovered": false
+        },
+        {
+          "kind": "profile-relationship-sentence-reverses-threat-target",
+          "recovered": false
+        },
+        {
+          "kind": "stale-private-witness-description-after-public-trust-collapse",
+          "recovered": false
+        },
+        {
+          "kind": "world-recall-partial-body-observation",
+          "recovered": false
+        },
+        {
+          "kind": "retained-offstage-semantic-claim",
+          "recovered": false
+        }
+      ],
+      "evidence": [
+        {
+          "file": "seq13-root-review.json",
+          "sha256": "ab34ab71080c759b0760cd46b95664a5fdeee0ddaaa148fd8788fe8309f29b7a"
+        },
+        {
+          "file": "seq13-review-release.json",
+          "sha256": "bed0741e6763ee2ba466abeaf92085264497aee9d1999a6f7a7b9971a02d0e6b"
+        },
+        {
+          "file": "seq13-cost-review.json",
+          "sha256": "bd4dd8fa3f362b30046fad361238ef31f95bd487d0916d3261c94843da8d7521"
+        }
+      ]
+    }
+  ],
+  "finalReadback": {
+    "reloadAttempts": 1,
+    "extraModelCalls": 0,
+    "historicalRoundsVerified": 13,
+    "allTypedRecordsPreserved": true,
+    "profileCount": 5,
+    "fieldsPerProfile": 44,
+    "worldRound": 11,
+    "structuredWorldUiFieldsVerified": 21,
+    "strictWorldUiTextHashPassed": false,
+    "strictFailureRetained": true,
+    "displayOrderDifferenceDocumented": true,
+    "foregroundNativeVisibilityProven": false,
+    "evidence": [
+      {
+        "file": "0130-p3-final-snapshot-pre.json",
+        "sha256": "beb69ebdd01a3c3806901a3d81db7a72ed86cf68450e19def89dafd57236bbc6"
+      },
+      {
+        "file": "0130-p3-final-reload-intent.json",
+        "sha256": "91c83ebd2b700541273e4683d3060d5696a99914cf79ffd8defd197e4a4f9ecc"
+      },
+      {
+        "file": "0130-p3-final-image-cleanup.json",
+        "sha256": "95fe7acaae0a2ecc5fae3a93010b11ec2469aea2878b4000ca0a179af09916db"
+      },
+      {
+        "file": "0130-p3-final-post-diagnostic.json",
+        "sha256": "a18327232756f7eac1ae3eb194784e07fbb30d113ea8821dd8e75e7905c619d1"
+      },
+      {
+        "file": "0130-p3-final-ui-assessment.json",
+        "sha256": "c2373de98b99ef41b636af6df66e3ce843119c1adde592322f4c1d2719f16f92"
+      },
+      {
+        "file": "final-independent-readback-review.json",
+        "sha256": "18af814c69413343ea5a5a91d634e2c212999e5f1801d235579b3ca88e9543a9"
+      }
+    ]
+  },
+  "cost": {
+    "totalCalls": 91,
+    "doctorCalls": 53,
+    "otherHostCalls": 38,
+    "automaticDoctorCalls": 46,
+    "manualDoctorCalls": 7,
+    "buttonClicks": 4,
+    "doctorAutomaticRetries": 0,
+    "normalDoctorRequestLimit": 4,
+    "totalReportedTokens": 5461994,
+    "doctorTokenCoverage": {
+      "total": 2823251,
+      "knownRounds": 10,
+      "requiredRounds": 13,
+      "complete": false
+    }
+  },
+  "repairMechanisms": {
+    "variableFreshRepairVerified": true,
+    "profileRepairVerified": true,
+    "worldFollowupSameRoundVerified": true,
+    "standaloneWorldRepairButtonTestedInCurrentBatch": false,
+    "modelMistakesMayRemain": true,
+    "evidence": [
+      {
+        "file": "seq10-p1-manual-freshness.json",
+        "sha256": "3a287404e277d707e57e05fbba44db2157904e40c57b6568de4dd8398548a178"
+      },
+      {
+        "file": "seq5-profile-manual-readback.json",
+        "sha256": "a202fc012e2dedc1193659ccf9f4b98c57a24209d14baf6ae272179aa7cb44b2"
+      },
+      {
+        "file": "seq5-world-manual-independent-review.json",
+        "sha256": "2b898a2fa380702137cc3153ce9734c661fa5ecd2145fb4a993de14323c9d18a"
+      },
+      {
+        "file": "seq5-world-manual-independent-review.errata.json",
+        "sha256": "d0c4fb12c252c886b4275d74edb72fa4c8b54d0f86738bc93eeb562f7efb1cae"
+      },
+      {
+        "file": "seq5-manual-held-readback.json",
+        "sha256": "849b024d784e4d374341b58c09e34a22a85c5733d7cbc87e13d903fdbb4b5808"
+      }
+    ]
+  },
+  "retainedTerminalFailureRounds": [
+    1,
+    9,
+    10
+  ],
+  "retainedModelExceptionCount": 43,
+  "limitations": [
+    "World recall reached subsequent main requests; actual offstage narrative consumption remains unproven.",
+    "Complete profile fields do not establish factual or semantic correctness.",
+    "Rejected variable and profile candidates and unsuccessful manual recovery remain recorded.",
+    "The world UI serialized text hash differs after reload; typed DOM values and persisted records match.",
+    "Native foreground window visibility was not tested; background compositor images show no lower white band.",
+    "Normal request count is bounded, but input token usage remains high."
+  ],
+  "assemblyEvidence": {
+    "file": "lock-preparation/staging/phase3-evidence.json",
+    "sha256": "0405a29c8c01bc74691302b4e023ba9721e172ae0da31c19bd4c54e4019d1985"
+  },
+  "scope": "Freeze the reviewed implementation and bounded repair mechanisms under the user-approved continuation policy. This is not full semantic acceptance or a formal release.",
+  "targetedWorldFollowup": {
+    "schema": "mvu-world-bounded-followup/v1",
+    "date": "2026-09-17",
+    "sameChat": true,
+    "runtimeUnchanged": true,
+    "promptUnchanged": true,
+    "source": {
+      "sourceFiles": 88,
+      "presetExact": true,
+      "modulesExact": true,
+      "runtimeHead": "b5c15c8f7c14a10c8ea493be6ec3f06176b32c05",
+      "deliveryHead": "836d28f4cc91f5229fa8bfa07bc52e64c9d6d1aa",
+      "fingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752"
+    },
+    "manualWorldRepair": {
+      "tested": true,
+      "buttonClicks": 1,
+      "calls": 1,
+      "durationMs": 49391,
+      "worldRoundBefore": 11,
+      "worldRoundAfter": 11,
+      "upstreamUnchanged": true,
+      "savedAndReadback": true
+    },
+    "normalFollowup": {
+      "sequence": 14,
+      "calls": 7,
+      "doctorCalls": 4,
+      "worldRoundBefore": 11,
+      "worldRoundAfter": 12,
+      "allModuleReadbacks": true,
+      "worldRecallExactInActualRequest": true,
+      "worldRecallBlockCount": 1,
+      "bodyHash": "e7a6d9535545952de042b2f6cd5b8eb31d40c300a4cdd6c4d4c3b9bce179578e",
+      "worldRecordHash": "7bada6b92332446c6baf24ec0ab5e2956bdb8d5d7f21bb70d4f0f507e01aab39",
+      "profileCount": 5,
+      "profileFields": 44,
+      "profileChangedCount": 2,
+      "profileUnchangedCount": 3,
+      "independentReviewsComplete": true,
+      "worldUiFieldsMatched": 21,
+      "sendEnabled": true
+    },
+    "semantics": {
+      "distinctWorldConsequenceAdoptionProven": false,
+      "worldNarrativeAcceptance": false,
+      "observedPrivateRecallLeak": false,
+      "confirmedRuntimeRecallLoss": false,
+      "modelFailuresRetained": true
+    },
+    "calls": {
+      "added": 8,
+      "doctor": 5,
+      "automaticDoctor": 4,
+      "manualDoctor": 1,
+      "automaticRetries": 0,
+      "priorBatch": 91,
+      "combined": 99,
+      "knownTokenCalls": 6,
+      "unknownTokenCalls": 2,
+      "knownTokenSubtotal": 408299,
+      "completeTokenTotal": null
+    },
+    "durationMs": {
+      "manualWorld": 49391,
+      "mainNative": 51235,
+      "p1": 55909,
+      "p2Discovery": 14448,
+      "p2Batch": 29657,
+      "p3Request": 59035
+    },
+    "collectorFailure": {
+      "retained": true,
+      "code": "MAIN_REQUEST_NOT_FOUND",
+      "cause": "external collector rejected non-JSON streaming response during request selection",
+      "fixedUsingSameCapturedRequest": true,
+      "extraModelCalls": 0
+    },
+    "finalHost": {
+      "nativeLatest": 8496,
+      "extraCallsAfterSettle": 0,
+      "registeredPrivateProbeRemoved": true,
+      "doctorListenersUntouched": true,
+      "reloads": 0
+    },
+    "realAcceptance": false,
+    "evidence": [
+      {
+        "file": "world-followup-manual-result.json",
+        "sha256": "6534831c4c6a56180783e62d13e1773eb3f2f5b770ce718477538fbedfdc2474"
+      },
+      {
+        "file": "world-followup-manual-ui.json",
+        "sha256": "ccbfb4a4957124a9321ca3537be703331b058a1a7e3b415f12c80e2328bc75b3"
+      },
+      {
+        "file": "world-followup-manual-review.json",
+        "sha256": "29fbadc162f1fa2dce77fa6c443c267c11544a36e50f334b92978cbb87ded7a8"
+      },
+      {
+        "file": "world-followup-next-result.json",
+        "sha256": "f95ed8e8c2c2c4df1ea08113af6f41d8d10bc1251230d6c4137558e1142fb2d8"
+      },
+      {
+        "file": "world-followup-next-capture.json",
+        "sha256": "0a692472ffc4f107e09db224786819bb0a5dc53eb2aabfc125367d6d731d9ea5"
+      },
+      {
+        "file": "world-followup-next-pages.json",
+        "sha256": "1d824e11e0a1fd708cce7a4cdc5afd44648071b549c205a9a16a9bb54de8060b"
+      },
+      {
+        "file": "world-followup-next-root-review.json",
+        "sha256": "3ed0c6b1d1c98b3d0136363f79b71dac51161e6f7e4badee9bb8cf324439b610"
+      },
+      {
+        "file": "world-followup-next-world-review.json",
+        "sha256": "f44eeca2984db72da42b756045ae8b6c5bebca90a8d2c1ef76728ac06c2cc59d"
+      },
+      {
+        "file": "world-followup-next-mvu-review.json",
+        "sha256": "910f397d7536a98f4c758d43631c0ed2395cd91a6d34bb0e2cd9f8597f16c6a8"
+      },
+      {
+        "file": "world-followup-cost.json",
+        "sha256": "7f1ea2f6ef97a4bfa44a705fc0d0585e13e572af513282e0145e2e9eb7c71241"
+      },
+      {
+        "file": "world-followup-next-collector-attempt-1.json",
+        "sha256": "18279d224c5819347b4f54801755aa372c797824b782090ebb4b25f0a3b4f747"
+      },
+      {
+        "file": "world-followup-final-host.json",
+        "sha256": "fc843ad7c27eae3bea791edf775f03de8eb4fda29a82670fd31abb2bb3474b7c"
+      },
+      {
+        "file": "world-followup-next-mvu-value-review.json",
+        "sha256": "77e5d1f13f4c8daf1102218e4c47b96f2409ae80a8c03dac42f4f2fcfd4445cb"
+      },
+      {
+        "file": "world-followup-initial-image-cleanup.json",
+        "sha256": "2e18f62d217e8f787cd710ec2f5012b5804f33efd8d25f4233f15fb26faed853"
+      },
+      {
+        "file": "world-followup-final-image-cleanup.json",
+        "sha256": "ec4bbb958ceb5a5459a752a261ca98df418141ccaa6bf0f1f0cf35427d4f5ac4"
+      }
+    ],
+    "cleanup": {
+      "initialPrivateImagesRemoved": 85,
+      "followupPrivateImagesRemoved": 93,
+      "privateImagesRemaining": 0,
+      "registeredPrivateProbeRemoved": true,
+      "doctorAndUserHostPreserved": true
+    }
+  }
+}

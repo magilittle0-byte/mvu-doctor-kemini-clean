@@ -1,15 +1,18 @@
 {
-  "schema": "mvu-p3-mechanism-freeze/v2",
+  "schema": "mvu-three-module-functional-acceptance/v1",
   "stage": 3,
-  "version": "0.1.0-candidate.4",
-  "sourceHead": "b5c15c8f7c14a10c8ea493be6ec3f06176b32c05",
-  "sourceFingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752",
+  "version": "0.1.0-candidate.5",
+  "sourceHead": "565ef5653897fc9e0b583edd03e87da6efb6b4b9",
+  "sourceFingerprint": "5262c0097e292177027d1d6897d53299b1506edf987c73d0b09b2e867827ebb3",
   "p1Fingerprint": "39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e",
   "p2Fingerprint": "0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33",
-  "lockScope": "implementation-and-repair-mechanism",
+  "lockScope": "implementation-and-functional-mechanisms-with-retained-model-exceptions",
   "mechanismAcceptance": true,
+  "functionalAcceptanceWithModelExceptions": true,
   "fullDoctorAcceptance": false,
   "strictProtocolAcceptance": false,
+  "strictSemanticAcceptance": false,
+  "zeroErrorAcceptance": false,
   "realAcceptance": false,
   "normalRounds": 12,
   "pressureRounds": 1,
@@ -17,919 +20,1532 @@
     {
       "sequence": 1,
       "kind": "first",
+      "index": 2,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
-      "p2Status": "failed",
-      "p2Skipped": false,
-      "p3Skipped": true,
-      "p1FailureCode": null,
-      "p2FailureCode": "discovery_evidence_unbound",
-      "wholeTavernCalls": 7,
-      "doctorCalls": 5,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 1,
-      "manualButtonClicks": 1,
+      "releaseApproved": true,
+      "decision": "approve",
+      "p2Status": "complete",
+      "p1RecordHash": "ce9b5ed040cf95789c7bf257583994e74891c77924e3133d6496a956c77cb1e1",
+      "p2RecordHash": "c156dd906a74174d80f740cce69d9842315f4fdd14bc84a84b1236ef3e57bbd7",
+      "p3RecordHash": "2c2dd0a283dc6da3651a85dbd54fae08c5049fe0884423db21447a5912bb6e69",
+      "profileCount": 1,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 1,
+      "modelExceptionCodes": [
+        "single_decorative_player_micro_action"
+      ],
+      "modelMechanismFailures": 0,
+      "manualButtonClicks": 0,
+      "totalNativeCalls": 6,
+      "totalDoctorCalls": 4,
+      "totalTokens": 364532,
       "automaticRetries": 0,
-      "totalTokens": 428105,
+      "evidence": {
+        "root": {
+          "file": "seq1-root-review.json",
+          "sha256": "e75ee05956ead87834bc63e3be6f14b78ade58fe1822e7bb63682de9589bf1ec"
+        },
+        "release": {
+          "file": "seq1-review-release.json",
+          "sha256": "927a6019e975f2b4a9eac4fd10d01d89088d936bc06e6591f9bb95de96d7a658"
+        },
+        "cost": {
+          "file": "seq1-cost-review.json",
+          "sha256": "32d7809f6eec68111b8859d6ac761f59e28eecede9b9b0c9ba568facb8e6d167"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "85b584dd4ff26167c7602d21109152b3a419c0eed34fd4b25952fc6dfa5619f8",
+      "p1AfterHash": "1df665f500ca073fbce4ff5607f847b04ccd47af4dac9fc2a04af2f973db2d4e",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 1,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 118629,
+        "p1": 42398,
+        "p2": 75565,
+        "p3": 64318
+      },
       "modelExceptions": [
         {
-          "kind": "main_negative_attribute_points",
-          "recovered": true
-        },
-        {
-          "kind": "main_unclaimed_item_in_inventory",
-          "recovered": true
-        },
-        {
-          "kind": "profile_missing_age_and_hobbies",
-          "recovered": false
-        },
-        {
-          "kind": "manual_discovery_evidence_unbound",
-          "recovered": false
-        },
-        {
-          "kind": "world_premature_private_contract_completion",
-          "recovered": false
-        },
-        {
-          "kind": "world_unclaimed_private_asset_ambiguity",
-          "recovered": false
+          "code": "single_decorative_player_micro_action",
+          "repaired": false,
+          "continuationAuthorized": true,
+          "repeatWatch": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq1-root-review.json",
-          "sha256": "bdbf8c74dd859a031af0e5ce6258b3898cc3602ed9289d0d4aed9d5f008ca864"
-        },
-        {
-          "file": "seq1-review-release.json",
-          "sha256": "c47897369a2c5e0902c8204928bd332e78bedc5a4056465981ef9a097a6781ef"
-        },
-        {
-          "file": "seq1-cost-review.json",
-          "sha256": "f49388505577d63bf79b3839f580a8f8644ba1b40bdf34765d067ca9e948cfbb"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0
     },
     {
       "sequence": 2,
       "kind": "next",
+      "index": 4,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
+      "releaseApproved": true,
+      "decision": "approve",
       "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
-      "manualButtonClicks": 0,
+      "p1RecordHash": "d03dc5c13d3687deb30ba739b4842c79ff92c4e486041a2ad040ce197d5e0482",
+      "p2RecordHash": "40f85de3c265455ec9e4230e9efa2039071578677f94c1a670f01e08bf96a927",
+      "p3RecordHash": "fd53890f92aa9955f53be7c685fb583d769d066f6417abfd85294aa68687e734",
+      "profileCount": 4,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 5,
+      "modelExceptionCodes": [
+        "initial_profile_incomplete",
+        "equipment_parameter_drift",
+        "premature_objective_day",
+        "world_phase_ahead_of_narrative",
+        "hidden_preview_authority_unverified"
+      ],
+      "modelMechanismFailures": 0,
+      "manualButtonClicks": 1,
+      "totalNativeCalls": 11,
+      "totalDoctorCalls": 8,
+      "totalTokens": 709251,
       "automaticRetries": 0,
-      "totalTokens": 421898,
+      "evidence": {
+        "root": {
+          "file": "seq2-root-review.json",
+          "sha256": "2415351a25c8efb4c6bd3afde321451eefd7c137d7a4c221414ef8d52e6eb4cd"
+        },
+        "release": {
+          "file": "seq2-review-release.json",
+          "sha256": "40e1bad8574dcedd766715e09d81c25a17c30d6cbdc05aa377a98ef0f62b43ec"
+        },
+        "cost": {
+          "file": "seq2-cost-review.json",
+          "sha256": "dc8a56f3338fba6d2da8759e6a707e89f8adcfce3f715d69a1ba61c542d0a810"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "8f6cb127f989046d4ef11b72af06d57946b5fc584d66057d5cee94a8329bb44b",
+      "p1AfterHash": "ce1927bbd34db04a459d961b1ca58c74abc7a1dac8ba3d2d3340b973f330b4dc",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 2,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 103169,
+        "p1": 47607,
+        "p2": 94113,
+        "p3": 29759
+      },
       "modelExceptions": [
         {
-          "kind": "main_noop_after_explicit_pickup",
-          "recovered": true
+          "code": "initial_profile_incomplete",
+          "repaired": true
         },
         {
-          "kind": "narrative_time_wording_without_clock_advance",
-          "recovered": false
+          "code": "equipment_parameter_drift",
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "world_private_witness_classification_ambiguity",
-          "recovered": false
+          "code": "premature_objective_day",
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "world_phase_ahead_of_narrative",
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "hidden_preview_authority_unverified",
+          "repaired": false,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq2-root-review.json",
-          "sha256": "f7ffc2fcf938a0b81f67b4924f4ba4bf4c46925087631b94d789cebf733c5984"
-        },
-        {
-          "file": "seq2-review-release.json",
-          "sha256": "40dfd280480b131c8d4a57264818248b4bb22928c74cb6fcd7849333a61e8c8f"
-        },
-        {
-          "file": "seq2-cost-review.json",
-          "sha256": "2a463eea1b488658c2c33bc58ee8b944d7aa35b3a4d6b96fb5af2d8b236ea644"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 4
     },
     {
       "sequence": 3,
       "kind": "next",
+      "index": 6,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
+      "releaseApproved": true,
+      "decision": "approve",
       "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
-      "manualButtonClicks": 0,
+      "p1RecordHash": "888e33366413fceafab312d1296deac5588cc6479eb359d387500f37302dc87a",
+      "p2RecordHash": "ec68cec378e7766820f782b0f030ea2d5b4e2d3009f119bb3935ea5b0a3d0513",
+      "p3RecordHash": "01b9023cf269dbfc0b0f2341f8cc81ed243acafc8ec51c8ccf5676bfab2dae63",
+      "profileCount": 4,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 3,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "premature_objective_day",
+        "public_payload_contains_private_attribution"
+      ],
+      "modelMechanismFailures": 0,
+      "manualButtonClicks": 1,
+      "totalNativeCalls": 8,
+      "totalDoctorCalls": 5,
+      "totalTokens": 520632,
       "automaticRetries": 0,
-      "totalTokens": 402646,
+      "evidence": {
+        "root": {
+          "file": "seq3-root-review.json",
+          "sha256": "7712f6f25e2ff37e21690965e547f5327f70e11d9a1233baaba5a79b347f94e7"
+        },
+        "release": {
+          "file": "seq3-review-release.json",
+          "sha256": "56fda3f378dc422aba48222c4ec11a74f7c669fb6a5bf861db62d1f7d65bad50"
+        },
+        "cost": {
+          "file": "seq3-final-cost-review.json",
+          "sha256": "e8c0cd17c81a9c3c6e510376735e6229f015ee2e18fa8068eecff45e57e75c84"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "f8e0011edb03be7666b58ed546c88a47399251fd3251de99be421f97f338e205",
+      "p1AfterHash": "1fd7636ec5a9726b765f557ef59725aab71ef61a2038b22b87c3693fbaa227f6",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 3,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 33615,
+        "p1": 54077,
+        "p2": 46952,
+        "p3": 43727
+      },
       "modelExceptions": [
         {
-          "kind": "main_departure_timing_replay_ambiguity",
-          "recovered": false
+          "code": "equipment_parameter_drift",
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "world_few_minutes_without_precise_clock_change",
-          "recovered": false
+          "code": "premature_objective_day",
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "public_payload_contains_private_attribution",
+          "repairAttempted": true,
+          "manualClicks": 1,
+          "repaired": false,
+          "continuationAuthorized": true,
+          "acceptedBodyLeakObserved": false,
+          "independentReviewerClassifiesPayloadAsDefect": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq3-root-review.json",
-          "sha256": "04ec193b22d6f8f641bfa23b64af0be9b5507cbc23d5979c77e9e882c1dc2a4d"
-        },
-        {
-          "file": "seq3-review-release.json",
-          "sha256": "700ccef766bc0f9f89339742155b7525e8f13665637f235baaf200a19aa2dfed"
-        },
-        {
-          "file": "seq3-cost-review.json",
-          "sha256": "b6e340176391e9a62e5148b8489d098526fcc38b07c5535ede4ef0e9d00df4dc"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 1
     },
     {
       "sequence": 4,
       "kind": "next",
+      "index": 8,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
+      "releaseApproved": true,
+      "decision": "approve",
       "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
+      "p1RecordHash": "a2445b55e0dc4a2509271fb347cb04af13077e0197adee2a486f8c7e99d86107",
+      "p2RecordHash": "0e20d62c59fa9fb90a2a2f50735b5e685c547beb56bd9aa532de3dd4092920e9",
+      "p3RecordHash": "d1a988d57c78adf14228bc3973b1aa144abc5f0506b139b23575e4833ba27a04",
+      "profileCount": 4,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 4,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "premature_objective_day",
+        "time_header_vs_elapsed_conflict",
+        "public_payload_contains_private_attribution"
+      ],
+      "modelMechanismFailures": 0,
       "manualButtonClicks": 0,
+      "totalNativeCalls": 7,
+      "totalDoctorCalls": 4,
+      "totalTokens": 388617,
       "automaticRetries": 0,
-      "totalTokens": 443747,
-      "modelExceptions": [],
-      "evidence": [
-        {
+      "evidence": {
+        "root": {
           "file": "seq4-root-review.json",
-          "sha256": "1b40d0ca7c7a7c27cd066d0355a39208f3a7dbfb66413b2d2cfb37c5f25ce4b5"
+          "sha256": "a8541224941f3d9490369c3815930ff63d5eac6113e9d2e8bb4dba1354acba8f"
         },
-        {
+        "release": {
           "file": "seq4-review-release.json",
-          "sha256": "986f68ce812dcc4f3f7adf92e6af6372fbb4dd12bb87b99ca834f39f78ed75f5"
+          "sha256": "437e817bc1709d6237823bad9048796e5b4df8e60fa61cf67d7e8cb2a7ce6abf"
+        },
+        "cost": {
+          "file": "seq4-cost-review.json",
+          "sha256": "a1de572ceb861063533cee2885f4d87c43ebd28251a2e11e87315dfc92f57f93"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "813a678536e3362c93b929e6f6ea9a9ff1fed1eca19c3e0276aa099568157da5",
+      "p1AfterHash": "1fd7636ec5a9726b765f557ef59725aab71ef61a2038b22b87c3693fbaa227f6",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 4,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 78465,
+        "p1": 39208,
+        "p2": 79532,
+        "p3": 50531
+      },
+      "modelExceptions": [
+        {
+          "code": "equipment_parameter_drift",
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "file": "seq4-cost-review.json",
-          "sha256": "55650e0588b576cff41026a0f13f865ef4972eaea65161b8da69ce0dc2eb8bfa"
+          "code": "premature_objective_day",
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "time_header_vs_elapsed_conflict",
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true,
+          "acceptedBodyLeakObserved": false
         }
-      ]
+      ],
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0
     },
     {
       "sequence": 5,
       "kind": "pressure",
+      "index": 10,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
+      "releaseApproved": true,
+      "decision": "approve",
       "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 10,
-      "doctorCalls": 7,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 3,
-      "manualButtonClicks": 1,
+      "p1RecordHash": "64ef63cb598fcf92cb72eee2ea3f94cc53ffbe05a3b3572fd2a00885ee8193d6",
+      "p2RecordHash": "486e0fa2fa35b0b5e14e8772c0aa0cee1842e4cd31845e8442a07c0eddd8e2fe",
+      "p3RecordHash": "d9392e7170ed3e663add0bed5e5232d14e7334c6c94f66f83636b34bd5d94aae",
+      "profileCount": 7,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 3,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "time_header_vs_elapsed_conflict",
+        "public_payload_contains_private_attribution"
+      ],
+      "modelMechanismFailures": 0,
+      "manualButtonClicks": 0,
+      "totalNativeCalls": 7,
+      "totalDoctorCalls": 4,
+      "totalTokens": 439943,
       "automaticRetries": 0,
-      "totalTokens": 725167,
+      "evidence": {
+        "root": {
+          "file": "seq5-root-review.json",
+          "sha256": "777110240d75cdfabd016e114d124f2004f9f329556dbd47d57d0d9e04780e90"
+        },
+        "release": {
+          "file": "seq5-review-release.json",
+          "sha256": "7a45a139ec0dac42e26005f5521c400c3dcd6d2cab98ce979da741e9e81abb59"
+        },
+        "cost": {
+          "file": "seq5-cost-review.json",
+          "sha256": "bee4a599a12f12e136cf4345bb04af962eec80c2be4cd3729efd0abe401f9102"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "359376e4c5e63087a33eb68041978c8afabfc5bbe6bcc0ecefa5ab8bbbe20352",
+      "p1AfterHash": "9ccbf62bd1c770ae2a38410002f1ad5d1a13255f24eb3bd519b8aa423f9cbf08",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 5,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 50513,
+        "p1": 32954,
+        "p2": 155761,
+        "p3": 27919
+      },
       "modelExceptions": [
         {
-          "kind": "main-state-omission",
-          "recovered": true
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "profile-incomplete",
-          "recovered": true
+          "code": "time_header_vs_elapsed_conflict",
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "offstage-causal-ambiguity",
-          "recovered": false
-        },
-        {
-          "kind": "stale-world-rumor",
-          "recovered": false
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true,
+          "acceptedBodyLeakObserved": false
         }
       ],
-      "evidence": [
-        {
-          "file": "seq5-root-review.json",
-          "sha256": "c62ac7700c6d255041ef2c1ee9c558784860a74c74257a57c8aee8038f5f753e"
-        },
-        {
-          "file": "seq5-review-release.json",
-          "sha256": "0c6343e3c7e35a3887400f5c3ac1d010dd1a98fe677938e56afd122125e6cc1d"
-        },
-        {
-          "file": "seq5-cost-review.json",
-          "sha256": "3d478d3ee35495f25393bee5e0a9b3aa85503e2c3b744fc9bda034c0ced92fce"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0
     },
     {
       "sequence": 6,
       "kind": "next",
+      "index": 12,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
+      "releaseApproved": true,
+      "decision": "approve",
       "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
-      "manualButtonClicks": 0,
+      "p1RecordHash": "bd93a4ffa8720a3119e35d726aee9da609c7ac719128b56fd0daa637e2330bd7",
+      "p2RecordHash": "5d8b818374b5c2c561440906452d511e363cf3300df06459c5f05548d18404f4",
+      "p3RecordHash": "406b6aa294dbc1a259334b5bbadc9a14f447877a2e41a176daef7129b188ea02",
+      "profileCount": 11,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 4,
+      "modelExceptionCodes": [
+        "redundant_derived_patch_operations",
+        "discovery_merges_distinguishable_actors",
+        "equipment_parameter_drift",
+        "public_payload_contains_private_attribution"
+      ],
+      "modelMechanismFailures": 0,
+      "manualButtonClicks": 2,
+      "totalNativeCalls": 11,
+      "totalDoctorCalls": 8,
+      "totalTokens": 803147,
       "automaticRetries": 0,
-      "totalTokens": 390906,
+      "evidence": {
+        "root": {
+          "file": "seq6-root-review.json",
+          "sha256": "711793228990959cb0930321cc4c4ec708117a1479d6781c93623821e3dca6d1"
+        },
+        "release": {
+          "file": "seq6-review-release.json",
+          "sha256": "1fd7967b3bd26d61cbf9ed4f93b852fd48a7881598348245809144b382513d6e"
+        },
+        "cost": {
+          "file": "seq6-final-cost-review.json",
+          "sha256": "80c45239a0a5a88194ae8ced933fc9b21d878f65694fcf22f938a7e994600ddd"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "65e3e05dbf4a7d04abd38ba2140e38d0195ef5cef505df472d09d53dec7ae562",
+      "p1AfterHash": "2f265d192bb2e885238699146c7cfc9a9ee71292f51a75113186afd9ae6572a0",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 6,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 79517,
+        "p1": 32176,
+        "p2": 123732,
+        "p3": 52372
+      },
       "modelExceptions": [
         {
-          "kind": "retained-offstage-semantic-claim",
-          "recovered": false
+          "code": "redundant_derived_patch_operations",
+          "repairAttempted": true,
+          "repaired": true
+        },
+        {
+          "code": "discovery_merges_distinguishable_actors",
+          "repairAttempted": true,
+          "individualCoverageRecovered": true,
+          "oldCollectiveProfileResidualRemains": true,
+          "fullyRepaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "acceptedBodyLeakObserved": false,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq6-root-review.json",
-          "sha256": "dd7f423d0738007f6ad2d433612af519a841f4ba8cf2f3d802262a829bc17b7d"
-        },
-        {
-          "file": "seq6-review-release.json",
-          "sha256": "4e747bbd441a1da31b929e292aa53ec090ef5eefe888b3963c9d539a706d96e0"
-        },
-        {
-          "file": "seq6-cost-review.json",
-          "sha256": "a8e1a62abf237f57e8e78b6bbed01bc93c565705db96bc1bdcdb0b77d4d1f527"
-        }
-      ]
+      "automaticDoctorCalls": 1,
+      "manualDoctorCalls": 7
     },
     {
       "sequence": 7,
       "kind": "next",
+      "index": 14,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
+      "releaseApproved": true,
+      "decision": "approve",
       "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
+      "p1RecordHash": "91ec7d6f56f487f85ad670d95a0b719c7fc3a9dcb680007f4ceabfad2999f723",
+      "p2RecordHash": "ce6e55e65d81c0c1390f0001bbf1ebce0f3c89b0a63416d83ebeec9f6ca3046d",
+      "p3RecordHash": "0747e161649589be7983f1a7c5a4ffc7eadb33ba3adfe415f9f16976c977cc48",
+      "profileCount": 11,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 4,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "old_collective_profile_residual",
+        "public_payload_contains_private_attribution",
+        "body_dice_display_formula_mismatch"
+      ],
+      "modelMechanismFailures": 0,
       "manualButtonClicks": 0,
+      "totalNativeCalls": 7,
+      "totalDoctorCalls": 4,
+      "totalTokens": 465072,
       "automaticRetries": 0,
-      "totalTokens": 391037,
+      "evidence": {
+        "root": {
+          "file": "seq7-root-review.json",
+          "sha256": "3a3fdd1ce806e7c52d352c1a556564bc94ea4e8c1ae499c052a18a488b74092f"
+        },
+        "release": {
+          "file": "seq7-review-release.json",
+          "sha256": "5c23ea4921bb8a51806136f2d3077427dfa72c82f0885a9829480b5522d813bc"
+        },
+        "cost": {
+          "file": "seq7-cost-review.json",
+          "sha256": "48a3734ff6ddc010d35b9d9253741af6583d838810e22d9451520eda5481c474"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "d860a24fb78b1abce443a62462f1cb25a723a222bbf6286c834d36f5c2efe06b",
+      "p1AfterHash": "b328bbafc38d8491fbf515842ef598aeb733eb25ee87d61ab0cf680576c51b0f",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 7,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 81246,
+        "p1": 49307,
+        "p2": 134955,
+        "p3": 68008
+      },
       "modelExceptions": [
         {
-          "kind": "body-weapon-label-contradiction",
-          "recovered": false
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "world-public-recall-not-used-in-body",
-          "recovered": false
+          "code": "old_collective_profile_residual",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "fifthIndependentActorObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "retained-offstage-semantic-claim",
-          "recovered": false
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "acceptedBodyLeakObserved": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "body_dice_display_formula_mismatch",
+          "bothResolveAsHit": true,
+          "doctorMechanismFailure": false,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq7-root-review.json",
-          "sha256": "f83b9cfb9f74b35062292cab27b08d82074ed377a4420f51a13f973987eb1e09"
-        },
-        {
-          "file": "seq7-review-release.json",
-          "sha256": "995c0176bbd68b72b49ae0084244e72b2d5e7b36f277336345d60e5b98bbfa43"
-        },
-        {
-          "file": "seq7-cost-review.json",
-          "sha256": "8d191415c06fd702de3f7de2750b5ef29a0aea5ad5dff769c4eac2fc1e947a98"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0
     },
     {
       "sequence": 8,
       "kind": "next",
+      "index": 16,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
+      "releaseApproved": true,
+      "decision": "approve",
       "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
+      "p1RecordHash": "f8beef8990d6212331df8dfe3c987c49bec74876b4813dad9f1c39e56c1a34ba",
+      "p2RecordHash": "4444b24f230d80d5fb80628461e3897521bbe3775fc9ab720140741f99f30b44",
+      "p3RecordHash": "07e4a4cb958a0c96738a1913fb8b48919e97292687d5bb84d92bc09435170213",
+      "profileCount": 11,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 5,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "old_collective_profile_residual",
+        "public_payload_contains_private_attribution",
+        "authority_order_source_uncertain",
+        "body_attribute_reference_disagreement"
+      ],
+      "modelMechanismFailures": 0,
       "manualButtonClicks": 0,
+      "totalNativeCalls": 7,
+      "totalDoctorCalls": 4,
+      "totalTokens": 422344,
       "automaticRetries": 0,
-      "totalTokens": 377349,
+      "evidence": {
+        "root": {
+          "file": "seq8-root-review.json",
+          "sha256": "0f1ac1744643cfa6ff4714561a719f10d72a657cb02dd92331786bf108c09813"
+        },
+        "release": {
+          "file": "seq8-review-release.json",
+          "sha256": "0a791903c320419095a1ccc5abe554e1399c45cdeb992c1da5fdfdbfb2a73041"
+        },
+        "cost": {
+          "file": "seq8-cost-review.json",
+          "sha256": "f10bb9f2cd4953241305e4662233b9276b5c6a0ee99512ea80f91f99337e6497"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "09c2ff461a4ebd381cb3c4d1bbec4150054eaf96724a751965931b55e48d0844",
+      "p1AfterHash": "1bebb43190e596e8f22f07e2613737017a7a2d8c654a1271e9d6f31095810a2d",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 8,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 46429,
+        "p1": 24866,
+        "p2": 112129,
+        "p3": 48295
+      },
       "modelExceptions": [
         {
-          "kind": "world-recall-partial-body-observation",
-          "recovered": false
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "retained-offstage-semantic-claim",
-          "recovered": false
+          "code": "old_collective_profile_residual",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "fifthIndependentActorObserved": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "acceptedBodyLeakObserved": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "authority_order_source_uncertain",
+          "provenLeak": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "body_attribute_reference_disagreement",
+          "constitutionReferenceDiffersFromSavedMvu": true,
+          "doctorMechanismFailure": false,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq8-root-review.json",
-          "sha256": "e9a81bbaf219e2472740cc1c9164c4e2bd5506dd17fcb32c37e0206fa2c0cba2"
-        },
-        {
-          "file": "seq8-review-release.json",
-          "sha256": "e607a0fbc509015af469505922e84aeb4d3e68d2a34021a1dd4a6fe4f46bb2d6"
-        },
-        {
-          "file": "seq8-cost-review.json",
-          "sha256": "19a7c6903e52a5975bc2e2718823c78a49251139be71defebcc909069b360014"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0
     },
     {
       "sequence": 9,
       "kind": "next",
+      "index": 18,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": false,
-      "p1FailureContained": true,
-      "p2Status": "cancelled",
-      "p2Skipped": true,
-      "p3Skipped": true,
-      "p1FailureCode": "patch_structure_loss",
-      "p2FailureCode": null,
-      "wholeTavernCalls": 5,
-      "doctorCalls": 2,
-      "automaticDoctorCalls": 1,
-      "manualDoctorCalls": 1,
+      "releaseApproved": true,
+      "decision": "approve",
+      "p2Status": "partial",
+      "p1RecordHash": "1d6c95508bdf628eb89ee8f5668816a373930ff572641e169d8b28b21f5a1b15",
+      "p2RecordHash": "53ea9146c80d9f7970879a94fdb59bb5e900badd1eeb1f5601e26202b77b2f49",
+      "p3RecordHash": "9db8c73548c16ee6fc47c114a81d066107ff5f1c2b7a5953bd3876878ee5f57b",
+      "profileCount": 13,
+      "failedTaskCount": 1,
+      "modelExceptionCount": 7,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "old_collective_profile_residual",
+        "public_payload_contains_private_attribution",
+        "authority_order_source_uncertain",
+        "unknown_profile_wrong_identifier",
+        "unconfirmed_unknown_actor_identity_association",
+        "minor_body_player_speech_or_thought_expansion"
+      ],
+      "modelMechanismFailures": 0,
       "manualButtonClicks": 1,
+      "totalNativeCalls": 10,
+      "totalDoctorCalls": 7,
+      "totalTokens": 631564,
       "automaticRetries": 0,
-      "totalTokens": 277984,
+      "evidence": {
+        "root": {
+          "file": "seq9-root-review.json",
+          "sha256": "c87a79863bb6a92551129bb7d57009ff4329e68624dabcac973b63c64bc89bd1"
+        },
+        "release": {
+          "file": "seq9-review-release.json",
+          "sha256": "32b3c6ca69b295a5bbc840352e9fc78f4e0e8e420895f4dcdd3058a9121ba465"
+        },
+        "cost": {
+          "file": "seq9-final-cost-review.json",
+          "sha256": "cd04cbd891345af7e22e2634f6554021d8d44e6f161ca87fb433172ae173e828"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "946464e05d44a75aff98da1d23ed118a9277f10c8fc548e7636741d7548c4d8a",
+      "p1AfterHash": "0e6252045cfe96305a424f90e3ec73068cb12d90102561d55313969dfbf1fc88",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 9,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 55787,
+        "p1": 21823,
+        "p2": 225922,
+        "p3": 80748
+      },
       "modelExceptions": [
         {
-          "kind": "enemy-title-schema-shape",
-          "recovered": false
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "unconfirmed-anomaly-promoted-to-enemy",
-          "recovered": false
+          "code": "old_collective_profile_residual",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "fifthIndependentActorObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "body-events-unreflected-after-rejected-patch",
-          "recovered": false
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "acceptedBodyLeakObserved": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "authority_order_source_uncertain",
+          "provenLeak": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unknown_profile_wrong_identifier",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "partialShownHonestly": true,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unconfirmed_unknown_actor_identity_association",
+          "provenBodyLeak": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "minor_body_player_speech_or_thought_expansion",
+          "doctorMechanismFailure": false,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq9-root-review.json",
-          "sha256": "84735936c32141d6476e4d0ccb08ba9200dbe3e4bb975a2bff3506ed287f5b8c"
-        },
-        {
-          "file": "seq9-review-release.json",
-          "sha256": "060695b9a8987ae153f2448f38e832b0363058cb4d48bc5e78f33790e434ba24"
-        },
-        {
-          "file": "seq9-cost-review.json",
-          "sha256": "89ab2330b7dcf1376e30726b7082ac5211238c1ebab6b9266f77b8097b3a7463"
-        },
-        {
-          "file": "seq9-p1-initial-failure.json",
-          "sha256": "a1c5dc27a9f83a688112a3221051cb23a158e7b1a2ac16a61af1bad3d28eedef"
-        },
-        {
-          "file": "seq9-p1-manual-failure.json",
-          "sha256": "a4cf4ce222e9e733187acd11b8d43838c97b844256fa7aefaa8318017c11fda0"
-        },
-        {
-          "file": "seq9-p1-failure-containment.json",
-          "sha256": "ea96d95d03349cc5800f1cae98f8116f86c2417d5d668d838751e50bd6f77e5f"
-        }
-      ],
-      "upstreamFailureCode": "patch_structure_loss"
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 3,
+      "containment": {
+        "file": "seq9-profile-failure-containment.json",
+        "sha256": "371aa747e7bc0caca0ac87802d3c73c608afe6d252fd3a762dae89fd9c895fb2",
+        "modelFailureContained": true,
+        "repairRecovered": false
+      }
     },
     {
       "sequence": 10,
       "kind": "next",
+      "index": 20,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
-      "p2Status": "failed",
-      "p2Skipped": false,
-      "p3Skipped": true,
-      "p1FailureCode": null,
-      "p2FailureCode": "discovery_evidence_unbound",
-      "wholeTavernCalls": 6,
-      "doctorCalls": 3,
-      "automaticDoctorCalls": 1,
-      "manualDoctorCalls": 2,
+      "releaseApproved": true,
+      "decision": "approve",
+      "p2Status": "complete",
+      "p1RecordHash": "d9c21d0cc268812f83a3105a0aa83ea5a61f909421120372e095d626644e4ba7",
+      "p2RecordHash": "c8d929e68cc2bfc681d30691ef492edc19b04ec1a8a86a86d11cffc012b74783",
+      "p3RecordHash": "9acc0cfcfe2d903646b0ada0a7d5fe8a97fe9e4035cff0535f04a2bd178b5878",
+      "profileCount": 13,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 7,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "old_collective_profile_residual",
+        "public_payload_contains_private_attribution",
+        "authority_order_source_uncertain",
+        "unknown_profile_wrong_identifier",
+        "unconfirmed_unknown_actor_identity_association",
+        "discovery_evidence_unbound"
+      ],
+      "modelMechanismFailures": 0,
       "manualButtonClicks": 1,
+      "totalNativeCalls": 8,
+      "totalDoctorCalls": 5,
+      "totalTokens": 489596,
       "automaticRetries": 0,
-      "totalTokens": 348268,
+      "evidence": {
+        "root": {
+          "file": "seq10-root-review.json",
+          "sha256": "cc589f48894d0af1d07525259721c42b8e33e043c13946332bf13a75486a8c27"
+        },
+        "release": {
+          "file": "seq10-review-release.json",
+          "sha256": "4d20f4302bc78dbe0d1718e20b6f5434e4fffab93c0db42b4cf550f5d89e4111"
+        },
+        "cost": {
+          "file": "seq10-final-cost-review.json",
+          "sha256": "72aa01432a9d205b764e1f31b8c20d4ebffb2168920f02549353b287bb1614e5"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "87557caa3d9b538faa6d451e795e1866dd9360ebe21b38fa39853d2356b7c2e6",
+      "p1AfterHash": "4993fce47d04401aee5b18cd1c7565d3912f748b011a6616c4765416596ff114",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 10,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 58602,
+        "p1": 23156,
+        "p2": 76305,
+        "p3": 45054
+      },
       "modelExceptions": [
         {
-          "kind": "initial-redundant-computed-attribute-operation",
-          "recovered": null
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "partial-manual-variable-repair",
-          "recovered": null
+          "code": "old_collective_profile_residual",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "fifthIndependentActorObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "discovery-evidence-unbound",
-          "recovered": false
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "acceptedBodyLeakObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "historical-private-world-model-exceptions",
-          "recovered": null
+          "code": "authority_order_source_uncertain",
+          "provenLeak": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unknown_profile_wrong_identifier",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "partialShownHonestly": true,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unconfirmed_unknown_actor_identity_association",
+          "provenBodyLeak": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "discovery_evidence_unbound",
+          "repairAttemptedOnce": true,
+          "repaired": true,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq10-root-review.json",
-          "sha256": "7a1928b01ca253b7de1dab69bd8dd6b7a69ce87884961820a29649b2e9212ac0"
-        },
-        {
-          "file": "seq10-review-release.json",
-          "sha256": "0ac3195c3f82b45425427255d4194b4ff41ee8cc0f0f28618c2f2f1bb62d4f95"
-        },
-        {
-          "file": "seq10-cost-review.json",
-          "sha256": "30a42746e58f3b17ae653b13f9e51bbaf298269ee450500e9c09a39febaa7677"
-        },
-        {
-          "file": "seq10-p1-initial-failure.json",
-          "sha256": "4cecd59c1ed2c33ad8ce7337ddeff4ac672f1eea35d81edb33c21dbf251ae1a0"
-        }
-      ]
+      "automaticDoctorCalls": 2,
+      "manualDoctorCalls": 3
     },
     {
       "sequence": 11,
       "kind": "next",
+      "index": 22,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
-      "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
-      "manualButtonClicks": 0,
+      "releaseApproved": true,
+      "decision": "approve",
+      "p2Status": "partial",
+      "p1RecordHash": "c090c9ef42460ea4edf1db369d5bde6f185dd760efa7445eb0f3fb1515da2363",
+      "p2RecordHash": "ff34c20cbe69b177ea12f6168ff2d8cada98f825daabc9b763fd78d03c02a15e",
+      "p3RecordHash": "00fc1e42137fbad9fb88827c27a7f92a7c9ad574c1842fc5a567dd3054d55ab5",
+      "profileCount": 13,
+      "failedTaskCount": 1,
+      "modelExceptionCount": 11,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "old_collective_profile_residual",
+        "public_payload_contains_private_attribution",
+        "authority_order_source_uncertain",
+        "unknown_profile_wrong_identifier",
+        "unconfirmed_unknown_actor_identity_association",
+        "discovery_evidence_unbound",
+        "unsupported_hp_increase",
+        "stamina_recovery_without_established_rule",
+        "location_includes_unentered_interior",
+        "unidentified_remains_profile_missing_fields"
+      ],
+      "modelMechanismFailures": 0,
+      "manualButtonClicks": 1,
+      "totalNativeCalls": 11,
+      "totalDoctorCalls": 8,
+      "totalTokens": 736864,
       "automaticRetries": 0,
-      "totalTokens": 417086,
+      "evidence": {
+        "root": {
+          "file": "seq11-root-review.json",
+          "sha256": "837e71422c129070550867e5eef40fefef322a0bdd96be24bb21c80c7bf6782b"
+        },
+        "release": {
+          "file": "seq11-review-release.json",
+          "sha256": "5f8eb486520fb83775aff14ca37b2e298bf76b8333415ed2aadd2b861876921a"
+        },
+        "cost": {
+          "file": "seq11-final-cost-review.json",
+          "sha256": "34e0547bec3d054869ddcb92a692486fdc67846186e07334d0430de18ea81776"
+        },
+        "containment": {
+          "file": "seq11-profile-auto-containment.json",
+          "sha256": "f759e404c2049646ca6503dba755556e0d223f949552c5275c42a77bee025963"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "25635de56576ebe2b9eb088433b7013e907addbb5ec857bb1809e0628d2d8bdd",
+      "p1AfterHash": "4da749e676835b5634c30768129e1c639e2bf8af66061cb8f9ecc807fda02e6b",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 11,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 97044,
+        "p1": 33390,
+        "p2": 109695,
+        "p3": 54608
+      },
       "modelExceptions": [
         {
-          "kind": "persistent-prior-enemy-level-title-movement-omissions",
-          "recovered": false
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "world-recall-partial-body-observation",
-          "recovered": false
+          "code": "old_collective_profile_residual",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "fifthIndependentActorObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "retained-offstage-semantic-claim",
-          "recovered": false
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "acceptedBodyLeakObserved": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "authority_order_source_uncertain",
+          "provenLeak": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unknown_profile_wrong_identifier",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "partialShownHonestly": true,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unconfirmed_unknown_actor_identity_association",
+          "provenBodyLeak": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "discovery_evidence_unbound",
+          "repairAttemptedOnce": true,
+          "repaired": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unsupported_hp_increase",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "stamina_recovery_without_established_rule",
+          "unresolved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "location_includes_unentered_interior",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unidentified_remains_profile_missing_fields",
+          "repairAttemptedThroughP1Downstream": true,
+          "repaired": false,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq11-root-review.json",
-          "sha256": "c98cb4ad647655f60987db8e242691ae68459198343ea7bc037487becee30806"
-        },
-        {
-          "file": "seq11-review-release.json",
-          "sha256": "e43125960684e983f33b20251d79cfdecb1673ba8de5e568bf2ebab0354dd960"
-        },
-        {
-          "file": "seq11-cost-review.json",
-          "sha256": "552fa77ae9ca2211261a28ebce55ac88d4165227dde20a2ee8992deb36567266"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 4,
+      "containment": {
+        "file": "seq11-profile-auto-containment.json",
+        "sha256": "f759e404c2049646ca6503dba755556e0d223f949552c5275c42a77bee025963",
+        "modelFailureContained": true,
+        "repairRecovered": false
+      }
     },
     {
       "sequence": 12,
       "kind": "next",
+      "index": 24,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
-      "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
+      "releaseApproved": true,
+      "decision": "approve",
+      "p2Status": "partial",
+      "p1RecordHash": "518bfc384725242d9a3abe79e69097c015997d534a53136294bb1c5261a80a17",
+      "p2RecordHash": "acb2377b377f1dbe1911012ac7f79646c3506f71df277da918a5c40cca6f479f",
+      "p3RecordHash": "f2e02607d8708fa7afd5b4269d63f7fc1b737061a7d88d6be7723a815259a259",
+      "profileCount": 13,
+      "failedTaskCount": 1,
+      "modelExceptionCount": 13,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "old_collective_profile_residual",
+        "public_payload_contains_private_attribution",
+        "authority_order_source_uncertain",
+        "unknown_profile_wrong_identifier",
+        "unconfirmed_unknown_actor_identity_association",
+        "discovery_evidence_unbound",
+        "unsupported_hp_increase",
+        "stamina_recovery_without_established_rule",
+        "location_includes_unentered_interior",
+        "unidentified_remains_profile_missing_fields",
+        "extra_elapsed_time_after_main_update",
+        "unidentified_remains_profile_incomplete_again"
+      ],
+      "modelMechanismFailures": 0,
       "manualButtonClicks": 0,
+      "totalNativeCalls": 7,
+      "totalDoctorCalls": 4,
+      "totalTokens": 445733,
       "automaticRetries": 0,
-      "totalTokens": 421979,
+      "evidence": {
+        "root": {
+          "file": "seq12-root-review.json",
+          "sha256": "ff11e1ee7b3670ae248db59f460532cc5cb1f16ff2e4efdc1eb118715f192128"
+        },
+        "release": {
+          "file": "seq12-review-release.json",
+          "sha256": "e05ba26c16f0efa60e020d62285f1a74ef6d67b2f2faae592b41ccf6dea18634"
+        },
+        "cost": {
+          "file": "seq12-cost-review.json",
+          "sha256": "6c201a36ce6c1b2224626deee9c7e9c34603affe861c6de9e55e69e2718a8f15"
+        },
+        "containment": {
+          "file": "seq12-profile-auto-containment.json",
+          "sha256": "dcaeaefd3ec4dd31b2bd2e675ca5f78601f0a57f873d3b64f3a99720127e0b56"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "6fba8eac060058d88737664dd1840373c5f76754693b543f1cc056e2c8989aec",
+      "p1AfterHash": "5031a7506bfe9eac9ff1bf9db0f774f88cd6663db9b9b7afef0959a96cb4eef9",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 12,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 140674,
+        "p1": 53022,
+        "p2": 126102,
+        "p3": 39619
+      },
       "modelExceptions": [
         {
-          "kind": "persistent-prior-enemy-level-title-movement-omissions",
-          "recovered": false
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "possible-combat-resource-regeneration-omission",
-          "recovered": false
+          "code": "old_collective_profile_residual",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "fifthIndependentActorObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "stale-private-witness-description-after-public-trust-collapse",
-          "recovered": false
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "acceptedBodyLeakObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "world-recall-partial-body-observation",
-          "recovered": false
+          "code": "authority_order_source_uncertain",
+          "provenLeak": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "retained-offstage-semantic-claim",
-          "recovered": false
+          "code": "unknown_profile_wrong_identifier",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "partialShownHonestly": true,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unconfirmed_unknown_actor_identity_association",
+          "provenBodyLeak": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "discovery_evidence_unbound",
+          "repairAttemptedOnce": true,
+          "repaired": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unsupported_hp_increase",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "stamina_recovery_without_established_rule",
+          "unresolved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "location_includes_unentered_interior",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unidentified_remains_profile_missing_fields",
+          "repairAttemptedThroughP1Downstream": true,
+          "repaired": false,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "extra_elapsed_time_after_main_update",
+          "unsupportedExtraMinutes": 3,
+          "repairAttemptedThisRound": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unidentified_remains_profile_incomplete_again",
+          "failedFields": 12,
+          "repaired": false,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq12-root-review.json",
-          "sha256": "41bffbff9fad622ab174bf7f8f0325fad6b346a2a6f8587dd64b70ea282e7f1f"
-        },
-        {
-          "file": "seq12-review-release.json",
-          "sha256": "2c16231eb09bf2dda521d51cbe63897d5c07b84d2402ea1da8a5606dfbdb11d2"
-        },
-        {
-          "file": "seq12-cost-review.json",
-          "sha256": "8bef49b90c128f5df5572628c8570dda5f2d05a17d311f9859b053d70618f702"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0,
+      "containment": {
+        "file": "seq12-profile-auto-containment.json",
+        "sha256": "dcaeaefd3ec4dd31b2bd2e675ca5f78601f0a57f873d3b64f3a99720127e0b56",
+        "modelFailureContained": true,
+        "repairRecovered": false
+      }
     },
     {
       "sequence": 13,
       "kind": "next",
+      "index": 26,
+      "swipeId": 0,
+      "rootApproved": true,
       "independentReviewComplete": true,
-      "historicalPersistenceVerified": true,
-      "p1CandidateCommitted": true,
-      "p1FailureContained": false,
+      "releaseApproved": true,
+      "decision": "approve",
       "p2Status": "complete",
-      "p2Skipped": false,
-      "p3Skipped": false,
-      "p1FailureCode": null,
-      "p2FailureCode": null,
-      "wholeTavernCalls": 7,
-      "doctorCalls": 4,
-      "automaticDoctorCalls": 4,
-      "manualDoctorCalls": 0,
+      "p1RecordHash": "a5a31bcf81b8cfc87cc665d02cd02a1cf04dfc4f1b3c51ed0d887e94618c7a59",
+      "p2RecordHash": "3ef8261c60efb0598ff1e48da2712b16e7c934e52edd8327b8f9d1c3077c2659",
+      "p3RecordHash": "facfe6224aa1788dc31b8f6787c1875a2cb8e50e0d8b064b5a9d5ea1b3eed92f",
+      "profileCount": 13,
+      "failedTaskCount": 0,
+      "modelExceptionCount": 15,
+      "modelExceptionCodes": [
+        "equipment_parameter_drift",
+        "old_collective_profile_residual",
+        "public_payload_contains_private_attribution",
+        "authority_order_source_uncertain",
+        "unknown_profile_wrong_identifier",
+        "unconfirmed_unknown_actor_identity_association",
+        "discovery_evidence_unbound",
+        "unsupported_hp_increase",
+        "stamina_recovery_without_established_rule",
+        "location_includes_unentered_interior",
+        "unidentified_remains_profile_missing_fields",
+        "extra_elapsed_time_after_main_update",
+        "unidentified_remains_profile_incomplete_again",
+        "extra_elapsed_time_after_main_update_seq13",
+        "visible_commander_identity_continuity_unconfirmed"
+      ],
+      "modelMechanismFailures": 0,
       "manualButtonClicks": 0,
+      "totalNativeCalls": 7,
+      "totalDoctorCalls": 4,
+      "totalTokens": 433979,
       "automaticRetries": 0,
-      "totalTokens": 415822,
+      "evidence": {
+        "root": {
+          "file": "seq13-root-review.json",
+          "sha256": "a46472a5f082b78dd96b9e9bba7965f3ecd870e7a47dee99458a64e8a9fc7918"
+        },
+        "release": {
+          "file": "seq13-review-release.json",
+          "sha256": "4934b90a40ea0b1fcc2d3541ea200f7bcd7a712e6100089d15e0268efbbec8a9"
+        },
+        "cost": {
+          "file": "seq13-cost-review.json",
+          "sha256": "c58cec47b31b8a641ca37c1b1bc8f373cd991cd5ad44063036f98d9553fb2044"
+        }
+      },
+      "realAcceptance": false,
+      "contentHash": "7bcd43065b67d5991b3aa6bb5dbfd260c5f8f44674152cb75175103792ae4acb",
+      "p1AfterHash": "ec334e2babe0c412b4e53a062b20d675761ce88d0be8591722aeb5e8d956bc6c",
+      "p1Readback": true,
+      "p2Readback": true,
+      "p3Readback": true,
+      "p3Round": 13,
+      "profileFieldCount": 44,
+      "historicalPersistenceVerified": true,
+      "stageDurationsMs": {
+        "main": 67633,
+        "p1": 26295,
+        "p2": 87174,
+        "p3": 44723
+      },
       "modelExceptions": [
         {
-          "kind": "persistent-prior-enemy-level-title-movement-omissions",
-          "recovered": false
+          "code": "equipment_parameter_drift",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "possible-combat-resource-regeneration-omission",
-          "recovered": false
+          "code": "old_collective_profile_residual",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "fifthIndependentActorObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "p1-explanation-attributes-prior-resource-changes-to-current-round",
-          "recovered": false
+          "code": "public_payload_contains_private_attribution",
+          "priorRepairAttempted": true,
+          "repaired": false,
+          "acceptedBodyLeakObserved": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "profile-relationship-sentence-reverses-threat-target",
-          "recovered": false
+          "code": "authority_order_source_uncertain",
+          "provenLeak": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "stale-private-witness-description-after-public-trust-collapse",
-          "recovered": false
+          "code": "unknown_profile_wrong_identifier",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "partialShownHonestly": true,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
         },
         {
-          "kind": "world-recall-partial-body-observation",
-          "recovered": false
+          "code": "unconfirmed_unknown_actor_identity_association",
+          "provenBodyLeak": false,
+          "continuationAuthorized": true
         },
         {
-          "kind": "retained-offstage-semantic-claim",
-          "recovered": false
+          "code": "discovery_evidence_unbound",
+          "repairAttemptedOnce": true,
+          "repaired": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unsupported_hp_increase",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "stamina_recovery_without_established_rule",
+          "unresolved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "location_includes_unentered_interior",
+          "repairAttemptedOnce": true,
+          "repaired": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unidentified_remains_profile_missing_fields",
+          "repairAttemptedThroughP1Downstream": true,
+          "repaired": false,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "extra_elapsed_time_after_main_update",
+          "unsupportedExtraMinutes": 3,
+          "repairAttemptedThisRound": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "unidentified_remains_profile_incomplete_again",
+          "failedFields": 12,
+          "repaired": false,
+          "invalidProfileNotSaved": true,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "extra_elapsed_time_after_main_update_seq13",
+          "unsupportedExtraMinutes": 1,
+          "repairAttemptedThisRound": false,
+          "continuationAuthorized": true
+        },
+        {
+          "code": "visible_commander_identity_continuity_unconfirmed",
+          "modelUsesExistingProfile": true,
+          "samePersonIndependentlyProven": false,
+          "continuationAuthorized": true
         }
       ],
-      "evidence": [
-        {
-          "file": "seq13-root-review.json",
-          "sha256": "ab34ab71080c759b0760cd46b95664a5fdeee0ddaaa148fd8788fe8309f29b7a"
-        },
-        {
-          "file": "seq13-review-release.json",
-          "sha256": "bed0741e6763ee2ba466abeaf92085264497aee9d1999a6f7a7b9971a02d0e6b"
-        },
-        {
-          "file": "seq13-cost-review.json",
-          "sha256": "bd4dd8fa3f362b30046fad361238ef31f95bd487d0916d3261c94843da8d7521"
-        }
-      ]
+      "automaticDoctorCalls": 4,
+      "manualDoctorCalls": 0
     }
   ],
   "finalReadback": {
+    "preSnapshot": {
+      "file": "r10-final-snapshot-pre.json",
+      "sha256": "385214090b403e51a818167c2a925b38b1f67127271ac5741884d37267adcdd0"
+    },
+    "reloadIntent": {
+      "file": "r10-final-reload-intent.json",
+      "sha256": "04806f80bdd018af8bd965db01946095c37e973196bc472037eafd66ea5cc5de"
+    },
+    "postDiagnostic": {
+      "file": "r10-final-post-diagnostic.json",
+      "sha256": "6091f818577ba7efc1bb60a22f80e04e0ae23af378f553f19388a9f2d1924c4a"
+    },
+    "uiAssessment": {
+      "file": "r10-final-ui-assessment.json",
+      "sha256": "4b06a7ba4427d3cb80f45893b1b51fe6f3674310ff6a2fb6ded6d5c3c6499346"
+    },
+    "readbackResolution": {
+      "file": "r10-final-readback-resolution.json",
+      "sha256": "73ac41da9f92dec597c2ccb0821ecff4d9e69c293f16f6da12ca98eee033153c"
+    },
     "reloadAttempts": 1,
-    "extraModelCalls": 0,
-    "historicalRoundsVerified": 13,
-    "allTypedRecordsPreserved": true,
-    "profileCount": 5,
-    "fieldsPerProfile": 44,
-    "worldRound": 11,
-    "structuredWorldUiFieldsVerified": 21,
-    "strictWorldUiTextHashPassed": false,
+    "explicitSendCalls": 0,
+    "newChatCalls": 0,
+    "additionalNativeCalls": 0,
+    "all31NonPresentationAnchorsExact": true,
+    "historical13Exact": true,
+    "threeModulesRestored": true,
+    "profilesComplete44": true,
+    "worldTypedUiExact": true,
+    "strictTextHashCheckPassed": false,
     "strictFailureRetained": true,
-    "displayOrderDifferenceDocumented": true,
-    "foregroundNativeVisibilityProven": false,
-    "evidence": [
-      {
-        "file": "0130-p3-final-snapshot-pre.json",
-        "sha256": "beb69ebdd01a3c3806901a3d81db7a72ed86cf68450e19def89dafd57236bbc6"
-      },
-      {
-        "file": "0130-p3-final-reload-intent.json",
-        "sha256": "91c83ebd2b700541273e4683d3060d5696a99914cf79ffd8defd197e4a4f9ecc"
-      },
-      {
-        "file": "0130-p3-final-image-cleanup.json",
-        "sha256": "95fe7acaae0a2ecc5fae3a93010b11ec2469aea2878b4000ca0a179af09916db"
-      },
-      {
-        "file": "0130-p3-final-post-diagnostic.json",
-        "sha256": "a18327232756f7eac1ae3eb194784e07fbb30d113ea8821dd8e75e7905c619d1"
-      },
-      {
-        "file": "0130-p3-final-ui-assessment.json",
-        "sha256": "c2373de98b99ef41b636af6df66e3ce843119c1adde592322f4c1d2719f16f92"
-      },
-      {
-        "file": "final-independent-readback-review.json",
-        "sha256": "18af814c69413343ea5a5a91d634e2c212999e5f1801d235579b3ca88e9543a9"
-      }
-    ]
+    "finalSnapshotPostFabricated": false,
+    "finalReloadResultFabricated": false
   },
   "cost": {
-    "totalCalls": 91,
-    "doctorCalls": 53,
-    "otherHostCalls": 38,
-    "automaticDoctorCalls": 46,
-    "manualDoctorCalls": 7,
-    "buttonClicks": 4,
-    "doctorAutomaticRetries": 0,
-    "normalDoctorRequestLimit": 4,
-    "totalReportedTokens": 5461994,
-    "doctorTokenCoverage": {
-      "total": 2823251,
-      "knownRounds": 10,
-      "requiredRounds": 13,
-      "complete": false
+    "source": "COST_THROUGH_SEQ13_INDEPENDENT.json",
+    "sha256": "29566aa5c814df969690204c679606d6e6823ed5deedf0c032da1335d028b5b4",
+    "totals": {
+      "nativeCalls": 107,
+      "initialNativeCalls": 85,
+      "manualNativeCalls": 22,
+      "doctorCalls": 69,
+      "initialDoctorCalls": 47,
+      "manualDoctorCalls": 22,
+      "reportedTotalTokens": 6851274,
+      "automaticRetries": 0,
+      "manualButtonClicks": 7,
+      "manualAdditionalCalls": 22,
+      "perRoundInitialDoctorRequestLimit": 4,
+      "maxInitialDoctorCalls": 4,
+      "manualButtonAccounting": "7 manual buttons through seq13; 22 additional manual Doctor calls, all already classified in seq2, seq3, seq6, seq9, seq10, seq11.",
+      "modelCallsIssuedByObservers": 0,
+      "realAcceptance": false
     }
   },
   "repairMechanisms": {
-    "variableFreshRepairVerified": true,
-    "profileRepairVerified": true,
-    "worldFollowupSameRoundVerified": true,
-    "standaloneWorldRepairButtonTestedInCurrentBatch": false,
-    "modelMistakesMayRemain": true,
+    "manualButtonClicks": 7,
+    "manualAdditionalCalls": 22,
+    "automaticRetries": 0,
+    "classification": "P1/P2/P3 repairs are recorded per round; manual calls are separate from normal per-round limits.",
+    "buttonsByModule": {
+      "p1Sequences": [
+        2,
+        6,
+        11
+      ],
+      "p2Sequences": [
+        6,
+        9,
+        10
+      ],
+      "p3Sequences": [
+        3
+      ]
+    },
+    "allErrorsRecovered": false
+  },
+  "retainedModelExceptions": {
+    "source": "seqN-root-review.json modelExceptions arrays",
+    "roundsWithExceptions": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ],
+    "totalExceptionEntries": 82,
+    "mechanismFailures": 0
+  },
+  "limitations": {
+    "publicPrivateBoundaryModelExceptionsRetained": true,
+    "semanticConsumptionProven": false,
+    "serializedWorldUiTextHashFailureRetained": true,
+    "strictProtocolAcceptanceNotClaimed": true
+  },
+  "assemblyEvidence": {
+    "sourceMap": "staging/R10_FINAL_LOCK_SOURCE_MAP.md",
+    "sourceMapSha256": "d6c7fb18f8ccb9c81e237526c621bace92f502bc3339cbd7887bb5a46e89b0b4",
+    "candidateJson": {
+      "file": "candidate.json",
+      "sha256": "bbd62335bd57b753293413281d54f4873c31d0fcf483896476afa575d4e97622"
+    },
+    "runtimeFileCount": 17,
+    "supportFileCount": 23,
+    "oldCandidate4Archive": {
+      "path": "locks/phase3-evidence-candidate4.json",
+      "sha256": "98afcf0759bc115056e043d9e4c6b7287f39b4156c9c1a219f72d64425e091f3",
+      "pending": false
+    }
+  },
+  "draftOnly": false,
+  "acceptanceBasis": "User-authorized 2026-09-17 bounded model exceptions. Functional mechanism coverage is complete; strict serialized presentation and zero-semantic-error acceptance are not claimed.",
+  "worldConsumption": {
+    "observedAdoption": true,
+    "sequence": 9,
+    "deliveryCountProven": 1,
+    "machineSemanticConsumptionProven": false,
+    "allDeliveriesConsumed": false,
+    "counterfactualCausalityProven": false,
     "evidence": [
       {
-        "file": "seq10-p1-manual-freshness.json",
-        "sha256": "3a287404e277d707e57e05fbba44db2157904e40c57b6568de4dd8398548a178"
+        "file": "seq9-world-independent-review.json",
+        "sha256": "4968b3e39f3d08afb0020bb7a3c69b073f35a28e4c525e80179d646f8c7e2673"
       },
       {
-        "file": "seq5-profile-manual-readback.json",
-        "sha256": "a202fc012e2dedc1193659ccf9f4b98c57a24209d14baf6ae272179aa7cb44b2"
+        "file": "seq9-world-post-profile-independent-review.json",
+        "sha256": "229239962167a98707733906c93bcb66432295e0c0a50ae11e2e55946fc8cfa2"
       },
       {
-        "file": "seq5-world-manual-independent-review.json",
-        "sha256": "2b898a2fa380702137cc3153ce9734c661fa5ecd2145fb4a993de14323c9d18a"
-      },
-      {
-        "file": "seq5-world-manual-independent-review.errata.json",
-        "sha256": "d0c4fb12c252c886b4275d74edb72fa4c8b54d0f86738bc93eeb562f7efb1cae"
-      },
-      {
-        "file": "seq5-manual-held-readback.json",
-        "sha256": "849b024d784e4d374341b58c09e34a22a85c5733d7cbc87e13d903fdbb4b5808"
+        "file": "seq9-root-review.json",
+        "sha256": "c87a79863bb6a92551129bb7d57009ff4329e68624dabcac973b63c64bc89bd1"
       }
     ]
   },
-  "retainedTerminalFailureRounds": [
-    1,
-    9,
-    10
-  ],
-  "retainedModelExceptionCount": 43,
-  "limitations": [
-    "World recall reached subsequent main requests; actual offstage narrative consumption remains unproven.",
-    "Complete profile fields do not establish factual or semantic correctness.",
-    "Rejected variable and profile candidates and unsuccessful manual recovery remain recorded.",
-    "The world UI serialized text hash differs after reload; typed DOM values and persisted records match.",
-    "Native foreground window visibility was not tested; background compositor images show no lower white band.",
-    "Normal request count is bounded, but input token usage remains high."
-  ],
-  "assemblyEvidence": {
-    "file": "lock-preparation/staging/phase3-evidence.json",
-    "sha256": "0405a29c8c01bc74691302b4e023ba9721e172ae0da31c19bd4c54e4019d1985"
-  },
-  "scope": "Freeze the reviewed implementation and bounded repair mechanisms under the user-approved continuation policy. This is not full semantic acceptance or a formal release.",
-  "targetedWorldFollowup": {
-    "schema": "mvu-world-bounded-followup/v1",
-    "date": "2026-09-17",
+  "finalModules": {
+    "profileCount": 13,
+    "fieldCount": 44,
+    "worldRound": 13,
     "sameChat": true,
-    "runtimeUnchanged": true,
-    "promptUnchanged": true,
-    "source": {
-      "sourceFiles": 88,
-      "presetExact": true,
-      "modulesExact": true,
-      "runtimeHead": "b5c15c8f7c14a10c8ea493be6ec3f06176b32c05",
-      "deliveryHead": "836d28f4cc91f5229fa8bfa07bc52e64c9d6d1aa",
-      "fingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752"
+    "all13HistoricalRecordsReadBack": true,
+    "threeModulesRestored": true
+  },
+  "coverageEvidence": {
+    "file": "r10-final-coverage-addendum.json",
+    "sha256": "851cbabd7fe2658424b8f0b77a5b31d9c7da4658a134a1a0c3cf2130e6c47cec"
+  },
+  "privacy": {
+    "registeredTemporaryImagesAbsent": true,
+    "evidence": {
+      "file": "r10-final-private-cleanup-audit.json",
+      "sha256": "8cd916f3832d9ccc1de7e15d4ae6036c65542d27dd12b58a2520dabd2bd293f9"
     },
-    "manualWorldRepair": {
-      "tested": true,
-      "buttonClicks": 1,
-      "calls": 1,
-      "durationMs": 49391,
-      "worldRoundBefore": 11,
-      "worldRoundAfter": 11,
-      "upstreamUnchanged": true,
-      "savedAndReadback": true
-    },
-    "normalFollowup": {
-      "sequence": 14,
-      "calls": 7,
-      "doctorCalls": 4,
-      "worldRoundBefore": 11,
-      "worldRoundAfter": 12,
-      "allModuleReadbacks": true,
-      "worldRecallExactInActualRequest": true,
-      "worldRecallBlockCount": 1,
-      "bodyHash": "e7a6d9535545952de042b2f6cd5b8eb31d40c300a4cdd6c4d4c3b9bce179578e",
-      "worldRecordHash": "7bada6b92332446c6baf24ec0ab5e2956bdb8d5d7f21bb70d4f0f507e01aab39",
-      "profileCount": 5,
-      "profileFields": 44,
-      "profileChangedCount": 2,
-      "profileUnchangedCount": 3,
-      "independentReviewsComplete": true,
-      "worldUiFieldsMatched": 21,
-      "sendEnabled": true
-    },
-    "semantics": {
-      "distinctWorldConsequenceAdoptionProven": false,
-      "worldNarrativeAcceptance": false,
-      "observedPrivateRecallLeak": false,
-      "confirmedRuntimeRecallLoss": false,
-      "modelFailuresRetained": true
-    },
-    "calls": {
-      "added": 8,
-      "doctor": 5,
-      "automaticDoctor": 4,
-      "manualDoctor": 1,
-      "automaticRetries": 0,
-      "priorBatch": 91,
-      "combined": 99,
-      "knownTokenCalls": 6,
-      "unknownTokenCalls": 2,
-      "knownTokenSubtotal": 408299,
-      "completeTokenTotal": null
-    },
-    "durationMs": {
-      "manualWorld": 49391,
-      "mainNative": 51235,
-      "p1": 55909,
-      "p2Discovery": 14448,
-      "p2Batch": 29657,
-      "p3Request": 59035
-    },
-    "collectorFailure": {
-      "retained": true,
-      "code": "MAIN_REQUEST_NOT_FOUND",
-      "cause": "external collector rejected non-JSON streaming response during request selection",
-      "fixedUsingSameCapturedRequest": true,
-      "extraModelCalls": 0
-    },
-    "finalHost": {
-      "nativeLatest": 8496,
-      "extraCallsAfterSettle": 0,
-      "registeredPrivateProbeRemoved": true,
-      "doctorListenersUntouched": true,
-      "reloads": 0
-    },
-    "realAcceptance": false,
-    "evidence": [
-      {
-        "file": "world-followup-manual-result.json",
-        "sha256": "6534831c4c6a56180783e62d13e1773eb3f2f5b770ce718477538fbedfdc2474"
-      },
-      {
-        "file": "world-followup-manual-ui.json",
-        "sha256": "ccbfb4a4957124a9321ca3537be703331b058a1a7e3b415f12c80e2328bc75b3"
-      },
-      {
-        "file": "world-followup-manual-review.json",
-        "sha256": "29fbadc162f1fa2dce77fa6c443c267c11544a36e50f334b92978cbb87ded7a8"
-      },
-      {
-        "file": "world-followup-next-result.json",
-        "sha256": "f95ed8e8c2c2c4df1ea08113af6f41d8d10bc1251230d6c4137558e1142fb2d8"
-      },
-      {
-        "file": "world-followup-next-capture.json",
-        "sha256": "0a692472ffc4f107e09db224786819bb0a5dc53eb2aabfc125367d6d731d9ea5"
-      },
-      {
-        "file": "world-followup-next-pages.json",
-        "sha256": "1d824e11e0a1fd708cce7a4cdc5afd44648071b549c205a9a16a9bb54de8060b"
-      },
-      {
-        "file": "world-followup-next-root-review.json",
-        "sha256": "3ed0c6b1d1c98b3d0136363f79b71dac51161e6f7e4badee9bb8cf324439b610"
-      },
-      {
-        "file": "world-followup-next-world-review.json",
-        "sha256": "f44eeca2984db72da42b756045ae8b6c5bebca90a8d2c1ef76728ac06c2cc59d"
-      },
-      {
-        "file": "world-followup-next-mvu-review.json",
-        "sha256": "910f397d7536a98f4c758d43631c0ed2395cd91a6d34bb0e2cd9f8597f16c6a8"
-      },
-      {
-        "file": "world-followup-cost.json",
-        "sha256": "7f1ea2f6ef97a4bfa44a705fc0d0585e13e572af513282e0145e2e9eb7c71241"
-      },
-      {
-        "file": "world-followup-next-collector-attempt-1.json",
-        "sha256": "18279d224c5819347b4f54801755aa372c797824b782090ebb4b25f0a3b4f747"
-      },
-      {
-        "file": "world-followup-final-host.json",
-        "sha256": "fc843ad7c27eae3bea791edf775f03de8eb4fda29a82670fd31abb2bb3474b7c"
-      },
-      {
-        "file": "world-followup-next-mvu-value-review.json",
-        "sha256": "77e5d1f13f4c8daf1102218e4c47b96f2409ae80a8c03dac42f4f2fcfd4445cb"
-      },
-      {
-        "file": "world-followup-initial-image-cleanup.json",
-        "sha256": "2e18f62d217e8f787cd710ec2f5012b5804f33efd8d25f4233f15fb26faed853"
-      },
-      {
-        "file": "world-followup-final-image-cleanup.json",
-        "sha256": "ec4bbb958ceb5a5459a752a261ca98df418141ccaa6bf0f1f0cf35427d4f5ac4"
-      }
-    ],
-    "cleanup": {
-      "initialPrivateImagesRemoved": 85,
-      "followupPrivateImagesRemoved": 93,
-      "privateImagesRemaining": 0,
-      "registeredPrivateProbeRemoved": true,
-      "doctorAndUserHostPreserved": true
-    }
+    "rawPrivateMaterialIncluded": false
+  },
+  "publication": {
+    "testRepositoryOnly": true,
+    "formalRelease": false
   }
 }

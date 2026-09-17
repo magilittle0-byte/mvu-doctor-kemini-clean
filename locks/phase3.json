@@ -1,5 +1,5 @@
 {
-  "locked": false,
+  "locked": true,
   "stage": 3,
   "version": "0.1.0-candidate.5",
   "fingerprint": "5262c0097e292177027d1d6897d53299b1506edf987c73d0b09b2e867827ebb3",
@@ -63,22 +63,29 @@
       "lockSha256": "49a674502a759ad166b940fae27392739e32e199e008eb3c0922013cbfc813f5"
     }
   },
-  "lockScope": "candidate-awaiting-real-acceptance",
+  "lockScope": "implementation-and-functional-mechanisms-with-retained-model-exceptions",
   "realAcceptance": {
     "complete": false,
-    "mechanismAcceptance": false,
+    "mechanismAcceptance": true,
+    "functionalAcceptanceWithModelExceptions": true,
     "fullDoctorAcceptance": false,
     "strictProtocolAcceptance": false,
-    "normalRounds": 0,
-    "pressureRounds": 0,
+    "strictSemanticAcceptance": false,
+    "zeroErrorAcceptance": false,
+    "normalRounds": 12,
+    "pressureRounds": 1,
     "sourceFingerprint": "5262c0097e292177027d1d6897d53299b1506edf987c73d0b09b2e867827ebb3",
-    "reason": "Public world narrative handoff changed; all previous acceptance is historical only."
+    "reason": "User-authorized 2026-09-17 bounded model exceptions. Functional mechanism coverage is complete; strict serialized presentation and zero-semantic-error acceptance are not claimed."
   },
   "previousCandidate": {
     "version": "0.1.0-candidate.4",
     "fingerprint": "18d3689f8c731b0738490296bf54bfea82e19a169486bfb70f7901b83961c752",
     "lockSha256": "f9309fd4d77cab30161aa1a1323c7263c106d23515650c3f60d124c2c00b71a1",
-    "evidencePath": "locks/phase3-evidence.json",
+    "evidencePath": "locks/phase3-evidence-candidate4.json",
     "evidenceSha256": "98afcf0759bc115056e043d9e4c6b7287f39b4156c9c1a219f72d64425e091f3"
+  },
+  "evidence": {
+    "path": "locks/phase3-evidence.json",
+    "sha256": "5d5b7720f9cd149b26c602a3579b93393c153508e2816ec1626587f75fd8482f"
   }
 }
