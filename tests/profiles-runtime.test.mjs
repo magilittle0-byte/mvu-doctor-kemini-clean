@@ -591,10 +591,19 @@ test('malformed profile-turn and transport failure each make one request and pre
   });
 });
 
-test('manual feedback for a bound profile_turn_invalid is value-free and does not broaden retirement permission', async t => {
-  await t.test('matching identity and MVU receipt gets the fixed contract correction', async () => {
-    const oldResponse = '{"people":[],"retireProfileIds":[],"noCharacterReason":"本轮没有可持续记录的非玩家人物","extra":"PRIVATE_OLD_RESPONSE"}';
-    const sentMessages = [];
+test('manual repair uses fixed global-validation diagnostics only for the bound parser context', async t => {
+  const evidenceFailure = () => JSON.stringify({
+    people: [{ sourceName: 'PRIVATE_SOURCE_SENTINEL', evidence: 'PRIVATE_EVIDENCE_SENTINEL',
+      existingProfileId: null, presence: 'present', operation: 'create', profile: { name: 'PRIVATE_CANDIDATE_SENTINEL' } }],
+    retireProfileIds: [], noCharacterReason: '',
+  });
+  const identityFailure = () => JSON.stringify({ people: [{ sourceName: '乙', evidence: '乙在门内。',
+    existingProfileId: 'old-person', presence: 'present', operation: 'update',
+    changes: { 'currentState.emotion': 'PRIVATE_IDENTITY_CANDIDATE_SENTINEL' } }],
+  retireProfileIds: [], noCharacterReason: '' });
+
+  await t.test('discovery_evidence_unbound reaches the next messages without the old response or private error message', async () => {
+    const oldResponse = evidenceFailure(), sentMessages = [];
     let calls = 0;
     const { host, store, receipt, old } = fixture({
       model: async (_receipt, messages) => {
@@ -605,45 +614,149 @@ test('manual feedback for a bound profile_turn_invalid is value-free and does no
     const runtime = createProfileRuntime({ host, store });
     await runtime.run(receipt);
     const failed = store.current();
-    assert.equal(failed.review.failure.code, 'profile_turn_invalid');
+    assert.equal(failed.review.failure.code, 'discovery_evidence_unbound');
+    assert.match(failed.review.failure.message, /PRIVATE_SOURCE_SENTINEL/);
     assert.equal(failed.review.requests[0].raw, oldResponse);
-    assert.doesNotThrow(() => parseDiscovery(oldResponse, failed.review.input));
-    assert.throws(() => parseProfileTurn(oldResponse, failed.review.input), error => error.code === 'profile_turn_invalid');
+    assert.throws(() => parseProfileTurn(oldResponse, failed.review.input), error => error.code === 'discovery_evidence_unbound');
     assertOneRequest(failed);
 
     await runtime.retry();
     const repaired = store.current();
-    assert.equal(sentMessages.length, 2);
     const retryUser = sentMessages[1].find(message => message.role === 'user').content;
-    assert.match(retryUser, /profile_turn_invalid/);
-    assert.match(retryUser, /整体JSON结构合同/);
-    assert.doesNotMatch(retryUser, /PRIVATE_OLD_RESPONSE|previousValidResult|"extra"/);
+    assert.match(retryUser, /discovery_evidence_unbound/);
+    assert.match(retryUser, /当前完整正文中连续逐字出现的原文/);
+    assert.doesNotMatch(retryUser, /PRIVATE_SOURCE_SENTINEL|PRIVATE_EVIDENCE_SENTINEL|PRIVATE_CANDIDATE_SENTINEL/);
     assert.match(retryUser, /本次允许退休的本轮新档案ID[\s\S]*?\n\[\]/);
     assert.equal(repaired.status, 'complete');
     assert.deepEqual(repaired.profiles.map(value => value.profileId), [old.profileId]);
-    assert.deepEqual(repaired.review.retireProfileIds, []);
     assertOneRequest(repaired);
   });
 
-  await t.test('a changed MVU receipt gets no feedback from the old failed attempt', async () => {
+  await t.test('a global identity failure does not reuse the rejected raw candidate', async () => {
+    const oldResponse = identityFailure();
+    const sentMessages = [];
+    let calls = 0;
+    const { host, store, receipt } = fixture({
+      inputSeed: { narrative: '乙在门内。甲在门内。' },
+      model: async (_receipt, messages) => {
+        sentMessages.push(messages);
+        return calls++ === 0 ? oldResponse : turn([unchangedOld()]);
+      },
+    });
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.run(receipt);
+    const failed = store.current();
+    assert.equal(failed.review.failure.code, 'profile_turn_identity_reveal_required');
+    assert.doesNotThrow(() => parseDiscovery(oldResponse, failed.review.input));
+    assert.throws(() => parseProfileTurn(oldResponse, failed.review.input), error => error.code === 'profile_turn_identity_reveal_required');
+    await runtime.retry();
+    const retryUser = sentMessages[1].find(message => message.role === 'user').content;
+    assert.match(retryUser, /profile_turn_identity_reveal_required/);
+    assert.match(retryUser, /明确揭示身份关系/);
+    assert.doesNotMatch(retryUser, /PRIVATE_IDENTITY_CANDIDATE_SENTINEL/);
+    assert.equal(store.current().status, 'complete');
+    assertOneRequest(store.current());
+  });
+
+  await t.test('a changed receipt suppresses a recognized old parser diagnostic', async () => {
     const sentMessages = [];
     let calls = 0;
     const { host, store, receipt } = fixture({
       model: async (_receipt, messages) => {
         sentMessages.push(messages);
-        return calls++ === 0
-          ? '{"people":[],"retireProfileIds":[],"noCharacterReason":"本轮没有可持续记录的非玩家人物","extra":"PRIVATE_OLD_RESPONSE"}'
-          : turn([unchangedOld()]);
+        return calls++ === 0 ? evidenceFailure() : turn([unchangedOld()]);
       },
     });
     const runtime = createProfileRuntime({ host, store });
     await runtime.run(receipt);
-    assert.equal(store.current().review.failure.code, 'profile_turn_invalid');
+    assert.equal(store.current().review.failure.code, 'discovery_evidence_unbound');
     receipt.afterHash = 'mvu-changed';
     await runtime.retry();
     const retryUser = sentMessages[1].find(message => message.role === 'user').content;
-    assert.doesNotMatch(retryUser, /profile_turn_invalid|PRIVATE_OLD_RESPONSE/);
-    assert.match(retryUser, /本次允许退休的本轮新档案ID[\s\S]*?\n\[\]/);
+    assert.doesNotMatch(retryUser, /discovery_evidence_unbound|PRIVATE_SOURCE_SENTINEL/);
+    assert.equal(store.current().status, 'complete');
+    assertOneRequest(store.current());
+  });
+
+  await t.test('authority-only change retains the fixed diagnostic but not the old raw candidate', async () => {
+    const sentMessages = [];
+    let calls = 0;
+    const { host, store, receipt, inputSeed } = fixture({
+      inputSeed: { narrative: '乙在门内。甲在门内。' },
+      model: async (_receipt, messages) => {
+        sentMessages.push(messages);
+        return calls++ === 0 ? identityFailure() : turn([unchangedOld()]);
+      },
+    });
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.run(receipt);
+    const failed = store.current();
+    assert.equal(failed.review.failure.code, 'profile_turn_identity_reveal_required');
+    assert.doesNotThrow(() => parseDiscovery(failed.review.requests[0].raw, failed.review.input));
+    inputSeed.authority.card = 'changed authority card';
+    await runtime.retry();
+    const retryUser = sentMessages[1].find(message => message.role === 'user').content;
+    assert.match(retryUser, /changed authority card/);
+    assert.match(retryUser, /profile_turn_identity_reveal_required/);
+    assert.match(retryUser, /明确揭示身份关系/);
+    assert.doesNotMatch(retryUser, /PRIVATE_IDENTITY_CANDIDATE_SENTINEL/);
+    assert.equal(store.current().status, 'complete');
+    assertOneRequest(store.current());
+  });
+
+  for (const changedContext of ['narrative', 'players', 'profiles']) {
+    await t.test(`changed ${changedContext} suppresses diagnostic and raw fallback`, async () => {
+      const oldResponse = identityFailure(), sentMessages = [];
+      let calls = 0;
+      const { host, store, receipt, inputSeed, inputCalls } = fixture({
+        inputSeed: { narrative: '乙在门内。甲在门内。' },
+        model: async (_receipt, messages) => {
+          sentMessages.push(messages);
+          return calls++ === 0 ? oldResponse : turn([unchangedOld()]);
+        },
+      });
+      const runtime = createProfileRuntime({ host, store });
+      await runtime.run(receipt);
+      const failed = store.current();
+      assert.equal(failed.review.failure.code, 'profile_turn_identity_reveal_required');
+      assert.doesNotThrow(() => parseDiscovery(oldResponse, failed.review.input));
+
+      if (changedContext === 'narrative') inputSeed.narrative += '背景更新，但旧证据仍在。';
+      if (changedContext === 'players') inputSeed.players = ['玩家', '其他玩家'];
+      if (changedContext === 'profiles') {
+        const current = store.current();
+        const profiles = structuredClone(current.profiles);
+        profiles[0].history = '本地档案内容已更新';
+        await store.commit({ index: current.index, scopeKey: current.scopeKey, lineage: current.lineage },
+          { ...current, profiles }, current.revision, async () => {});
+      }
+
+      await runtime.retry();
+      const currentInput = { ...inputSeed, globalPrompt: host.settings().globalPrompt, profiles: store.current().profiles };
+      assert.doesNotThrow(() => parseDiscovery(oldResponse, currentInput));
+      const retryUser = sentMessages[1].find(message => message.role === 'user').content;
+      assert.doesNotMatch(retryUser, /profile_turn_identity_reveal_required|PRIVATE_IDENTITY_CANDIDATE_SENTINEL/);
+      assert.equal(store.current().status, 'complete');
+      assertOneRequest(store.current());
+    });
+  }
+
+  await t.test('a transport failure never enters the global validation diagnostic path', async () => {
+    const sentMessages = [];
+    let calls = 0;
+    const { host, store, receipt } = fixture({
+      model: async (_receipt, messages) => {
+        sentMessages.push(messages);
+        if (calls++ === 0) throw Object.assign(new Error('PRIVATE_TRANSPORT_MESSAGE'), { code: 'model_transport' });
+        return turn([unchangedOld()]);
+      },
+    });
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.run(receipt);
+    assert.equal(store.current().review.failure.code, 'model_transport');
+    await runtime.retry();
+    const retryUser = sentMessages[1].find(message => message.role === 'user').content;
+    assert.doesNotMatch(retryUser, /model_transport|PRIVATE_TRANSPORT_MESSAGE|整体校验诊断/);
     assert.equal(store.current().status, 'complete');
     assertOneRequest(store.current());
   });

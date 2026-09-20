@@ -1,21 +1,31 @@
 import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
-import { parseDiscovery, profileTurnMessages, parseProfileTurn, materializeProfile, validateProfile } from './content.mjs';
+import { parseDiscovery, profileTurnMessages, parseProfileTurn, materializeProfile, validateProfile,
+  PROFILE_TURN_GLOBAL_FAILURE_DIAGNOSTICS } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.8';
+export const PROFILE_VERSION = '0.1.0-candidate.9';
 export const PROFILE_CALL_LIMIT = 1;
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready', 'variable_evidence_changed']);
 
+function sameProfileValidationContext(left, right) {
+  const projection = input => ({ narrative: input?.narrative, players: input?.players, profiles: input?.profiles });
+  return canonical(projection(left)) === canonical(projection(right));
+}
+
 function previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds = []) {
   if (!exact || exact.tombstone || exact.variableIdentity !== receipt.identity || exact.mvuHash !== receipt.afterHash) {
     return { retirableProfileIds: [] };
   }
-  if (exact.status === 'failed' && exact.review?.failure?.code === 'profile_turn_invalid') {
-    return {
-      previousFailure: { code: 'profile_turn_invalid' },
-      retirableProfileIds: [...retirableProfileIds],
-    };
+  const failureCode = exact.review?.failure?.code;
+  if (exact.status === 'failed' && Object.hasOwn(PROFILE_TURN_GLOBAL_FAILURE_DIAGNOSTICS, failureCode)) {
+    if (exact.review?.input && sameProfileValidationContext(exact.review.input, input)) {
+      return {
+        previousFailure: { code: failureCode },
+        retirableProfileIds: [...retirableProfileIds],
+      };
+    }
+    return { retirableProfileIds: [...retirableProfileIds] };
   }
   const requests = Array.isArray(exact.review?.requests) ? exact.review.requests : [];
   for (let index = requests.length - 1; index >= 0; index--) {
