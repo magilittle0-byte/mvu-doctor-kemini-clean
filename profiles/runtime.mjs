@@ -1,7 +1,7 @@
 import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
 import { parseDiscovery, profileTurnMessages, parseProfileTurn, materializeProfile, validateProfile } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.7';
+export const PROFILE_VERSION = '0.1.0-candidate.8';
 export const PROFILE_CALL_LIMIT = 1;
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
@@ -10,6 +10,12 @@ const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variable
 function previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds = []) {
   if (!exact || exact.tombstone || exact.variableIdentity !== receipt.identity || exact.mvuHash !== receipt.afterHash) {
     return { retirableProfileIds: [] };
+  }
+  if (exact.status === 'failed' && exact.review?.failure?.code === 'profile_turn_invalid') {
+    return {
+      previousFailure: { code: 'profile_turn_invalid' },
+      retirableProfileIds: [...retirableProfileIds],
+    };
   }
   const requests = Array.isArray(exact.review?.requests) ? exact.review.requests : [];
   for (let index = requests.length - 1; index >= 0; index--) {

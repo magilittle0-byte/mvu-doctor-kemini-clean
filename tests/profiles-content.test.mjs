@@ -272,17 +272,26 @@ test('profileTurnPrompt sends compact projections while preserving player action
   assert.match(system, /人物档案适配：采用清楚短句。/);
   assert.match(system, /不能覆盖后续固定任务/);
   assert.match(system, /不写GM正文/);
-  assert.match(system, /PROFILE_FIELDS完整新建模板/);
-  assert.match(system, /只输出一个 JSON 对象/);
+  assert.match(system, /末尾明确标记的PROFILE_FIELDS模板和JSON输出合同/);
+  assert.doesNotMatch(system, /PROFILE_FIELDS完整新建模板|只输出一个 JSON 对象/);
   assert.doesNotMatch(system, /完整卡片|完整世界设定|正文里林走进门。|投影后的玩家行动/);
   assert.match(user, /完整卡片/);
   assert.match(user, /完整世界设定/);
   assert.match(user, /new-mistake/);
   assert.match(user, /投影后的玩家行动：询问通行证用途。/);
   assert.match(user, /【最终接受的本轮正文；判断人物出现及摘取evidence的唯一来源】\n正文里林走进门。/);
+  assert.match(user, /【来源资料结束】/);
+  assert.match(user, /PROFILE_FIELDS完整新建模板/);
+  assert.match(user, /只输出一个 JSON 对象/);
+  assert.equal(user.split('PROFILE_FIELDS完整新建模板').length - 1, 1);
+  assert.equal(user.split('只输出一个 JSON 对象').length - 1, 1);
   assert.doesNotMatch(user, /RAW_TARGET_CONTENT_SENTINEL|RAW_NESTED_USER_SENTINEL|人物档案适配：采用清楚短句。/);
   assert.ok(user.indexOf('完整世界设定') < user.indexOf('投影后的玩家行动'));
   assert.ok(user.lastIndexOf('正文里林走进门。') > user.indexOf('投影后的玩家行动'));
+  assert.ok(user.indexOf('正文里林走进门。') < user.indexOf('【来源资料结束】'));
+  assert.ok(user.indexOf('【来源资料结束】') < user.indexOf('PROFILE_FIELDS完整新建模板'));
+  assert.ok(user.indexOf('PROFILE_FIELDS完整新建模板') < user.indexOf('只输出一个 JSON 对象'));
+  assert.ok(user.lastIndexOf('【任务结束】') > user.indexOf('只输出一个 JSON 对象'));
   assert.equal(prompt, messages.map(message => message.content).join('\n\n'));
   const modelViewMatch = user.match(/【其余完整输入视图[^\n]*\n([^\n]+)/);
   assert.ok(modelViewMatch);
@@ -298,6 +307,22 @@ test('profileTurnPrompt sends compact projections while preserving player action
   assert.match(system, /operation=unchanged/);
   assert.match(system, /identityRevealEvidence/);
   assert.match(system, /retireProfileIds/);
+});
+
+test('profileTurnMessages gives a value-free correction only for the stable whole-turn failure code', () => {
+  const input = { narrative: '林推门走进房间。', userText: '我继续询问。', profiles: [] };
+  const messages = profileTurnMessages(input, {
+    retirableProfileIds: ['allowed-new-id'],
+    previousFailure: { code: 'profile_turn_invalid' },
+    raw: 'PRIVATE_OLD_CANDIDATE_VALUE',
+    previousValidResult: { people: [{ sourceName: 'PRIVATE_OLD_NAME' }] },
+  });
+  const user = messages.find(message => message.role === 'user').content;
+  assert.match(user, /profile_turn_invalid/);
+  assert.match(user, /从头生成/);
+  assert.match(user, /\["allowed-new-id"\]/);
+  assert.doesNotMatch(user, /PRIVATE_OLD_CANDIDATE_VALUE|PRIVATE_OLD_NAME|previousValidResult/);
+  assert.match(user, /林推门走进房间。/);
 });
 
 test('parseProfileTurn keeps operation and content nested with explicit identity, independent of order', () => {

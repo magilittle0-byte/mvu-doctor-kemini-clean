@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProfileRuntime, PROFILE_VERSION, PROFILE_CALL_LIMIT } from '../profiles/runtime.mjs';
 import { createProfileStore } from '../profiles/store.mjs';
-import { PROFILE_FIELDS, profileTurnMessages, validateProfile } from '../profiles/content.mjs';
+import { PROFILE_FIELDS, profileTurnMessages, validateProfile, parseDiscovery, parseProfileTurn } from '../profiles/content.mjs';
 import { digest } from '../modular/variables/core.mjs';
 
 function setPath(target, path, value) {
@@ -588,6 +588,64 @@ test('malformed profile-turn and transport failure each make one request and pre
     assert.deepEqual(store.current().profiles.map(value => value.profileId), [old.profileId]);
     assertOneRequest(store.current());
     assert.equal(store.current().review.automaticRetries, 0);
+  });
+});
+
+test('manual feedback for a bound profile_turn_invalid is value-free and does not broaden retirement permission', async t => {
+  await t.test('matching identity and MVU receipt gets the fixed contract correction', async () => {
+    const oldResponse = '{"people":[],"retireProfileIds":[],"noCharacterReason":"本轮没有可持续记录的非玩家人物","extra":"PRIVATE_OLD_RESPONSE"}';
+    const sentMessages = [];
+    let calls = 0;
+    const { host, store, receipt, old } = fixture({
+      model: async (_receipt, messages) => {
+        sentMessages.push(messages);
+        return calls++ === 0 ? oldResponse : turn([unchangedOld()]);
+      },
+    });
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.run(receipt);
+    const failed = store.current();
+    assert.equal(failed.review.failure.code, 'profile_turn_invalid');
+    assert.equal(failed.review.requests[0].raw, oldResponse);
+    assert.doesNotThrow(() => parseDiscovery(oldResponse, failed.review.input));
+    assert.throws(() => parseProfileTurn(oldResponse, failed.review.input), error => error.code === 'profile_turn_invalid');
+    assertOneRequest(failed);
+
+    await runtime.retry();
+    const repaired = store.current();
+    assert.equal(sentMessages.length, 2);
+    const retryUser = sentMessages[1].find(message => message.role === 'user').content;
+    assert.match(retryUser, /profile_turn_invalid/);
+    assert.match(retryUser, /整体JSON结构合同/);
+    assert.doesNotMatch(retryUser, /PRIVATE_OLD_RESPONSE|previousValidResult|"extra"/);
+    assert.match(retryUser, /本次允许退休的本轮新档案ID[\s\S]*?\n\[\]/);
+    assert.equal(repaired.status, 'complete');
+    assert.deepEqual(repaired.profiles.map(value => value.profileId), [old.profileId]);
+    assert.deepEqual(repaired.review.retireProfileIds, []);
+    assertOneRequest(repaired);
+  });
+
+  await t.test('a changed MVU receipt gets no feedback from the old failed attempt', async () => {
+    const sentMessages = [];
+    let calls = 0;
+    const { host, store, receipt } = fixture({
+      model: async (_receipt, messages) => {
+        sentMessages.push(messages);
+        return calls++ === 0
+          ? '{"people":[],"retireProfileIds":[],"noCharacterReason":"本轮没有可持续记录的非玩家人物","extra":"PRIVATE_OLD_RESPONSE"}'
+          : turn([unchangedOld()]);
+      },
+    });
+    const runtime = createProfileRuntime({ host, store });
+    await runtime.run(receipt);
+    assert.equal(store.current().review.failure.code, 'profile_turn_invalid');
+    receipt.afterHash = 'mvu-changed';
+    await runtime.retry();
+    const retryUser = sentMessages[1].find(message => message.role === 'user').content;
+    assert.doesNotMatch(retryUser, /profile_turn_invalid|PRIVATE_OLD_RESPONSE/);
+    assert.match(retryUser, /本次允许退休的本轮新档案ID[\s\S]*?\n\[\]/);
+    assert.equal(store.current().status, 'complete');
+    assertOneRequest(store.current());
   });
 });
 

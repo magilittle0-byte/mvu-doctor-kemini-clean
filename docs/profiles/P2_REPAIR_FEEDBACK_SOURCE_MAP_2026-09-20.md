@@ -1,0 +1,29 @@
+# P2 candidate.8 repair-feedback source map
+
+Prepared before production edits on 2026-09-20. This map uses repository code and tests plus Root's sanitized test summary; it does not include private model output or host content. Root reported two normal candidate.7 rounds in which each P2 automatic and manual request failed with `profile_turn_invalid` (four P2 responses total, zero saved profiles). The prompt and complete narrative were verified in the wire, so these failures do not establish truncation, role-order, or another prompt cause.
+
+## Governing boundary
+
+The parent `AGENTS.md` and `MVU_REAL_TAVERN_TEST_PROTOCOL.md` require real TauriTavern verification after prompt/runtime changes, keep failed model outcomes visible, and prohibit treating controlled tests as acceptance. The current task explicitly excludes host/model use. Candidate.8 therefore remains an unaccepted candidate and requires a fresh real-host run under the protocol; this source map and unit tests do not establish usability or causality.
+
+## Fresh source search: earlier P2 and current P2
+
+At d37a01e (candidate.5), `profiles/runtime.mjs:10-25` already handled a prior discovery response that could not be parsed by returning only the retirement allowlist. It did not surface `exact.review.failure.code`; this means omission of a stable global-parser error code predates the one-call optimization. The successful parsed-discovery branch returned `previousValidResult` and preserved its existing behavior.
+
+Candidate.5's `profiles/content.mjs:140-159` gave discovery repair a detailed but value-free instruction to reread narrative, cover HTML/overview/list mentions, correct omissions, and keep one identity per distinguishable person. Its `profileBatchPrompt` at `profiles/content.mjs:244-263` separately received the full input and preassigned row bindings, then placed the strict profile-array contract and complete `PROFILE_TEMPLATE` after those inputs. `profiles/runtime.mjs:237-240` called the batch only after discovery and script-side row/profile ID assignment. A whole-call batch parser failure was persisted by the same generic runtime failure path; it did not provide a stable failure-code correction.
+
+Candidate.7 keeps the identity/MVU scope gate in `profiles/runtime.mjs:10-28`, records the strict parser error in `review.failure` at `runtime.mjs:301-312`, and constructs manual feedback at `runtime.mjs:230-233`. The retry helper does not pass `review.failure.code`; it may either return only the retirement allowlist after `parseDiscovery` rejects the old response, or return a `previousValidResult` that is too permissive to establish that the stricter profile-turn contract passed. Candidate.7's fixed instructions already give coverage and JSON rules (`profiles/content.mjs:145-159`), while the repair addition asks the model to recheck the current narrative and identities. Candidate.8 therefore gives a fixed value-free `profile_turn_invalid` correction only when the prior record is bound to the same identity/MVU receipt and has that exact saved failure code. In that branch it omits all previous response and parsed candidate values, regardless of whether the looser `parseDiscovery` accepts them. For other failures, the prior successful-parse feedback path remains unchanged. The retirement allowlist remains exactly the existing one.
+
+## Mature value-free diagnostic pattern
+
+P1 `modular/variables/module.mjs:147-161` carries a stable failure code and bounded diagnostics such as lost paths or failed operations on a changed-context retry without attaching the old candidate values. Its catch path records `error.feedback` or a stable error-code fallback at `module.mjs:237-242`. Candidate.8 adapts only the value-free part needed by P2: the fixed code `profile_turn_invalid` plus a short correction that the previous whole response failed the strict profile-turn JSON contract and must be regenerated from the current sources. No previous raw response, excerpt, parsed candidate, or inferred per-person error is added by this branch.
+
+## Prompt-order adaptation and evidence boundary
+
+The actual `inputFor` structure is unchanged from candidate.5 (`profiles/host.mjs:50-61` at d37a01e and current `profiles/host.mjs:50-61`): target, projected narrative/user input, MVU, card/world authority, players, prior profiles, and global model prompt are assembled as before. Candidate.7 builds the preserved two-role payload in `profiles/content.mjs:160-191`; its system message holds global-prompt compatibility boundaries and task rules, while the user message carries background, retirement IDs, optional feedback, user text, and narrative.
+
+At d37a01e, candidate.5 `profileBatchPrompt` put full input and rows before its output instruction and 44-field template (`content.mjs:256-257`). Candidate.8 reuses that ordering narrowly: keep global-prompt and task boundaries in system, move the single existing 44-field template and output contract to the end of user content after the complete projected narrative, and append one explicit end-of-sources marker. No background or narrative is removed or duplicated; schema, parser, 44 fields, message roles, host string compatibility, request limit, and retry count remain unchanged. This ordering is a testable layout change, not evidence that candidate.7 suffered context truncation or that order caused the observed failures.
+
+## Files in scope
+
+The implementation is limited to P2 `profiles/content.mjs` and `profiles/runtime.mjs`, the P2 `manifest.json` and `install.json` candidate version strings, P2 content/runtime tests, and the root/profile-module README candidate description. P1/P3 source, schemas, parser rules, host transport compatibility, and locks remain outside the change. Targeted tests and `node scripts/check-profiles.mjs` are controlled checks only; protocol-compliant real-host acceptance remains pending.
