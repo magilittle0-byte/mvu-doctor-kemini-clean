@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProfileRuntime, PROFILE_VERSION, PROFILE_CALL_LIMIT } from '../profiles/runtime.mjs';
 import { createProfileStore } from '../profiles/store.mjs';
-import { PROFILE_FIELDS, validateProfile } from '../profiles/content.mjs';
+import { PROFILE_FIELDS, profileTurnMessages, validateProfile } from '../profiles/content.mjs';
 import { digest } from '../modular/variables/core.mjs';
 
 function setPath(target, path, value) {
@@ -144,7 +144,7 @@ test('one profile-turn isolates an invalid person and saves a valid sibling by i
   await createProfileRuntime({ host, store }).run(receipt);
   const result = store.current();
   assert.equal(calls.length, 1);
-  assert.match(calls[0], /一次/);
+  assert.match(calls[0].find(message => message.role === 'system').content, /一次完成/);
   assert.equal(result.status, 'partial');
   assert.equal(result.profiles.find(value => value.profileId === 'old-person').name, old.name);
   assert.ok(result.profiles.some(value => value.name === '乙'));
@@ -153,6 +153,22 @@ test('one profile-turn isolates an invalid person and saves a valid sibling by i
   assert.equal(result.tasks.find(value => value.profileId === 'old-person').code, 'profile_incomplete');
   assert.ok(result.tasks.find(value => value.profileId === 'old-person').errors.length > 0);
   assertOneRequest(result);
+});
+
+test('profile-turn persists and sends separated system/user messages in one request', async () => {
+  const calls = [];
+  const { host, store, receipt } = fixture({
+    model: async (_receipt, messages) => { calls.push(structuredClone(messages)); return turn([unchangedOld()]); },
+  });
+  await createProfileRuntime({ host, store }).run(receipt);
+  const result = store.current(), request = result.review.requests[0];
+  assertOneRequest(result);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].map(message => message.role), ['system', 'user']);
+  assert.deepEqual(request.messages, calls[0]);
+  assert.equal(request.prompt, calls[0].map(message => message.content).join('\n\n'));
+  assert.equal(request.promptHash, await digest(calls[0]), 'the hash binds the actual role-preserving wire payload');
+  assert.deepEqual(request.messages, profileTurnMessages(result.review.input));
 });
 
 test('an empty people list saves a complete no-character result and retains all prior profiles', async () => {
@@ -232,11 +248,11 @@ test('unknown existing profile IDs reject the whole response without saving any 
 });
 
 test('manual retry uses prior result and task errors, performs one forced call, and keeps omitted complete profiles', async () => {
-  const prompts = [];
+  const sentMessages = [];
   let manual = false;
   const { host, store, receipt, old } = fixture({
-    model: async (_receipt, prompt) => {
-      prompts.push(prompt);
+    model: async (_receipt, messages) => {
+      sentMessages.push(messages);
       if (!manual) return turn([updateOld({ 'currentState.goal': '' }), createNew()]);
       // Correct the old item and omit the already completed new profile.
       return turn([updateOld({ 'currentState.emotion': '修复后情绪' })]);
@@ -252,10 +268,12 @@ test('manual retry uses prior result and task errors, performs one forced call, 
   manual = true;
   await runtime.retry();
   const result = store.current();
-  assert.equal(prompts.length, 2);
-  assert.match(prompts[1], /previousValidResult/);
-  assert.match(prompts[1], /甲在门内/);
-  assert.match(prompts[1], /errors/);
+  assert.equal(sentMessages.length, 2);
+  assert.deepEqual(sentMessages[1].map(message => message.role), ['system', 'user']);
+  const retryPrompt = sentMessages[1].find(message => message.role === 'user').content;
+  assert.match(retryPrompt, /previousValidResult/);
+  assert.match(retryPrompt, /甲在门内/);
+  assert.match(retryPrompt, /errors/);
   assert.equal(result.status, 'complete');
   assert.equal(result.reason, 'manual');
   assert.equal(result.profiles.find(value => value.profileId === old.profileId).currentState.emotion, '修复后情绪');

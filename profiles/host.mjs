@@ -60,10 +60,16 @@ export function createProfileHost(base = createHost(), getDoctor = () => globalT
     return { target: clone(target), narrative: currentNarrative(so, ctx, settings, target), userText: userInput(target.userText),
       mvu: clone(payload.stat_data ?? payload), authority, players: playerNames(target), profiles: clone(profiles), globalPrompt: String(globalPrompt || '') };
   }
-  async function callModel(receipt, prompt, signal) {
+  async function callModel(receipt, promptOrMessages, signal) {
     await assertReceipt(receipt, signal);
     const so = story(), settings = clone(so.getSettings());
-    const messages = [{ role: 'user', content: prompt }], maxTokens = Math.max(Number(settings.maxTokens) || 4096, 4096);
+    // P2 sends role-separated messages. Preserve the historical string path
+    // for shared callers such as P3, whose native world prompt remains one user
+    // message and must not inherit the P2 profile system contract.
+    const messages = Array.isArray(promptOrMessages)
+      ? clone(promptOrMessages)
+      : [{ role: 'user', content: String(promptOrMessages ?? '') }];
+    const maxTokens = Math.max(Number(settings.maxTokens) || 4096, 4096);
     let raw;
     // Same direct/profile dispatch as P1. Credentials remain in this call only.
     if (settings.mode === 'direct') {

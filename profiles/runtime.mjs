@@ -1,7 +1,7 @@
 import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
-import { parseDiscovery, profileTurnPrompt, parseProfileTurn, materializeProfile, validateProfile } from './content.mjs';
+import { parseDiscovery, profileTurnMessages, parseProfileTurn, materializeProfile, validateProfile } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.6';
+export const PROFILE_VERSION = '0.1.0-candidate.7';
 export const PROFILE_CALL_LIMIT = 1;
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
@@ -160,13 +160,15 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       draft = await store.commit(branch, draft, revision, assert);
       revision = draft.revision; show();
     };
-    const call = async (kind, prompt, row = null) => {
+    const call = async (kind, prompt, row = null, messages = null) => {
       await assert();
       if (draft.review.requests.length >= PROFILE_CALL_LIMIT) throw fault('profile_call_limit', '本次档案处理已达到调用上限，请按需点击修复');
-      const request = { kind, row: clone(row), promptHash: await digest(prompt), prompt, raw: '', startedAt: Date.now() };
+      const wire = Array.isArray(messages) ? clone(messages) : prompt;
+      const request = { kind, row: clone(row), promptHash: await digest(wire), prompt,
+        ...(Array.isArray(messages) ? { messages: clone(messages) } : {}), raw: '', startedAt: Date.now() };
       draft.review.requests.push(request);
       publish({ requestCount: draft.review.requests.length });
-      try { request.raw = await host.callModel(receipt, prompt, ctl.signal); return request.raw; }
+      try { request.raw = await host.callModel(receipt, wire, ctl.signal); return request.raw; }
       finally { request.durationMs = Date.now() - request.startedAt; }
     };
     try {
@@ -225,8 +227,10 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
         }, durationMs: 0 };
       await persist();
       publish({ detail: '正在一次识别人物、填写新档案并更新已有档案' });
-      const prompt = profileTurnPrompt(input, manual ? previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds) : null);
-      const discovered = parseProfileTurn(await call('profile-turn', prompt), input, { retirableProfileIds });
+      const feedback = manual ? previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds) : null;
+      const messages = profileTurnMessages(input, feedback);
+      const prompt = messages.map(message => message.content).join('\n\n');
+      const discovered = parseProfileTurn(await call('profile-turn', prompt, null, messages), input, { retirableProfileIds });
       draft.noCharacterReason = discovered.noCharacterReason;
       draft.review.retireProfileIds = [...(Array.isArray(discovered.retireProfileIds) ? discovered.retireProfileIds : [])];
       draft.tasks = discovered.people.map(({ sourceName, evidence, existingProfileId, presence, operation }, index) => ({
