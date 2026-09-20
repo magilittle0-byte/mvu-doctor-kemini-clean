@@ -20,6 +20,27 @@ function json(value) {
 }
 
 /**
+ * Return the complete semantic information delivered to the native World
+ * prompt, split between its worldbook JSON block and its dialogue block.
+ * Receipt metadata stays available to the host, but is not story material.
+ * Profile row ids and write timestamps are local storage diagnostics too.
+ */
+export function worldModelInput(input = {}) {
+  const { narrative, userText, target: _target, profileRecordHash: _profileRecordHash, ...facts } = input || {};
+  if (Array.isArray(facts.profiles)) {
+    facts.profiles = facts.profiles.map(profile => {
+      if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return profile;
+      const { rowId: _rowId, updatedAt: _updatedAt, ...semanticProfile } = profile;
+      return semanticProfile;
+    });
+  }
+  return {
+    facts,
+    dialogue: { userText: String(userText ?? ''), narrative: String(narrative ?? '') },
+  };
+}
+
+/**
  * Construct one isolated native World Engine. The supplied window is a local
  * facade object; this function never mutates globalThis or performs durable IO.
  */
@@ -38,14 +59,10 @@ export function createNativeWorldEngine({
   const localWindow = {};
   const localConsole = quietConsole;
   // The native dialogue segment already carries the accepted projections.
-  // Keep raw receipt text local; including it here bypasses that projection.
+  // Keep receipt identity and raw receipt text local; including them here
+  // bypasses the host's story projection and adds no world facts.
   // See docs/world/P3_INPUT_COST_SOURCE_MAP_2026-09-16.md.
-  const { narrative: _narrative, userText: _userText, target, ...material } = input;
-  if (target) {
-    const { content: _content, userText: _rawUserText, ...identity } = target;
-    material.target = identity;
-  }
-  const serializedInput = json(material);
+  const serializedInput = json(worldModelInput(input).facts);
   const localChat = Array.from({ length: Math.max(1, Number(chatLength) || 1) }, () => ({}));
   const localSillyTavern = Object.freeze({
     getContext: () => ({ chatId: String(chatId), chat: localChat }),

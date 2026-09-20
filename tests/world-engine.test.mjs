@@ -68,13 +68,18 @@ test('native failure rolls state back and does not retry', async () => {
   engine.dispose();
 });
 
-test('native request uses accepted dialogue once and keeps receipt-only text local', async () => {
+test('native request projects complete semantic facts and keeps receipt diagnostics local', async () => {
   const input = {
     ...structuredClone(baseInput),
     narrative: 'FIXTURE_ACCEPTED_NARRATIVE_ONLY', userText: 'FIXTURE_ACCEPTED_USER_ONLY',
-    target: { identity: 'receipt-identity', scopeKey: 'receipt-scope', index: 2,
+    futureTopLevelFact: { source: 'preserve unknown semantic facts' },
+    target: { identity: 'receipt-identity', scopeKey: 'receipt-scope', scopeSignature: 'receipt-signature', index: 2,
       content: 'RAW_RECEIPT_MECHANISM_ONLY', userText: 'RAW_USER_WRAPPER_ONLY' },
+    profileRecordHash: 'LOCAL_RECORD_DIAGNOSTIC_ONLY',
     globalPrompt: 'full global instruction', heldProfiles: [{ profileId: 'held-1', reason: 'profile_incomplete' }],
+    profiles: [{ profileId: 'p-1', rowId: 'LOCAL_ROW_ONLY', updatedAt: 'LOCAL_TIME_ONLY',
+      name: 'NPC', presence: 'present', lastSeenIndex: 2, sourceEvidence: ['observable basis'],
+      currentState: { location: '门外' }, futureSemanticField: { fact: 'preserve unknown facts' } }],
   };
   const original = structuredClone(input);
   let prompt, calls = 0;
@@ -90,8 +95,16 @@ test('native request uses accepted dialogue once and keeps receipt-only text loc
   assert.ok(!prompt.includes(input.target.userText));
   const segments = engine.window.WORLD_ENGINE_EVOLUTION.getLastDebug().segments;
   const material = JSON.parse(segments.find(segment => segment.key === 'worldbook').content.split('\n').slice(1).join('\n'));
-  for (const key of ['mvu', 'profiles', 'authority', 'globalPrompt', 'heldProfiles']) assert.deepEqual(material[key], input[key]);
-  assert.deepEqual(material.target, { identity: input.target.identity, scopeKey: input.target.scopeKey, index: 2 });
+  for (const key of ['mvu', 'authority', 'globalPrompt', 'heldProfiles']) assert.deepEqual(material[key], input[key]);
+  assert.deepEqual(material.futureTopLevelFact, input.futureTopLevelFact);
+  assert.equal('target' in material, false);
+  assert.equal('profileRecordHash' in material, false);
+  assert.deepEqual(material.profiles, [{ profileId: 'p-1', name: 'NPC', presence: 'present', lastSeenIndex: 2,
+    sourceEvidence: ['observable basis'], currentState: { location: '门外' },
+    futureSemanticField: { fact: 'preserve unknown facts' } }]);
+  assert.equal(JSON.stringify(material).includes('LOCAL_ROW_ONLY'), false);
+  assert.equal(JSON.stringify(material).includes('LOCAL_TIME_ONLY'), false);
+  assert.equal(JSON.stringify(material).includes('preserve unknown facts'), true);
   assert.equal('narrative' in material, false);
   assert.equal('userText' in material, false);
   assert.deepEqual(input, original);

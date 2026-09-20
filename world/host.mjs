@@ -40,11 +40,19 @@ export function createWorldHost(base = createProfileHost(), getProfiles = () => 
     await assertSnapshot(receipt, snapshot, signal);
     return { ...input, heldProfiles: clone(snapshot.heldProfiles), profileRecordHash: snapshot.profileRecordHash };
   }
+  function modelContract(receipt) {
+    const settings = base.story().getSettings();
+    return {
+      receiptConfigHash: String(receipt?.configHash || ''),
+      maxTokens: Math.max(Number(settings.maxTokens) || 4096, 4096),
+    };
+  }
   async function callModel(receipt, snapshot, prompt, signal) {
     await assertSnapshot(receipt, snapshot, signal);
     const raw = await base.callModel(receipt, prompt, signal);
     await assertSnapshot(receipt, snapshot, signal);
     return raw;
   }
-  return Object.freeze({ ...base, profilesApi: getProfiles, captureProfiles, assertSnapshot, inputFor, callModel });
+  return Object.freeze({ ...base, profilesApi: getProfiles, captureProfiles, assertSnapshot, inputFor,
+    modelContract, callModel });
 }

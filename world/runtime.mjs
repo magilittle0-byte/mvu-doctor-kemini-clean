@@ -1,19 +1,38 @@
-import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
-import { createNativeWorldEngine } from './engine.mjs';
+import { clone, canonical, digest, equal, fault } from '../modular/variables/core.mjs';
+import { createNativeWorldEngine, worldModelInput } from './engine.mjs';
 import { worldInstruction } from './content.mjs';
 import { buildDeliveries, makeRecall, settleDeliveries } from './recall.mjs';
 
-export const WORLD_VERSION = '0.1.0-candidate.5';
+export const WORLD_VERSION = '0.1.0-candidate.6';
 const PROMPT_KEY = 'mvu_doctor_world_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready',
   'variable_evidence_changed', 'stale_profiles', 'profiles_pending', 'profiles_unavailable']);
+
+function recallIdentity(recall) {
+  if (!recall) return null;
+  return {
+    promptHash: recall.promptHash || '', deliveryIds: clone(recall.deliveryIds || []),
+    sourceLineage: recall.sourceLineage || '', sourceScopeKey: recall.sourceScopeKey || '',
+    generationId: recall.generationId || '', generationType: recall.generationType || '',
+    scope: recall.scope || '', baselineIndex: Number(recall.baselineIndex ?? -1),
+    targetIdentity: recall.targetIdentity || '', promptObserved: recall.promptObserved === true,
+  };
+}
+
+function targetGenerationMatches(candidate, receipt) {
+  const target = receipt?.target;
+  return Boolean(candidate?.generationId && candidate?.generationType && Number.isInteger(candidate?.baselineIndex)
+    && target && candidate.scope === target.scopeSignature
+    && candidate.targetIdentity === target.identity && candidate.index === target.index
+    && candidate.swipeId === Number(target.swipeId || 0));
+}
 
 // P1/P2 source map and single-branch repair semantics: PHASE3_SOURCE_MAP.md.
 export function createWorldRuntime({ host, store, notify = () => {}, engineFactory = createNativeWorldEngine }) {
   let epoch = 0, refreshToken = 0, controller = null, engine = null, running = null, current = null;
   let state = { status: 'idle', stage: '等待正文', detail: '等待本轮变量和人物档案完成', busy: false, readback: false, round: 0 };
   let disposed = false, timer = null, observing = false, lastAttempt = null;
-  let generation = null, recall = null, endedRecall = null;
+  let generation = null, recall = null, endedRecall = null, endedTarget = null;
   const listeners = [];
   const snapshot = () => clone(state);
   const attemptKey = (receipt, profiles) => receipt?.target && profiles ? canonical([
@@ -79,8 +98,18 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
     if (!ticket || ticket.ended || receipt?.readback !== true || !generationMatchesReceipt(receipt)) return;
     const prepared = recall ? clone(recall) : null;
     ticket.ended = true;
+    endedTarget = { generationId: ticket.id, generationType: ticket.type, scope: ticket.scope,
+      baselineIndex: ticket.baselineIndex, targetIdentity: target.identity,
+      index: target.index, swipeId: Number(target.swipeId || 0) };
     endedRecall = prepared ? { ...prepared, text: undefined, targetIdentity: target.identity } : null;
     clearRecall();
+  }
+  function boundTargetGeneration(receipt, exact) {
+    if (generation) return targetGenerationMatches(endedTarget, receipt) ? clone(endedTarget) : null;
+    if (targetGenerationMatches(endedTarget, receipt)) return clone(endedTarget);
+    const saved = exact?.status === 'complete' && exact?.version === WORLD_VERSION
+      ? exact.review?.targetGeneration : null;
+    return targetGenerationMatches(saved, receipt) ? clone(saved) : null;
   }
   async function boundRecall(receipt) {
     const candidate = endedRecall;
@@ -114,18 +143,17 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
       const branches = await host.branches(), exact = await store.read(branch);
       const previous = await store.latest(branches.filter(item => item.index < branch.index));
       revision = exact?.revision || 0;
-      const inputIdentity = await digest({ variableIdentity: receipt.identity, mvuHash: receipt.afterHash,
-        profileRecordHash: profileSnapshot.profileRecordHash });
-      if (!manual && exact && !exact.tombstone && exact.version === WORLD_VERSION && exact.inputIdentity === inputIdentity) {
-        await assert(); show(exact, true); return;
-      }
       const input = await host.inputFor(receipt, profileSnapshot, ctl.signal);
       const baselineWorld = clone(exact?.baselineWorld || previous?.world || null);
       const baseDeliveries = clone(exact?.baseDeliveries || previous?.deliveries || []);
-      const incomingRecall = await boundRecall(receipt) || clone(exact?.review?.incomingRecall || null);
+      const currentRecall = await boundRecall(receipt);
+      const incomingRecall = currentRecall || (!generation ? clone(exact?.review?.incomingRecall || null) : null);
       const inheritedDeliveries = await settleDeliveries(baseDeliveries, incomingRecall, receipt);
-      engine = engineFactory({ world: baselineWorld, chatId: branch.scopeKey, chatLength: branch.index + 1,
-        input, signal: ctl.signal, instruction: worldInstruction(input, baselineWorld || {}),
+      const targetGeneration = boundTargetGeneration(receipt, exact);
+      const modelInput = worldModelInput(input);
+      const instruction = worldInstruction({ ...modelInput.facts, target: { index: receipt.target.index } }, baselineWorld || {});
+      const createEngine = () => engineFactory({ world: baselineWorld, chatId: branch.scopeKey, chatLength: branch.index + 1,
+        input, signal: ctl.signal, instruction,
         callModel: async (prompt, signal) => {
           await assert();
           const request = { promptHash: await digest(prompt), prompt, raw: '', startedAt: Date.now() };
@@ -133,13 +161,60 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
           try { request.raw = await host.callModel(receipt, profileSnapshot, prompt, signal); return request.raw; }
           finally { request.durationMs = Date.now() - request.startedAt; }
         } });
+      let effectiveBaselineWorld = clone(baselineWorld);
+      const modelContract = host.modelContract(receipt);
+      const semanticIdentity = effectiveBaseline => digest({
+        schema: 'p3-world-semantic-input-v1', version: WORLD_VERSION,
+        target: clone(receipt.target), branch: { scopeKey: branch.scopeKey, lineage: branch.lineage },
+        generation: targetGeneration,
+        receipt: { identity: receipt.identity, mvuHash: receipt.afterHash },
+        modelInput, modelContract, instruction,
+        baselineWorld: effectiveBaseline, baseDeliveries, incomingRecall: recallIdentity(incomingRecall), inheritedDeliveries,
+      });
+      let inputIdentity = await semanticIdentity(effectiveBaselineWorld);
+      const exactBranch = exact && !exact.tombstone && exact.scopeKey === branch.scopeKey
+        && exact.lineage === branch.lineage && exact.index === branch.index;
+      const exactTarget = exact?.review?.input?.target;
+      const exactTargetMatches = equal(exactTarget, receipt.target);
+      const boundToReceipt = exactBranch && exactTargetMatches
+        && exact.variableIdentity === receipt.identity && exact.mvuHash === receipt.afterHash
+        && exact.profileRecordHash === profileSnapshot.profileRecordHash
+        && exactTarget?.identity === receipt.target.identity && exactTarget?.scopeSignature === receipt.target.scopeSignature
+        && exactTarget?.index === receipt.target.index && exactTarget?.swipeId === receipt.target.swipeId;
+      if (!manual && effectiveBaselineWorld && exactBranch && exactTargetMatches
+        && exact.version === WORLD_VERSION && exact.status === 'complete'
+        && exact.inputIdentity === inputIdentity) {
+        await assert();
+        if (boundToReceipt) {
+          const readback = await store.read(branch);
+          if (!readback || !equal(readback, exact)) throw fault('world_reuse_readback_mismatch', '已完成世界记录复核期间发生变化');
+          await assert(); show(readback, true); return;
+        }
+        const rebound = clone(exact);
+        rebound.inputIdentity = inputIdentity; rebound.variableIdentity = receipt.identity;
+        rebound.mvuHash = receipt.afterHash; rebound.profileRecordHash = profileSnapshot.profileRecordHash;
+        rebound.heldProfiles = clone(profileSnapshot.heldProfiles);
+        rebound.review = { ...rebound.review, input: clone(input), incomingRecall: clone(incomingRecall),
+          targetGeneration: clone(targetGeneration) };
+        await assert();
+        const saved = await store.commit(branch, rebound, revision, assert);
+        revision = saved.revision;
+        const readback = await store.read(branch);
+        if (!readback || !equal(readback, saved)) throw fault('world_rebind_readback_mismatch', '世界结果重绑后读回不一致');
+        await assert(); current = clone(readback); show(readback, true); return;
+      }
+      if (!effectiveBaselineWorld) {
+        engine = createEngine();
+        effectiveBaselineWorld = clone(engine.state());
+        inputIdentity = await semanticIdentity(effectiveBaselineWorld);
+      } else engine = createEngine();
       previousCompleteWorld = clone(exact && !exact.tombstone ? exact.world : baselineWorld || engine.state());
       previousCompleteDeliveries = clone(exact && !exact.tombstone ? exact.deliveries : inheritedDeliveries);
       draft = { version: WORLD_VERSION, inputIdentity, variableIdentity: receipt.identity, mvuHash: receipt.afterHash,
-        profileRecordHash: profileSnapshot.profileRecordHash, baselineWorld: baselineWorld || engine.state(),
+        profileRecordHash: profileSnapshot.profileRecordHash, baselineWorld: effectiveBaselineWorld,
         baseDeliveries, world: clone(previousCompleteWorld),
         deliveries: clone(previousCompleteDeliveries), heldProfiles: clone(profileSnapshot.heldProfiles), status: 'running',
-        reason: manual ? 'manual' : 'auto', review: { input, incomingRecall, requests: [] }, durationMs: 0 };
+        reason: manual ? 'manual' : 'auto', review: { input, incomingRecall, targetGeneration, requests: [] }, durationMs: 0 };
       await persist();
       publish({ status: 'generating', stage: '世界推演', detail: '正在裁决人物行动与世界后果', readback: true });
       const result = await engine.evolve();
@@ -208,7 +283,7 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
   }
   async function retry() { return run(host.receipt(), true); }
   function changed() {
-    generation = null; endedRecall = null; lastAttempt = null;
+    generation = null; endedRecall = null; endedTarget = null; lastAttempt = null;
     current = null; cancel('聊天或正文已变化，正在读取当前分支'); clearRecall();
     void refresh().catch(() => publish({ status: 'failed', detail: '世界存档未能读回', readback: false, error: 'world_store_read' }));
   }
@@ -221,7 +296,7 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
       type = String(type).toLowerCase();
       if (dryRun || options?.dryRun || options?.quiet || options?.silent || options?.raw
         || !['normal', 'swipe', 'regenerate', 'continue'].includes(type)) return;
-      cancel('新正文开始，旧世界推演已停止'); endedRecall = null;
+      cancel('新正文开始，旧世界推演已停止'); endedRecall = null; endedTarget = null;
       const ticket = { id: crypto.randomUUID(), type, scope: canonical(host.scope()),
         baselineIndex: host.latestIndex(), ended: false, initialDeletionConsumed: false };
       generation = ticket;
@@ -252,7 +327,7 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
     return snapshot();
   }
   function destroy() {
-    disposed = true; generation = null; endedRecall = null; clearInterval(timer); cancel(); clearRecall();
+    disposed = true; generation = null; endedRecall = null; endedTarget = null; clearInterval(timer); cancel(); clearRecall();
     for (const [event, fn, source] of listeners) { if (event) source.removeListener(event, fn); else fn(); }
   }
   return Object.freeze({ bind, run, retry, cancel, refresh, snapshot, destroy,

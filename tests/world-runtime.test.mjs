@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createWorldRuntime } from '../world/runtime.mjs';
+import { createWorldRuntime, WORLD_VERSION } from '../world/runtime.mjs';
 import { createWorldStore } from '../world/store.mjs';
 import { canonical } from '../modular/variables/core.mjs';
 
@@ -21,24 +21,41 @@ function source() { const listeners = new Map(); return { on: (n, f) => listener
 const makeBranch = (scopeKey = 'chat-a', index = 10) => ({ scopeKey, lineage: `${scopeKey}-lineage-${index}`, index });
 function makeHarness({ existing = null, p2Busy = false, engineMode = 'success', startBranch = makeBranch(), priorBranches = [] } = {}) {
   const f = kvFixture(); const store = createWorldStore(f.kv); const events = source(); const branch = startBranch; let currentBranch = branch; let branchHistory = [...priorBranches, branch];
-  const receipt = { identity: 'target-a', afterHash: 'mvu-a', readback: true, target: { index: branch.index, userIndex: branch.index - 1, scopeKey: branch.scopeKey, scopeSignature: scopeSignature(branch.scopeKey), identity: 'target-a', swipeId: 0, content: 'accepted body' }, content: 'accepted body' }; let currentReceipt = receipt;
-  let profile = { branch, profileRecordHash: 'profile-a', heldProfiles: [], profiles: [{ profileId: 'p1' }], variableIdentity: receipt.identity, mvuHash: receipt.afterHash, index: branch.index, scopeKey: branch.scopeKey, lineage: branch.lineage, revision: 1 };
+  const receipt = { identity: 'target-a', afterHash: 'mvu-a', configHash: 'config-a', readback: true,
+    target: { index: branch.index, userIndex: branch.index - 1, scopeKey: branch.scopeKey,
+      scopeSignature: scopeSignature(branch.scopeKey), identity: 'target-a', swipeId: 0, content: 'accepted body' }, content: 'accepted body' }; let currentReceipt = receipt;
+  let profile = { branch, profileRecordHash: 'profile-a', heldProfiles: [],
+    profiles: [{ profileId: 'p1', rowId: 'row-1', updatedAt: 'time-1', presence: 'present', lastSeenIndex: branch.index,
+      sourceEvidence: ['stable evidence'], name: 'Mira', currentState: { location: '北门' }, unknownSemanticField: { fact: 'stable fact' } }],
+    variableIdentity: receipt.identity, mvuHash: receipt.afterHash, index: branch.index, scopeKey: branch.scopeKey, lineage: branch.lineage, revision: 1 };
+  let inputFacts = { mvu: { clock: '00:01', actors: [{ id: 'p1', location: '北门' }] },
+    authority: { card: 'card facts', world: 'world facts' }, players: ['player'], globalPrompt: 'global rules' };
+  let maxTokens = 4096;
   let p2 = { status: p2Busy ? 'running' : 'complete', busy: p2Busy, readback: !p2Busy }; let p1 = { status: 'applied', busy: false, readback: true }; let doctorCallback = null;
   const context = { eventSource: events, extensionSettings: {}, prompt: '', chat: [], setExtensionPrompt(_key, value) { context.prompt = value; } };
   if (existing) f.data.set(`world:v1:${existing.scopeKey}:${existing.lineage}`, structuredClone(existing));
-  const counters = { factory: 0, evolve: 0, model: 0, gate: null };
+  const counters = { factory: 0, evolve: 0, model: 0, gate: null }; let lastInstruction = '';
   const host = {
     context: () => context, scope: () => ({ scopeKey: currentBranch.scopeKey }), branches: async () => branchHistory, latestIndex: () => currentBranch.index, receipt: () => currentReceipt,
     doctor: () => ({ status: () => p1, subscribe: (_id, fn) => { doctorCallback = fn; return () => { doctorCallback = null; }; } }), profilesApi: () => ({ status: () => p2, record: () => structuredClone(profile) }),
     capture: async () => ({ scopeSignature: scopeSignature(currentBranch.scopeKey), identity: currentReceipt.target.identity, index: currentBranch.index }), delay: async () => {}, settings: () => ({ enabled: true }), captureProfiles: async () => structuredClone(profile),
     assertSnapshot: async (_receipt, snapshot) => { if (snapshot && snapshot.profileRecordHash !== profile.profileRecordHash) throw Object.assign(new Error('stale profiles'), { code: 'stale_profiles' }); if (snapshot && (snapshot.branch.scopeKey !== currentBranch.scopeKey || snapshot.branch.lineage !== currentBranch.lineage || snapshot.branch.index !== currentBranch.index)) throw Object.assign(new Error('stale target'), { code: 'stale_target' }); },
-    inputFor: async () => ({ narrative: 'bounded input' }), callModel: async () => { counters.model++; return '{"controlled":true}'; },
+    inputFor: async (acceptedReceipt, snapshot) => ({ target: structuredClone(acceptedReceipt.target),
+      narrative: 'accepted narrative', userText: 'accepted user text', ...structuredClone(inputFacts),
+      profiles: structuredClone(snapshot.profiles), heldProfiles: structuredClone(snapshot.heldProfiles),
+      profileRecordHash: snapshot.profileRecordHash }),
+    modelContract: acceptedReceipt => ({ receiptConfigHash: String(acceptedReceipt.configHash || ''), maxTokens }),
+    callModel: async () => { counters.model++; return '{"controlled":true}'; },
   };
-  const engineFactory = options => { counters.factory++; const base = structuredClone(options.world || { round: 0 }); return { state: () => structuredClone(base), abort() {}, dispose() {}, async evolve() { counters.evolve++; if (counters.gate) await counters.gate; await options.callModel('controlled engine request', options.signal); if (engineMode === 'fail') return { ok: false, state: base, debug: {} }; return { ok: true, state: { ...base, round: Number(base.round || 0) + 1, worldDigest: `round-${Number(base.round || 0) + 1}` }, debug: { controlled: true } }; } }; };
+  const engineFactory = options => { counters.factory++; lastInstruction = options.instruction; const base = structuredClone(options.world || { round: 0 }); return { state: () => structuredClone(base), abort() {}, dispose() {}, async evolve() { counters.evolve++; if (counters.gate) await counters.gate; await options.callModel('controlled engine request', options.signal); if (engineMode === 'fail') return { ok: false, state: base, debug: {} }; return { ok: true, state: { ...base, round: Number(base.round || 0) + 1, worldDigest: `round-${Number(base.round || 0) + 1}` }, debug: { controlled: true } }; } }; };
   const runtime = createWorldRuntime({ host, store, notify: () => {}, engineFactory });
-  return { f, store, runtime, host, events, branch, receipt, counters, context, setProfiles: next => { profile = next; }, setP1: next => { p1 = next; }, setP2: next => { p2 = next; }, setBranch: next => { currentBranch = next; branchHistory = [next]; }, addBranch: next => { currentBranch = next; branchHistory = [...branchHistory, next]; }, notifyDoctor: () => doctorCallback?.(), key: b => `world:v1:${b.scopeKey}:${b.lineage}` };
+  return { f, store, runtime, host, events, branch, receipt, counters, context,
+    setProfiles: next => { profile = next; }, getInstruction: () => lastInstruction, setInputFacts: patch => { inputFacts = { ...inputFacts, ...patch }; },
+    setMaxTokens: value => { maxTokens = value; }, setP1: next => { p1 = next; }, setP2: next => { p2 = next; },
+    setBranch: next => { currentBranch = next; branchHistory = [next]; }, addBranch: next => { currentBranch = next; branchHistory = [...branchHistory, next]; },
+    notifyDoctor: () => doctorCallback?.(), key: b => `world:v1:${b.scopeKey}:${b.lineage}` };
 }
-function recordFor(b, overrides = {}) { return { version: '0.1.0-candidate.1', scopeKey: b.scopeKey, lineage: b.lineage, index: b.index, revision: 2, status: 'complete', world: { round: 0, worldDigest: 'baseline' }, baselineWorld: { round: 0 }, deliveries: [], baseDeliveries: [], ...overrides }; }
+function recordFor(b, overrides = {}) { return { version: WORLD_VERSION, scopeKey: b.scopeKey, lineage: b.lineage, index: b.index, revision: 2, status: 'complete', world: { round: 0, worldDigest: 'baseline' }, baselineWorld: { round: 0 }, deliveries: [], baseDeliveries: [], ...overrides }; }
 
 test('P2 readiness gates P1 and a new P2 revision callback starts exactly one run', async () => {
   const h = makeHarness({ p2Busy: true }); await h.runtime.bind(); await h.notifyDoctor(); assert.equal(h.counters.factory, 0);
@@ -46,9 +63,110 @@ test('P2 readiness gates P1 and a new P2 revision callback starts exactly one ru
   await h.notifyDoctor(); await h.notifyDoctor();
   assert.equal(h.counters.evolve, 1); h.runtime.destroy();
 });
-test('manual retries use the same stored baseline and persist the engine request', async () => {
-  const h = makeHarness({ existing: recordFor(makeBranch()) }); await h.runtime.run(h.receipt, true); const first = await h.store.read(h.branch); await h.runtime.run(h.receipt, true); const second = await h.store.read(h.branch);
-  assert.equal(h.counters.factory, 2); assert.equal(h.counters.evolve, 2); assert.equal(first.world.round, 1); assert.equal(second.world.round, 1); assert.ok(second.review.requests.length >= 1); assert.equal(h.counters.model, 2); h.runtime.destroy();
+test('manual repair forces one call even when an exact complete result is reusable', async () => {
+  const h = makeHarness();
+  await h.runtime.run(h.receipt); const first = await h.store.read(h.branch);
+  await h.runtime.run(h.receipt, true); const second = await h.store.read(h.branch);
+  assert.equal(h.counters.factory, 2); assert.equal(h.counters.evolve, 2);
+  assert.equal(first.world.round, 1); assert.equal(second.world.round, 1);
+  assert.ok(second.review.requests.length >= 1); assert.equal(h.counters.model, 2); h.runtime.destroy();
+});
+
+test('P2 diagnostic-only changes rebind the complete result without another model call', async () => {
+  const h = makeHarness();
+  try {
+    await h.runtime.run(h.receipt);
+    const first = await h.store.read(h.branch);
+    const writesBefore = h.f.calls.filter(([kind]) => kind === 'write').length;
+    const profiles = h.host.profilesApi().record();
+    profiles.profileRecordHash = 'profile-after-diagnostics'; profiles.revision = 2;
+    profiles.profiles[0] = { ...profiles.profiles[0], rowId: 'row-2', updatedAt: 'time-2' };
+    h.setProfiles(profiles);
+    await h.runtime.run(h.receipt);
+    const rebound = await h.store.read(h.branch);
+    assert.equal(h.counters.model, 1);
+    assert.equal(h.counters.evolve, 1);
+    assert.equal(rebound.status, 'complete');
+    assert.equal(rebound.profileRecordHash, 'profile-after-diagnostics');
+    assert.equal(rebound.review.input.profiles[0].rowId, 'row-2');
+    assert.equal(rebound.review.input.profiles[0].updatedAt, 'time-2');
+    assert.deepEqual(rebound.world, first.world);
+    assert.equal(h.f.calls.filter(([kind]) => kind === 'write').length, writesBefore + 1);
+    assert.deepEqual(h.runtime.record(), rebound);
+  } finally { h.runtime.destroy(); }
+});
+
+test('semantic changes to the exact input, baseline, recall, or model contract force one world call', async t => {
+  const cases = [
+    ['exact target', h => { h.receipt.target.content = 'new accepted body'; }],
+    ['MVU facts', h => { h.setInputFacts({ mvu: { clock: '00:02', actors: [{ id: 'p1', location: '桥上' }] } }); }],
+    ['complete profile facts', h => {
+      const profiles = h.host.profilesApi().record(); profiles.profileRecordHash = 'profile-fact-change'; profiles.revision++;
+      profiles.profiles[0] = { ...profiles.profiles[0], unknownSemanticField: { fact: 'changed fact' } }; h.setProfiles(profiles);
+    }],
+    ['held profile facts', h => {
+      const profiles = h.host.profilesApi().record(); profiles.profileRecordHash = 'held-profile-change'; profiles.revision++;
+      profiles.heldProfiles = [{ profileId: 'p2', reason: 'profile_incomplete' }]; h.setProfiles(profiles);
+    }],
+    ['authority facts', h => { h.setInputFacts({ authority: { card: 'changed card', world: 'world facts' } }); }],
+    ['global prompt', h => { h.setInputFacts({ globalPrompt: 'changed global rules' }); }],
+    ['model route and token contract', h => { h.receipt.configHash = 'config-b'; h.setMaxTokens(8192); }],
+    ['world baseline', h => {
+      const row = h.f.data.get(h.key(h.branch)); row.baselineWorld = { ...row.baselineWorld, worldDigest: 'changed baseline' };
+      h.f.data.set(h.key(h.branch), row);
+    }],
+    ['effective recall proof', h => {
+      const row = h.f.data.get(h.key(h.branch)); row.review.incomingRecall = {
+        promptHash: 'effective-recall-hash', deliveryIds: ['delivery-1'], sourceLineage: 'prior-lineage',
+        sourceScopeKey: 'prior-scope', generationId: 'generation-1', generationType: 'normal',
+        scope: h.receipt.target.scopeSignature, baselineIndex: h.branch.index - 1,
+        targetIdentity: h.receipt.target.identity, promptObserved: true,
+      };
+      h.f.data.set(h.key(h.branch), row);
+    }],
+  ];
+  for (const [name, mutate] of cases) await t.test(name, async () => {
+    const h = makeHarness();
+    try {
+      await h.runtime.run(h.receipt);
+      assert.equal(h.counters.model, 1);
+      mutate(h);
+      await h.runtime.run(h.receipt);
+      assert.equal(h.counters.model, 2);
+      assert.equal((await h.store.read(h.branch)).status, 'complete');
+    } finally { h.runtime.destroy(); }
+  });
+});
+
+test('failed, running, and partial records cannot skip a new attempt', async t => {
+  for (const status of ['failed', 'running', 'partial']) await t.test(status, async () => {
+    const h = makeHarness();
+    try {
+      await h.runtime.run(h.receipt);
+      const row = h.f.data.get(h.key(h.branch)); row.status = status; h.f.data.set(h.key(h.branch), row);
+      await h.runtime.run(h.receipt);
+      assert.equal(h.counters.model, 2);
+      assert.equal(h.counters.evolve, 2);
+      assert.equal((await h.store.read(h.branch)).status, 'complete');
+    } finally { h.runtime.destroy(); }
+  });
+});
+
+test('a new same-target generation ticket cannot reuse the old generation result', async () => {
+  const h = makeHarness();
+  try {
+    await h.runtime.bind();
+    await h.events.emit('generation_started', 'regenerate');
+    await h.runtime.run(h.receipt);
+    const first = await h.store.read(h.branch);
+    assert.ok(first.review.targetGeneration?.generationId);
+    await h.events.emit('generation_started', 'regenerate');
+    await h.runtime.run(h.receipt);
+    const second = await h.store.read(h.branch);
+    assert.ok(second.review.targetGeneration?.generationId);
+    assert.notEqual(second.review.targetGeneration.generationId, first.review.targetGeneration.generationId);
+    assert.equal(h.counters.model, 2);
+  } finally { h.runtime.destroy(); }
 });
 
 for (const upstream of ['variables', 'profiles']) test(`unchanged ${upstream} repair restores the saved world without another model call or write`, async () => {
@@ -74,7 +192,7 @@ for (const upstream of ['variables', 'profiles']) test(`unchanged ${upstream} re
   } finally { h.runtime.destroy(); }
 });
 
-test('unchanged upstream recovery does not automatically retry a saved world failure', async () => {
+test('a new upstream recovery permits one retry of a failed world and later callbacks do not loop', async () => {
   const h = makeHarness({ engineMode: 'fail' });
   try {
     await h.runtime.bind(); await h.runtime.run(h.receipt, true);
@@ -86,9 +204,11 @@ test('unchanged upstream recovery does not automatically retry a saved world fai
     h.setP1({ status: 'model_nochange', busy: false, inFlight: 0, readback: true });
     await h.notifyDoctor(); await waitFor(() => h.runtime.snapshot().status === 'failed' && !h.runtime.snapshot().busy);
     await h.notifyDoctor(); await h.notifyDoctor();
-    assert.deepEqual(await h.store.read(h.branch), saved);
-    assert.equal(h.counters.model, 1);
-    assert.equal(h.f.calls.filter(([kind]) => kind === 'write').length, writes);
+    const retried = await h.store.read(h.branch);
+    assert.equal(retried.status, 'failed'); assert.equal(retried.revision, saved.revision + 2);
+    assert.deepEqual(retried.world, saved.world);
+    assert.equal(h.counters.model, 2);
+    assert.equal(h.f.calls.filter(([kind]) => kind === 'write').length, writes + 2);
   } finally { h.runtime.destroy(); }
 });
 test('failed generation keeps the complete world and delivery ledger', async () => {

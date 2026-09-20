@@ -1,8 +1,8 @@
 import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
-import { discoveryPrompt, parseDiscovery, profileBatchPrompt, parseProfileBatch, validateProfile } from './content.mjs';
+import { parseDiscovery, profileTurnPrompt, parseProfileTurn, materializeProfile, validateProfile } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.5';
-export const PROFILE_CALL_LIMIT = 2;
+export const PROFILE_VERSION = '0.1.0-candidate.6';
+export const PROFILE_CALL_LIMIT = 1;
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready', 'variable_evidence_changed']);
@@ -14,10 +14,12 @@ function previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds = 
   const requests = Array.isArray(exact.review?.requests) ? exact.review.requests : [];
   for (let index = requests.length - 1; index >= 0; index--) {
     const request = requests[index];
-    if (!['discovery', 'discovery-repair'].includes(request?.kind) || typeof request.raw !== 'string') continue;
+    if (!['profile-turn', 'discovery', 'discovery-repair'].includes(request?.kind) || typeof request.raw !== 'string') continue;
     try {
       return {
         previousValidResult: parseDiscovery(request.raw, input, { retirableProfileIds }),
+        ...(request.kind === 'profile-turn' ? { raw: request.raw,
+          tasks: (exact.tasks || []).map(({ sourceName, profileId, errors }) => ({ sourceName, profileId, errors })) } : {}),
         retirableProfileIds: [...retirableProfileIds],
       };
     }
@@ -25,6 +27,11 @@ function previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds = 
   }
   return { retirableProfileIds: [...retirableProfileIds] };
 }
+
+// Only completed output is reusable. Rebuild the original semantic input with
+// fresh authority/configuration; saved request logs and revisions are irrelevant.
+const reuseInputHash = (input, receipt) => digest({ version: PROFILE_VERSION, input,
+  configHash: receipt.configHash, ruleHash: receipt.ruleHash, schemaHash: receipt.schemaHash });
 
 function profileIdSet(profiles) {
   return new Set((Array.isArray(profiles) ? profiles : [])
@@ -173,11 +180,16 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       const exact = await store.read(branch), previous = exact && !exact.tombstone ? exact : prior;
       revision = exact?.revision || 0;
       if (!manual && exact?.status === 'complete' && exact.version === PROFILE_VERSION
-        && exact.variableIdentity === receipt.identity && exact.mvuHash === receipt.afterHash) {
-        await assert(); current = exact;
-        publish({ status: 'restored', detail: '本轮完整档案已保存，已读回现有结果', profiles: clone(exact.profiles), tasks: clone(exact.tasks), readback: true,
-          requestCount: exact.review?.requests?.length || 0 });
-        return;
+        && exact.variableIdentity === receipt.identity && exact.mvuHash === receipt.afterHash
+        && exact.review?.reuseInputHash && exact.review?.outputHash) {
+        const originalInput = await host.inputFor(receipt, clone(exact.review.input.profiles), host.settings().globalPrompt, ctl.signal);
+        if (await reuseInputHash(originalInput, receipt) === exact.review.reuseInputHash
+          && await digest(exact.profiles) === exact.review.outputHash) {
+          await assert(); current = exact;
+          publish({ status: 'restored', detail: '本轮完整档案已保存，已读回现有结果', profiles: clone(exact.profiles), tasks: clone(exact.tasks), readback: true,
+            requestCount: 0 });
+          return;
+        }
       }
       const profiles = clone(previous?.profiles || []);
       const storedBaselineIds = Array.isArray(exact?.review?.baselineProfileIds)
@@ -203,7 +215,7 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
       const input = await host.inputFor(receipt, profiles, host.settings().globalPrompt, ctl.signal);
       draft = { version: PROFILE_VERSION, variableIdentity: receipt.identity, mvuHash: receipt.afterHash,
         profiles, tasks: [], status: 'discovering', reason: manual ? 'manual' : 'auto',
-        review: { input, requests: [], requestLimit: PROFILE_CALL_LIMIT, automaticRetries: 0, previousRecall: acceptedRecall?.targetIdentity === receipt.identity
+        review: { input, reuseInputHash: await reuseInputHash(input, receipt), requests: [], requestLimit: PROFILE_CALL_LIMIT, automaticRetries: 0, previousRecall: acceptedRecall?.targetIdentity === receipt.identity
           && acceptedRecall.scopeKey === receipt.target.scopeKey ? clone(acceptedRecall) : null,
           baselineProfileIds: [...roundBaselineIds],
           newProfileIds: [...roundNewProfileIds],
@@ -212,13 +224,14 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
           retiredProfileBefore: clone(exact?.review?.retiredProfileBefore || []),
         }, durationMs: 0 };
       await persist();
-      publish({ detail: '正在从正文识别人，并核对已有身份' });
-      const prompt = discoveryPrompt(input, manual ? previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds) : null);
-      const discovered = parseDiscovery(await call('discovery', prompt), input, { retirableProfileIds });
+      publish({ detail: '正在一次识别人物、填写新档案并更新已有档案' });
+      const prompt = profileTurnPrompt(input, manual ? previousDiscoveryForRetry(exact, input, receipt, retirableProfileIds) : null);
+      const discovered = parseProfileTurn(await call('profile-turn', prompt), input, { retirableProfileIds });
       draft.noCharacterReason = discovered.noCharacterReason;
       draft.review.retireProfileIds = [...(Array.isArray(discovered.retireProfileIds) ? discovered.retireProfileIds : [])];
-      draft.tasks = discovered.people.map((person, index) => ({ ...person, rowId: `P${index + 1}`,
-        profileId: person.existingProfileId || crypto.randomUUID(), status: 'pending', code: null }));
+      draft.tasks = discovered.people.map(({ sourceName, evidence, existingProfileId, presence, operation }, index) => ({
+        sourceName, evidence, existingProfileId, presence, operation, rowId: `P${index + 1}`,
+        profileId: existingProfileId || crypto.randomUUID(), status: 'pending', code: null }));
       const taskIds = taskProfileIdSet(draft.tasks);
       draft.review.newProfileIds = [...new Set([
         ...roundNewProfileIds,
@@ -228,29 +241,16 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
         throw fault('profile_retire_conflict', '本轮档案不能同时更新和退休同一人物');
       }
       draft.status = 'generating'; await persist();
-      let batch = { results: [], errors: [] };
-      if (draft.tasks.length) {
-        const rows = draft.tasks.map(({ rowId, profileId, sourceName, evidence, presence }) => ({ rowId, profileId, sourceName, evidence, presence }));
-        draft.tasks.forEach(task => { task.status = 'generating'; });
-        publish({ status: 'generating', detail: `正在一次填写${rows.length}位人物的完整档案`, tasks: clone(draft.tasks) });
-        const sameEvidence = manual && exact && !exact.tombstone && exact.variableIdentity === receipt.identity && exact.mvuHash === receipt.afterHash;
-        const previousBatch = sameEvidence && exact.review?.requests?.findLast(request => request.kind === 'profile-batch');
-        const feedback = previousBatch ? { raw: previousBatch.raw, tasks: exact.tasks.map(({ rowId, profileId, errors }) => ({ rowId, profileId, errors })),
-          errors: exact.review.batchErrors || [] } : null;
-        batch = parseProfileBatch(await call('profile-batch', profileBatchPrompt(input, rows, feedback), rows), rows, input.players);
-        draft.review.batchErrors = clone(batch.errors);
-      }
       for (let taskIndex = 0; taskIndex < draft.tasks.length; taskIndex++) {
         const task = draft.tasks[taskIndex];
         await assert();
         publish({ status: 'generating', detail: `正在核对并保存第${taskIndex + 1}/${draft.tasks.length}位人物的完整档案` });
         try {
-          const result = batch.results.find(value => value.rowId === task.rowId && value.profileId === task.profileId);
-          const candidate = result?.candidate, errors = result?.errors || ['批量结果缺少该人物'];
-          if (errors.length) {
-            task.errors = errors; task.candidate = clone(candidate);
-            throw fault('profile_incomplete', '该人物档案未通过完整性或身份校验，可再次修复');
-          }
+          // Each task is created from this exact nested item; there is no second
+          // independently ordered response array to zip to generated IDs.
+          const item = discovered.people[taskIndex];
+          const previousProfile = profiles.find(value => value.profileId === task.existingProfileId) || null;
+          const candidate = materializeProfile(item, task, previousProfile, input.players);
           await assert();
           const profile = { ...clone(candidate), presence: task.presence, lastSeenIndex: receipt.target.index,
             sourceEvidence: task.evidence, updatedAt: new Date().toISOString() };
@@ -260,11 +260,13 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
           draft.status = 'saving'; await persist(); draft.status = 'generating';
         } catch (error) {
           if (INVALIDATED.has(error.code) || ctl.signal.aborted || /^profile_store|profile_revision/.test(error.code || '')) throw error;
-          task.status = 'failed'; task.code = error.code === 'profile_incomplete' ? error.code : 'profile_generation_failed';
+          task.errors = clone(error.errors || [error.message]);
+          task.status = 'failed'; task.code = ['profile_incomplete', 'profile_materialization_invalid'].includes(error.code)
+            ? 'profile_incomplete' : 'profile_generation_failed';
           draft.status = 'generating'; await persist();
         }
       }
-      const incomplete = batch.errors.length || draft.tasks.some(task => task.status !== 'complete');
+      const incomplete = draft.tasks.some(task => task.status !== 'complete');
       draft.status = incomplete && draft.review.retireProfileIds.length ? 'failed' : (incomplete ? 'partial' : 'complete');
       if (draft.status === 'failed') draft.failureCode = 'profile_retirement_deferred';
       let retirementRollbackDraft = null;
@@ -283,6 +285,7 @@ export function createProfileRuntime({ host, store, notify = () => {} }) {
         ];
         draft.review.retireProfileIds = [];
       }
+      if (draft.status === 'complete') draft.review.outputHash = await digest(draft.profiles);
       try { await persist(); }
       catch (error) {
         if (retirementRollbackDraft) draft = retirementRollbackDraft;

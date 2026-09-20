@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseJsonResponse, PROFILE_FIELDS, validateProfile, parseDiscovery, discoveryPrompt, profilePrompt,
-  profileBatchPrompt, parseProfileBatch } from '../profiles/content.mjs';
+  profileBatchPrompt, parseProfileBatch, profileTurnPrompt, parseProfileTurn, materializeProfile } from '../profiles/content.mjs';
 
 function validProfile(overrides = {}) {
   const p = { profileId: 'p-1', rowId: 'r-1', name: '林', identity: {}, appearance: {}, personality: {}, currentState: {}, aliases: [], relationships: ['同伴'], knowledge: ['常识'], capabilities: ['观察'], resources: ['零钱'], evidence: ['正文片段'], inferences: ['未明背景'], uncertainties: ['不知他人真实动机'], history: '曾迁居', ...overrides };
@@ -237,4 +237,214 @@ test('parseProfileBatch rejects invalid top-level shape with the bounded batch c
   assert.throws(() => parseProfileBatch('{"profiles":[]} {"profiles":[]}', batchRows()), (error) => (
     error.code === 'profile_batch_invalid' && error.recoverable === true
   ));
+});
+
+function profileContent(overrides = {}) {
+  const { profileId, rowId, ...content } = validProfile(overrides);
+  return content;
+}
+
+function profileTurnEnvelope(people, overrides = {}) {
+  return JSON.stringify({ people, retireProfileIds: [], noCharacterReason: people.length ? '' : '本轮没有可持续记录的非玩家人物', ...overrides });
+}
+
+function profileTurnPerson({ sourceName = '林', evidence = '林走进门。', existingProfileId = null,
+  presence = 'present', operation = 'create', profile, changes, identityRevealEvidence } = {}) {
+  return { sourceName, evidence, existingProfileId, presence, operation,
+    ...(identityRevealEvidence === undefined ? {} : { identityRevealEvidence }),
+    ...(profile === undefined ? {} : { profile }), ...(changes === undefined ? {} : { changes }) };
+}
+
+test('profileTurnPrompt sends compact projections while preserving player action and removing raw target copies', () => {
+  const input = {
+    target: { index: 7, content: 'RAW_TARGET_CONTENT_SENTINEL', userText: 'RAW_NESTED_USER_SENTINEL' },
+    narrative: '正文里林走进门。', userText: '投影后的玩家行动：询问通行证用途。', mvu: { energy: 3 },
+    authority: { card: '完整卡片', world: '完整世界设定' }, players: ['玩家'], profiles: [validProfile()],
+  };
+  const before = structuredClone(input);
+  const prompt = profileTurnPrompt(input, { retirableProfileIds: ['new-mistake'] });
+  assert.deepEqual(input, before);
+  assert.match(prompt, /正文里林走进门。/);
+  assert.match(prompt, /完整卡片/);
+  assert.match(prompt, /完整世界设定/);
+  assert.match(prompt, /new-mistake/);
+  assert.match(prompt, /投影后的玩家行动：询问通行证用途。/);
+  assert.doesNotMatch(prompt, /RAW_TARGET_CONTENT_SENTINEL|RAW_NESTED_USER_SENTINEL/);
+  const modelViewMatch = prompt.match(/完整背景（紧凑JSON；移除 target\.content 和 target\.userText 原始副本，保留投影后的 narrative 与 userText）：\n([^\n]+)/);
+  assert.ok(modelViewMatch);
+  const modelView = JSON.parse(modelViewMatch[1]);
+  assert.deepEqual(modelView.target, { index: 7 });
+  assert.equal(modelView.userText, input.userText);
+  assert.match(prompt, /operation=create/);
+  assert.match(prompt, /operation=update/);
+  assert.match(prompt, /operation=unchanged/);
+  assert.match(prompt, /identityRevealEvidence/);
+  assert.match(prompt, /retireProfileIds/);
+});
+
+test('parseProfileTurn keeps operation and content nested with explicit identity, independent of order', () => {
+  const existing = validProfile({ profileId: 'known-a', rowId: 'old-a', name: '林' });
+  const other = validProfile({ profileId: 'known-b', rowId: 'old-b', name: '林' });
+  const input = { narrative: '林走进门。林站在窗边。林没有变化。', profiles: [existing, other], players: [] };
+  const raw = profileTurnEnvelope([
+    profileTurnPerson({ sourceName: '林', evidence: '林没有变化。', existingProfileId: 'known-b', operation: 'unchanged' }),
+    profileTurnPerson({ sourceName: '林', evidence: '林走进门。', existingProfileId: null, profile: profileContent() }),
+    profileTurnPerson({ sourceName: '林', evidence: '林站在窗边。', existingProfileId: 'known-a', operation: 'update', changes: { 'currentState.location': '窗边' } }),
+  ]);
+  const parsed = parseProfileTurn(raw, input);
+  assert.deepEqual(parsed.people.map(({ evidence, operation, existingProfileId }) => [evidence, operation, existingProfileId]), [
+    ['林没有变化。', 'unchanged', 'known-b'], ['林走进门。', 'create', null], ['林站在窗边。', 'update', 'known-a'],
+  ]);
+  assert.deepEqual(parsed.people[0], {
+    sourceName: '林', evidence: '林没有变化。', existingProfileId: 'known-b', presence: 'present',
+    identityRevealEvidence: null, operation: 'unchanged',
+  });
+  assert.equal(parsed.people[1].profile.name, profileContent().name);
+  assert.deepEqual(parsed.people[2].changes, { 'currentState.location': '窗边' });
+});
+
+test('parseProfileTurn reuses literal source, player, ID, duplicate, and retire validation', () => {
+  const current = validProfile({ profileId: 'new-mistake', rowId: 'old', name: '误建人物' });
+  const input = { narrative: '林走进门。玩家在场。', profiles: [current], players: ['玩家'] };
+  const options = { retirableProfileIds: ['new-mistake'] };
+  const empty = profileTurnEnvelope([], { retireProfileIds: ['new-mistake'] });
+  assert.deepEqual(parseProfileTurn(empty, input, options).retireProfileIds, ['new-mistake']);
+  assert.throws(() => parseProfileTurn(empty, input), error => error.code === 'discovery_retire_forbidden');
+  assert.throws(() => parseProfileTurn(profileTurnEnvelope([
+    profileTurnPerson({ sourceName: '林', evidence: '窗外无人。', profile: profileContent() }),
+  ]), input), error => error.code === 'discovery_evidence_unbound');
+  assert.throws(() => parseProfileTurn(profileTurnEnvelope([
+    profileTurnPerson({ sourceName: '玩家', evidence: '玩家', profile: profileContent() }),
+  ]), input), error => error.code === 'discovery_player_forbidden');
+  assert.throws(() => parseProfileTurn(profileTurnEnvelope([
+    profileTurnPerson({ sourceName: '林', evidence: '林走进门。', existingProfileId: 'unknown', operation: 'update', changes: { 'name': '林' } }),
+  ]), input), error => error.code === 'discovery_existing_profile_id_invalid');
+  assert.throws(() => parseProfileTurn(profileTurnEnvelope([
+    profileTurnPerson({ sourceName: '林', evidence: '林走进门。', profile: profileContent() }),
+    profileTurnPerson({ sourceName: '林', evidence: '林走进门。', profile: profileContent() }),
+  ]), input), error => error.code === 'discovery_duplicate');
+});
+
+test('parseProfileTurn requires a literal identity reveal when the source name differs from the bound profile', () => {
+  const old = validProfile({ profileId: 'old-lin', rowId: 'old-row', name: '小林', aliases: ['阿林'] });
+  const input = { narrative: '小林摘下兜帽，原来他就是林。', profiles: [old], players: [] };
+  const person = profileTurnPerson({ sourceName: '林', evidence: '原来他就是林。', existingProfileId: 'old-lin',
+    operation: 'update', changes: { 'currentState.location': '门口' } });
+  assert.throws(() => parseProfileTurn(profileTurnEnvelope([person]), input), error => error.code === 'profile_turn_identity_reveal_required');
+  const notContinuous = { ...person, identityRevealEvidence: '小林 / 林' };
+  assert.throws(() => parseProfileTurn(profileTurnEnvelope([notContinuous]), input), error => error.code === 'profile_turn_identity_reveal_invalid');
+  const separateMentions = { ...person, identityRevealEvidence: '小林摘下兜帽' };
+  assert.throws(() => parseProfileTurn(profileTurnEnvelope([separateMentions]), input), error => error.code === 'profile_turn_identity_reveal_required');
+  const revealed = { ...person, identityRevealEvidence: '小林摘下兜帽，原来他就是林。' };
+  const parsed = parseProfileTurn(profileTurnEnvelope([revealed]), input);
+  assert.equal(parsed.people[0].identityRevealEvidence, revealed.identityRevealEvidence);
+});
+
+test('parseProfileTurn rejects unknown envelope and person keys instead of silently accepting another contract', () => {
+  const input = { narrative: '林走进门。', profiles: [], players: [] };
+  const base = JSON.parse(profileTurnEnvelope([profileTurnPerson({ profile: profileContent() })]));
+  assert.throws(() => parseProfileTurn(JSON.stringify({ ...base, explanation: 'extra' }), input), error => error.code === 'profile_turn_invalid');
+  const extraPerson = { ...base, people: [{ ...base.people[0], profileId: 'model-owned' }] };
+  assert.throws(() => parseProfileTurn(JSON.stringify(extraPerson), input), error => error.code === 'profile_turn_invalid');
+  const mismatched = { ...base, people: [{ ...base.people[0], operation: 'update', existingProfileId: null }] };
+  assert.throws(() => parseProfileTurn(JSON.stringify(mismatched), input), error => error.code === 'profile_turn_invalid');
+});
+
+test('parseProfileTurn preserves per-person content defects for materialization without blocking valid siblings', () => {
+  const previous = validProfile({ profileId: 'known-lin', rowId: 'old-lin', name: '林' });
+  const input = { narrative: '林没有变化。周走进门。', profiles: [previous], players: [] };
+  const invalidUnchanged = profileTurnPerson({ sourceName: '林', evidence: '林没有变化。', existingProfileId: 'known-lin',
+    operation: 'unchanged', changes: { 'currentState.location': '错误附带内容' } });
+  const validCreate = profileTurnPerson({ sourceName: '周', evidence: '周走进门。', profile: profileContent({ name: '周' }) });
+  const parsed = parseProfileTurn(profileTurnEnvelope([invalidUnchanged, validCreate]), input);
+
+  const unchangedRow = { rowId: 'runtime-lin', profileId: 'known-lin', sourceName: '林', evidence: invalidUnchanged.evidence, presence: 'present' };
+  assert.throws(() => materializeProfile(parsed.people[0], unchangedRow, previous), error => (
+    error.code === 'profile_materialization_invalid' && error.errors.some(value => value.includes('unchanged不得附profile或changes'))
+  ));
+
+  const createRow = { rowId: 'runtime-zhou', profileId: 'runtime-new-profile', sourceName: '周', evidence: validCreate.evidence, presence: 'present' };
+  const created = materializeProfile(parsed.people[1], createRow, null);
+  assert.equal(created.name, '周');
+  assert.equal(created.profileId, 'runtime-new-profile');
+  assert.deepEqual(validateProfile(created), []);
+
+  const missingProfile = parseProfileTurn(profileTurnEnvelope([
+    profileTurnPerson({ sourceName: '周', evidence: '周走进门。' }),
+  ]), input);
+  assert.throws(() => materializeProfile(missingProfile.people[0], createRow, null), error => (
+    error.code === 'profile_materialization_invalid' && error.errors.some(value => value.includes('profile必须是对象'))
+  ));
+});
+
+test('materializeProfile creates complete content with only runtime-owned IDs', () => {
+  const item = profileTurnPerson({ profile: profileContent() });
+  const row = { rowId: 'runtime-row', profileId: 'runtime-profile', sourceName: item.sourceName, evidence: item.evidence, presence: item.presence };
+  const materialized = materializeProfile(item, row, null, []);
+  assert.equal(materialized.profileId, 'runtime-profile');
+  assert.equal(materialized.rowId, 'runtime-row');
+  assert.equal(PROFILE_FIELDS.filter(field => field.type === 'text').length, 36);
+  assert.equal(PROFILE_FIELDS.filter(field => field.type === 'list').length, 8);
+  assert.deepEqual(validateProfile(materialized), []);
+  assert.throws(() => materializeProfile({ ...item, profile: { ...item.profile, profileId: 'model-id' } }, row, null, []), error => (
+    error.code === 'profile_materialization_invalid' && error.errors.some(value => value.includes('profileId'))
+  ));
+  assert.throws(() => materializeProfile({ ...item, changes: {} }, row, null), error => (
+    error.code === 'profile_materialization_invalid' && error.errors.some(value => value.includes('create不得附changes'))
+  ));
+});
+
+test('materializeProfile applies exact update leaves, replaces arrays, and preserves omitted old fields', () => {
+  const previous = validProfile({ profileId: 'known', rowId: 'previous-row', name: '林' });
+  const item = profileTurnPerson({ existingProfileId: 'known', operation: 'update', evidence: '林走进门。', changes: {
+    'currentState.location': '门口', knowledge: ['本轮新获知的线索'],
+  } });
+  const row = { rowId: 'runtime-row', profileId: 'known', sourceName: '林', evidence: item.evidence, presence: item.presence };
+  const materialized = materializeProfile(item, row, previous, []);
+  assert.equal(materialized.profileId, 'known');
+  assert.equal(materialized.rowId, 'runtime-row');
+  assert.equal(materialized.currentState.location, '门口');
+  assert.deepEqual(materialized.knowledge, ['本轮新获知的线索']);
+  assert.equal(materialized.relationships[0], previous.relationships[0]);
+  assert.equal(materialized.personality.coreDesire, previous.personality.coreDesire);
+});
+
+test('materializeProfile rejects parent, metadata, unknown, malformed, and incomplete changes with local errors', () => {
+  const previous = validProfile({ profileId: 'known', rowId: 'previous-row', name: '林' });
+  const row = { rowId: 'runtime-row', profileId: 'known' };
+  const invalidChanges = [
+    { identity: { age: '成年' } },
+    { profileId: 'other-id' },
+    { 'unknown.path': 'value' },
+    { 'currentState.location': { city: '港口' } },
+    { knowledge: [] },
+  ];
+  for (const changes of invalidChanges) {
+    const item = profileTurnPerson({ existingProfileId: 'known', operation: 'update', changes });
+    assert.throws(() => materializeProfile(item, row, previous), error => (
+      error.code === 'profile_materialization_invalid' && Array.isArray(error.errors) && error.errors.length > 0
+    ));
+  }
+  assert.throws(() => materializeProfile(
+    profileTurnPerson({ existingProfileId: 'known', operation: 'unchanged' }), row,
+    validProfile({ profileId: 'known', rowId: 'bad', appearance: { outfit: '' } }),
+  ), error => error.errors.some(value => value.includes('appearance.outfit')));
+});
+
+test('materializeProfile preserves a complete unchanged profile and reports failures per person', () => {
+  const previous = validProfile({ profileId: 'known', rowId: 'previous-row', name: '林' });
+  const unchanged = profileTurnPerson({ existingProfileId: 'known', operation: 'unchanged', evidence: '林走进门。' });
+  const row = { rowId: 'runtime-row', profileId: 'known', sourceName: '林', evidence: unchanged.evidence, presence: 'present' };
+  const result = materializeProfile(unchanged, row, previous);
+  assert.deepEqual({ ...result, rowId: previous.rowId }, previous);
+  const bad = profileTurnPerson({ existingProfileId: 'known', operation: 'update', changes: { identity: 'invalid parent' } });
+  const outcomes = [bad, unchanged].map((item, index) => {
+    const task = { ...row, rowId: `row-${index}` };
+    try { return { ok: true, value: materializeProfile(item, task, previous) }; }
+    catch (error) { return { ok: false, errors: error.errors }; }
+  });
+  assert.equal(outcomes[0].ok, false);
+  assert.ok(outcomes[0].errors.length);
+  assert.equal(outcomes[1].ok, true);
+  assert.equal(outcomes[1].value.profileId, 'known');
 });

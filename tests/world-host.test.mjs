@@ -13,9 +13,9 @@ function fullProfile(id) {
   return profile;
 }
 
-function fixture({ recordChange = null } = {}) {
+function fixture({ recordChange = null, maxTokens = 6000 } = {}) {
   const branch = { index: 5, scopeKey: 'scope', lineage: 'lineage' };
-  const receipt = { identity: 'variable-identity', afterHash: 'mvu-hash', readback: true,
+  const receipt = { identity: 'variable-identity', afterHash: 'mvu-hash', configHash: 'strict-config-hash', readback: true,
     target: { index: 5, identity: 'target-identity', scopeKey: 'scope', scopeSignature: 'scope-signature', swipeId: 0 } };
   let record = { index: 5, scopeKey: 'scope', lineage: 'lineage', variableIdentity: receipt.identity,
     mvuHash: receipt.afterHash, status: 'complete', revision: 1,
@@ -26,10 +26,18 @@ function fixture({ recordChange = null } = {}) {
   const base = {
     assertReceipt: async () => {}, branches: async () => [branch], playerNames: () => [],
     scope: () => ({ chatId: 'chat' }), settings: () => ({ globalPrompt: '' }),
+    story: () => ({ getSettings: () => ({ maxTokens }) }),
     inputFor: async () => ({}), callModel: async () => 'ok',
   };
   return { receipt, api, base, setRecord: value => { record = value; } };
 }
+
+test('modelContract fingerprints the strict P1 config hash and effective world token limit', () => {
+  const f = fixture(); const host = createWorldHost(f.base, () => f.api);
+  assert.deepEqual(host.modelContract(f.receipt), { receiptConfigHash: 'strict-config-hash', maxTokens: 6000 });
+  const lowLimit = fixture({ maxTokens: 512 }); const lowHost = createWorldHost(lowLimit.base, () => lowLimit.api);
+  assert.deepEqual(lowHost.modelContract(lowLimit.receipt), { receiptConfigHash: 'strict-config-hash', maxTokens: 4096 });
+});
 
 test('captureProfiles keeps valid complete profiles while excluding only failed tasks', async () => {
   const f = fixture(); const host = createWorldHost(f.base, () => f.api);
