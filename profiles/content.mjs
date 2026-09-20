@@ -9,7 +9,16 @@ function at(obj, path) { return path.split('.').reduce((v, k) => v?.[k], obj); }
 function stripCodeFence(text) {
   const source = String(text || '').trim();
   const fenced = source.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return fenced ? fenced[1].trim() : source;
+  if (fenced) return fenced[1].trim();
+  const unmatchedOpening = source.match(/^```(?:json)?\s+([\s\S]*)$/i);
+  if (unmatchedOpening) {
+    const candidate = unmatchedOpening[1].trim();
+    try {
+      JSON.parse(candidate);
+      return candidate;
+    } catch { /* Strip only when the entire remaining body is already valid JSON. */ }
+  }
+  return source;
 }
 function normalizeJsonPunctuation(text) {
   return String(text || '')

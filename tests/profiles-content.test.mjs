@@ -21,6 +21,34 @@ test('parseJsonResponse preserves tolerant legacy parsing', () => {
   assert.equal(value.profiles[0].name, '甲');
 });
 
+test('parseProfileTurn strips one unmatched opening fence only around a complete whole-body JSON value', () => {
+  const input = { narrative: '林走进门。', profiles: [], players: [] };
+  const person = profileTurnPerson({ profile: profileContent() });
+  const body = profileTurnEnvelope([person]);
+  const parsed = parseProfileTurn(`\`\`\`json\n${body}`, input);
+  assert.deepEqual(parsed.people[0].profile, person.profile);
+  assert.equal(parsed.people[0].evidence, person.evidence);
+  assert.deepEqual(parseJsonResponse(`\`\`\`\n${body}`, { extract: false }), JSON.parse(body));
+});
+
+test('unmatched fence normalization preserves strict JSON, evidence, player, and ID rejection', () => {
+  const input = { narrative: '林走进门。玩家在场。', profiles: [], players: ['玩家'] };
+  const openFence = body => `\`\`\`json\n${body}`;
+  const valid = profileTurnEnvelope([profileTurnPerson({ profile: profileContent() })]);
+  const rejected = [
+    [profileTurnEnvelope([profileTurnPerson({ sourceName: '玩家', evidence: '玩家', profile: profileContent({ name: '玩家' }) })]), 'discovery_player_forbidden'],
+    [profileTurnEnvelope([profileTurnPerson({ existingProfileId: 'unknown-id', operation: 'update', changes: { 'currentState.location': '门口' } })]), 'discovery_existing_profile_id_invalid'],
+    [profileTurnEnvelope([profileTurnPerson({ evidence: '不存在于正文中的证据', profile: profileContent() })]), 'discovery_evidence_unbound'],
+    [`${valid.slice(0, -1)}`, 'profile_turn_invalid'],
+    [`${valid}\n说明文字`, 'profile_turn_invalid'],
+    [`${valid}${valid}`, 'profile_turn_invalid'],
+    [`{"wrapper":${valid}`, 'profile_turn_invalid'],
+  ];
+  for (const [body, code] of rejected) {
+    assert.throws(() => parseProfileTurn(openFence(body), input), error => error.code === code, code);
+  }
+});
+
 test('PROFILE_FIELDS retains old fields and added fields', () => {
   assert.equal(PROFILE_FIELDS.filter((f) => f.type === 'text').length, 36);
   assert.equal(PROFILE_FIELDS.filter((f) => f.type === 'list').length, 8);

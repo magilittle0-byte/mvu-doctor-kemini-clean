@@ -2,7 +2,7 @@ import { clone, canonical, digest, fault } from '../modular/variables/core.mjs';
 import { parseDiscovery, profileTurnMessages, parseProfileTurn, materializeProfile, validateProfile,
   PROFILE_TURN_GLOBAL_FAILURE_DIAGNOSTICS } from './content.mjs';
 
-export const PROFILE_VERSION = '0.1.0-candidate.9';
+export const PROFILE_VERSION = '0.1.0-candidate.10';
 export const PROFILE_CALL_LIMIT = 1;
 const SETTINGS_KEY = 'mvuDoctorProfilesV1';
 const PROMPT_KEY = 'mvu_doctor_profiles_v1';
