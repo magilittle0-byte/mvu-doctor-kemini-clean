@@ -506,6 +506,72 @@ test('database wrapper projection is exact, world-only, repeatable, and leaves t
   assert.equal(record.contextHash, await digest([world, rule].join('\n\n')), 'contextHash uses the original world source');
   assert.equal(h.diagnosisCalls[0][1][1].content.split(doctorWrapper).length - 1, 2);
 });
+test('prompt removes only complete rule copies from a larger background and preserves other sources', () => {
+  const rule = 'unique_field:\n  type: number\n  check: retain this complete rule';
+  const near = rule.replace('type: number', 'type: string');
+  const args = { instruction: 'INSTRUCTION', card: 'CARD', history: 'HISTORY', rules: rule,
+    originalBlock: '', previous: null, current: { value: 3 }, narrative: 'NARRATIVE',
+    userText: 'USER_INPUT', protectedPaths: ['/owned'], schemaMaterial: 'SCHEMA', groupMaterial: 'COVERAGE' };
+  const background = data => data.slice(data.indexOf('<背景设定>\n') + '<背景设定>\n'.length, data.indexOf('\n</背景设定>'));
+  const world = `BEFORE\n${near}\nAFTER\n\n${rule}`;
+  const data = composeDiagnosisMessages({ ...args, worldContext: world })[1].content;
+  assert.equal(data.split(rule).length - 1, 1, 'the complete authoritative rule remains once');
+  assert.ok(data.includes(`=== 本卡MVU字段规则（路径、类型、check）===\n${rule}`));
+  assert.ok(background(data).startsWith(`BEFORE\n${near}\nAFTER\n\n`), 'near-match and all surrounding facts stay intact');
+  assert.match(background(data), /\n\n【[^\n]+】\n\nCARD$/u);
+  for (const fact of ['HISTORY', 'NARRATIVE', 'USER_INPUT', 'SCHEMA', 'COVERAGE', '["/owned"]']) assert.ok(data.includes(fact));
+  const selected = composeDiagnosisMessages({ ...args, worldContext: rule })[1].content;
+  assert.equal(background(selected), `${rule}\n\nCARD`, 'an entire selected block keeps its original background role');
+  assert.equal(selected.split(rule).length - 1, 2, 'the equal-block branch is deliberately unchanged');
+  const similar = composeDiagnosisMessages({ ...args, worldContext: `BEFORE\n${near}\nAFTER` })[1].content;
+  assert.equal(background(similar), `BEFORE\n${near}\nAFTER\n\nCARD`);
+  for (const worldContext of [`sentence ${rule} continues`, `sentence ${rule}`, `BEFORE\n\n${rule}\n\nAFTER`]) {
+    const embedded = composeDiagnosisMessages({ ...args, worldContext })[1].content;
+    assert.equal(background(embedded), `${worldContext}\n\nCARD`, 'inline and non-tail matches keep their original context');
+  }
+});
+
+test('identical state JSON is sent once with both time roles; unequal or absent prior state is retained', () => {
+  const current = { actor: { hp: 8, inventory: ['synthetic-item'] }, marker: 'STATE_ONLY_VALUE' };
+  const args = { instruction: '', worldContext: 'WORLD', card: '', history: '', rules: 'RULE',
+    originalBlock: '', current, narrative: 'NEW_FACT', userText: 'ACTION', protectedPaths: [] };
+  const json = JSON.stringify(current, null, 2), snapshot = JSON.stringify(args);
+  const equalData = composeDiagnosisMessages({ ...args, previous: clone(current) })[1].content;
+  assert.equal(equalData.split(json).length - 1, 1);
+  assert.match(equalData, /更新前MVU与下方当前变量状态的完整JSON逐字相同/u);
+  assert.match(equalData, /不证明本轮应有的变化已经正确处理/u);
+  assert.ok(equalData.includes(`=== 当前变量状态（stat_data，官方MVU实际解析后的状态）===\n${json}`));
+  for (const previous of [{ ...current, actor: { ...current.actor, hp: 7 } }, { marker: current.marker, actor: current.actor }]) {
+    const data = composeDiagnosisMessages({ ...args, previous })[1].content;
+    assert.ok(data.includes(`【更新前MVU；缺失时不能臆造】\n${JSON.stringify(previous, null, 2)}`));
+    assert.ok(data.includes(`=== 当前变量状态（stat_data，官方MVU实际解析后的状态）===\n${json}`));
+    assert.doesNotMatch(data, /完整JSON逐字相同/u);
+  }
+  const absent = composeDiagnosisMessages({ ...args, previous: undefined })[1].content;
+  assert.match(absent, /本轮没有可用的前态/u);
+  assert.ok(absent.includes(json));
+  assert.equal(JSON.stringify(args), snapshot, 'presentation does not mutate the evidence snapshots');
+});
+
+test('prompt deduplication leaves source hashes and the single-call official write path intact', async () => {
+  const h = harness({ reply: () => '[]' });
+  const rule = 'coins tracks actual acquired money';
+  h.host.previousMvu = async () => ({ index: 0, payload: h.current() });
+  const before = h.current(), sourceContext = ['Synthetic world rules', rule].join('\n\n');
+  const record = await h.module.run(h.target), review = h.module.review();
+  assert.equal(record.ruleHash, await digest(rule));
+  assert.equal(record.contextHash, await digest(sourceContext));
+  assert.equal(review.rules, rule);
+  assert.deepEqual(review.before, before);
+  assert.deepEqual(review.previous.payload, before);
+  assert.equal(review.messages[1].content.split(rule).length - 1, 1);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.parsed.length, 1);
+  assert.deepEqual(h.current(), before);
+  assert.equal(record.status, 'model_nochange');
+  assert.equal(await h.module.validateReceipt(h.target, record), true);
+});
+
 test('the model reads official object state while the original pre-normalization operation remains reviewable', async () => {
   const h = harness({ reply: () => '[]' });
   const original = '<UpdateVariable><JSONPatch>[{"op":"insert","path":"/effects","value":"PRE_NORMALIZED_RECORD"}]</JSONPatch></UpdateVariable>';
