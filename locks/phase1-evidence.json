@@ -1,0 +1,329 @@
+{
+  "complete": true,
+  "rounds": 12,
+  "hardFailures": 0,
+  "hardFailuresDefinition": "Unresolved P1 runtime, parser, ownership, call-budget or persistence defects observed in this batch; model and upstream exceptions listed separately.",
+  "sourceFingerprint": "062e6f4e2296d860b6e6ce02357efd26ca4b329b890af8ec4a1e3ab088a7015c",
+  "stage": 1,
+  "version": "0.10.33",
+  "sourceCommit": "25d15508f255300c9f9c1e89e5d53216d3da914a",
+  "acceptanceScope": "P1 runtime, bounded manual repair, persistence and UI under retained model exceptions",
+  "functionalAcceptanceWithModelExceptions": true,
+  "mechanismAcceptance": true,
+  "semanticPass": false,
+  "strictAcceptance": false,
+  "zeroErrorAcceptance": false,
+  "realAcceptance": false,
+  "fullDoctorAcceptance": false,
+  "p2Ready": false,
+  "p3Ready": false,
+  "sameChat": true,
+  "normalRounds": 12,
+  "additionalPressureRounds": 1,
+  "pressure": {
+    "complete": true,
+    "sequence": 6,
+    "enteredDungeon": true,
+    "sameReplyMultipleNewNpcs": true,
+    "namedRosterCount": 5,
+    "allPhysicallyEncountered": false,
+    "correctionSha256": "3a2dc9fd7c149a1f38db52862d64cfdc50844715741de8396f9540f3a54d8643"
+  },
+  "roundReviewComplete": true,
+  "roundResults": [
+    {
+      "sequence": 2,
+      "kind": "reroll",
+      "validNormalReplies": 1,
+      "reviewSha256": "e971b461f602fe9bc425bf25324b905ea45d064254db8495a2c07f4831e7df3e",
+      "semanticPassAsOriginallyRecorded": false,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 1,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 3,
+      "kind": "next",
+      "validNormalReplies": 2,
+      "reviewSha256": "8427b90bed07a3f3dd5c98438b34b12b273852bf16a3c1ad9f0773fca661280d",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 4,
+      "kind": "next",
+      "validNormalReplies": 3,
+      "reviewSha256": "7df0aa48df9851acb9c2e4e2485d96f24f4623500ef5513fa23a1504f8184c75",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 5,
+      "kind": "next",
+      "validNormalReplies": 4,
+      "reviewSha256": "5390ff455fce164e17b49421cbcdb3679593c148cdfda4954dd14cbebfa1fb58",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 6,
+      "kind": "pressure",
+      "validNormalReplies": 4,
+      "reviewSha256": "08f1f01c366bf48c050a1aa00def57b73888a8a305d1b3c53a3886c5f0cf70de",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 7,
+      "kind": "next",
+      "validNormalReplies": 5,
+      "reviewSha256": "f3c91b236ef8c3d18093cc33c8a12f430b7295f0f2720be1563516f5282b5c7b",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 8,
+      "kind": "next",
+      "validNormalReplies": 6,
+      "reviewSha256": "81fdde254f4aca464f7a2d7e891ed0aa090e1bc49da78828372b1bea289e5396",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 9,
+      "kind": "next",
+      "validNormalReplies": 7,
+      "reviewSha256": "afefc027b51b821b1130cce6fbbcd00b890332829442438ea36f9167dff6ca83",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 1,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 10,
+      "kind": "next",
+      "validNormalReplies": 8,
+      "reviewSha256": "9bb06235b0cd43f4998f886f23cea7f795488e7803d37787ef0cf11a74d11835",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 1,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 11,
+      "kind": "next",
+      "validNormalReplies": 9,
+      "reviewSha256": "12b382cc94d97d72fbaba48a224e7269fb31723d4a82262ebaa0b2f910e6302f",
+      "semanticPassAsOriginallyRecorded": false,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 12,
+      "kind": "next",
+      "validNormalReplies": 10,
+      "reviewSha256": "8405dcf0ed9f1fe833039b5efe5a9aaba85707d214f5156fb4e235c50c972e4a",
+      "semanticPassAsOriginallyRecorded": true,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 13,
+      "kind": "next",
+      "validNormalReplies": 11,
+      "reviewSha256": "2a82dea2fb367cb49f0cec3b033dd6579805866ea78d12e160c22d7ec37da2ae",
+      "semanticPassAsOriginallyRecorded": false,
+      "laterOmissionRetained": true,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    },
+    {
+      "sequence": 14,
+      "kind": "next",
+      "validNormalReplies": 12,
+      "reviewSha256": "0f92519f45af2c3dfd4f883393e4dcfcc91a58dd5a892c0eeb957e4dd876668b",
+      "semanticPassAsOriginallyRecorded": false,
+      "laterOmissionRetained": false,
+      "independentlyReviewed": true,
+      "diskReadback": true,
+      "actualCardUiReviewed": true,
+      "automaticCalls": 1,
+      "manualCalls": 0,
+      "automaticRetries": 0
+    }
+  ],
+  "modelExceptions": [
+    {
+      "sequence": 2,
+      "code": "current_region_day_omitted_after_one_actual_manual_repair"
+    },
+    {
+      "sequence": 2,
+      "code": "manual_doctor_rationale_contains_day_claim_absent_from_final_projection"
+    },
+    {
+      "sequence": 11,
+      "code": "main_narrative_attributes_unrequested_subjective_security_and_internal_conclusion_to_player"
+    },
+    {
+      "sequence": 13,
+      "code": "main_narrative_repeats_unrequested_internal_emotional_cause_of_player_action"
+    },
+    {
+      "sequence": 14,
+      "code": "main_narrative_adds_unrequested_subjective_emotional_cause_to_authorized_outward_action"
+    },
+    {
+      "sequence": 13,
+      "code": "new_enemy_life_status_at_wounded_threshold_not_synchronized",
+      "discoveredDuringSequence": 14,
+      "subsequentlyCorrected": true,
+      "doesNotRetroactivelyPassPriorTurn": true
+    }
+  ],
+  "initialModelExceptions": [
+    {
+      "sequence": 9,
+      "code": "RECOVERY_CAP_APPLIED_AFTER_ACTION",
+      "resolvedByManualRepair": true
+    },
+    {
+      "sequence": 10,
+      "code": "POST_MVU_VALUE_MISTAKEN_FOR_PRE_ROUND",
+      "resolvedByManualRepair": true
+    }
+  ],
+  "upstreamExceptions": [
+    {
+      "sequence": 1,
+      "httpStatus": 503,
+      "doctorRequests": 0,
+      "validNormalReplies": 0,
+      "preserved": true
+    }
+  ],
+  "repairs": [
+    {
+      "sequence": 2,
+      "requests": 1,
+      "freshRepairMechanismVerified": true,
+      "targetedErrorCorrected": false,
+      "allModelErrorsGuaranteedCorrected": false
+    },
+    {
+      "sequence": 9,
+      "requests": 1,
+      "freshRepairMechanismVerified": true,
+      "targetedErrorCorrected": true,
+      "allModelErrorsGuaranteedCorrected": false
+    },
+    {
+      "sequence": 10,
+      "requests": 1,
+      "freshRepairMechanismVerified": true,
+      "targetedErrorCorrected": true,
+      "allModelErrorsGuaranteedCorrected": false
+    }
+  ],
+  "finalReadback": {
+    "passed": true,
+    "refreshCount": 1,
+    "restored": true,
+    "originalWaitFailed": true,
+    "autoLoadChat": false,
+    "sameChatExplicitlyReopened": true,
+    "extraRefreshes": 0,
+    "newModelCalls": 0,
+    "completeMemoryDiskDoctorAndCardUiEqual": true,
+    "readbackSha256": "9e75b0969a1c705df373a9bb3b98ac99b94ac3af5c4dce042189b90615785dd3"
+  },
+  "cost": {
+    "nativeCalls": 57,
+    "automaticP1Calls": 13,
+    "manualCalls": 3,
+    "otherNativeCalls": 41,
+    "automaticRetries": 0,
+    "automaticDurationMedianMs": 28027,
+    "automaticDurationMinMs": 17184,
+    "automaticDurationMaxMs": 38215,
+    "monetaryCostVerified": false
+  },
+  "testedConfiguration": {
+    "presetSha256": "7A552697CF8ED19AFA432BA86FF738188C4D93D856F815E1114FFB28451827A2",
+    "model": "[满血A]gemini-3.1-pro-preview",
+    "schemaHash": "67e5d6c27c56a69006118c5ae5271eddc89ff2153b92bcb1b1e816ec4ac20f43",
+    "rulesHash": "79a2b3d3acd9805a728e24d43af64f7be65e8c7187f7f7489f3c686e6984ff54",
+    "configHash": "90fd4fccb01fdba19631c4cadcc720e61dc02100bff71a0530334a04e57ff635"
+  },
+  "retainedLimitations": [
+    "One manual repair left its target omission unresolved.",
+    "A later correction does not retroactively pass an earlier model error.",
+    "Repeated unrequested player inner-state prose remains a preset constraint limitation.",
+    "P2/P3 and complete-turn performance require current-fingerprint validation."
+  ],
+  "originalBatchReviewSha256": "962a05b83bbb633fab523ed8e6ea93b77cc1200f5366f99ee7f3cc13c38ae686",
+  "evidenceHashChecks": 210,
+  "privateRawIncluded": false
+}

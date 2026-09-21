@@ -1,0 +1,35 @@
+{
+  "locked": true,
+  "stage": 1,
+  "version": "0.10.33",
+  "fingerprint": "062e6f4e2296d860b6e6ce02357efd26ca4b329b890af8ec4a1e3ab088a7015c",
+  "files": {
+    "compatibility/database-user-history.regex.json": "d997a23f11735a6a7fe737531aabd8c9172d77b0b6fbfb7531f50bb40a18764c",
+    "manifest.json": "292f5adde1ee4a3a934f03b256bccc936c33a1a749a86ec358fc1448a5000ef8",
+    "modular/entry.js": "981a88f8179e94a2535f052e268b8ff4dba0c302cf15d082b71c0ffea40853b9",
+    "modular/host.mjs": "c078e1831dbfbfc6f45d5cb2f0dec68efa9426b37076cc6d246af8b2cb4e0c9e",
+    "modular/lock.mjs": "65a63723b7f3426a3f58bd70a3cb8638f2e549164d92474c49e262589a7d8dfb",
+    "modular/runtime.mjs": "9e671b6ed933ceb7cd64eec799c1269961ccff7cf1fc14210076c361a0232b37",
+    "modular/store.mjs": "d4a5a85092b747527bd3344b4ce1413372a1a7681c78302198a6395c453ac1ad",
+    "modular/story-adapter.mjs": "79201e062862396425953f55e8e103fbeddc9740a7b53fef8432c95be1baea45",
+    "modular/style.css": "ccf67668e0753987aba4847d5008993922eca8ac35fb768304f330da00d973de",
+    "modular/transcript.mjs": "f415d7fa4fee84ac82a74eeaa8a3ef4c74ba300e293fb9acaf26c307f0d12fbd",
+    "modular/ui.mjs": "d5dad303bf454c6244b1dc1d3569121d9b30bd97a767d9c3d84bcdd17d626c3d",
+    "modular/variables/core.mjs": "4bcbff12f95aa43cce3a83548e44cc4aaf2fe2c40a97ca35b68c387c41f1449a",
+    "modular/variables/groups.mjs": "ddfae7790a3137dc5bf448734ea61ab7255133552a37a69246875fd3798dee15",
+    "modular/variables/module.mjs": "1c8c84c4d57550d8bd770fd9db73aafe6261688528f2370000f9cf9a5c888f0a",
+    "modular/variables/prompt.mjs": "eb93e327464ae3dfcaa6f2386e86e5b2ad5809e5edbbf200e71ae9dc2397adc5",
+    "vendor/story-oracle-v1.35.4/index.js": "54f21b08413247f9d643a7210e4800723299280e59c3a298aad0fc661a9c8b83",
+    "vendor/story-oracle-v1.35.4/style.css": "fd38097d908c5412a3138be750c94db005202f8848b6a3c10b9e7f83ba774ddb"
+  },
+  "acceptanceScope": "functional_mechanisms_with_retained_model_exceptions",
+  "strictAcceptance": false,
+  "fullDoctorAcceptance": false,
+  "realAcceptance": {
+    "complete": true,
+    "rounds": 12,
+    "hardFailures": 0,
+    "sourceFingerprint": "062e6f4e2296d860b6e6ce02357efd26ca4b329b890af8ec4a1e3ab088a7015c",
+    "summarySha256": "8d6ce8c7c5f581b5812d3887392ce4dc78152a63c213dc74315732d9c2a857de"
+  }
+}
