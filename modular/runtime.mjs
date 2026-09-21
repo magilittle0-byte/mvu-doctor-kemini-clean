@@ -90,7 +90,7 @@ export function createRuntime({ host, store, variables, lock = { locked: false }
     disableNative();
     ticket = { epoch, type, scope: canonical(host.scope()), baselineIndex: host.latestIndex(), received: null, ended: false };
     result = null;
-    setState({ status: 'waiting', detail: '正文正在生成，完成后再检查变量', busy: false });
+    setState({ status: 'waiting', detail: '正文正在生成，完成后再检查变量', busy: false, requestCount: 0 });
   }
   function received(index, type = '') {
     if (!ticket || canonical(host.scope()) !== ticket.scope || ['quiet', 'impersonate', 'first_message', 'command', 'extension'].includes(String(type))) return;

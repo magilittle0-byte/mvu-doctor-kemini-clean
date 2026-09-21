@@ -1031,6 +1031,50 @@ test('runtime requires generation end, waits500ms, uses fresh final and ignores 
   assert.equal(runtime.snapshot().modules.profiles, 'not_implemented'); assert.equal(runtime.snapshot().modules.world, 'not_implemented');
 });
 
+test('each new normal or swipe generation clears the prior request count before an upstream error reply', async t => {
+  for (const nextType of ['normal', 'swipe']) await t.test(nextType, async () => {
+    const scope = { chatId: `request-count-${nextType}` }, scopeKey = await digest(scope);
+    const calls = [], writes = [];
+    let target = null, baseline = 0;
+    const host = {
+      settings: () => ({ enabled: true }), scope: () => scope, latestIndex: () => baseline,
+      capture: async () => clone(target), delay: async () => {},
+    };
+    const store = { read: async () => null, write: async (key, value) => writes.push({ key, value: clone(value) }) };
+    const variables = { version: 'controlled', run: async (value, { onStatus }) => {
+      calls.push(clone(value));
+      onStatus({ status: 'checking', detail: 'synthetic request started', requestCount: 1, requestLimit: 1 });
+      return { status: 'model_nochange', operationCount: 0, readback: true };
+    } };
+    const runtime = createRuntime({ host, store, variables });
+    const settle = () => new Promise(resolve => setTimeout(resolve, 15));
+
+    runtime.started('normal');
+    target = { scopeKey, identity: 'accepted-first-turn', index: 1, userIndex: 1, content: 'Synthetic accepted narrative.' };
+    runtime.received(1, 'normal'); runtime.ended(); await settle();
+    assert.equal(runtime.snapshot().status, 'model_nochange');
+    assert.equal(runtime.snapshot().requestCount, 1, 'the first turn made one variable request');
+    assert.equal(calls.length, 1);
+
+    baseline = 1;
+    runtime.started(nextType);
+    assert.equal(runtime.snapshot().status, 'waiting');
+    assert.equal(runtime.snapshot().requestCount, 0, 'the new turn starts with its own zero count');
+    target = {
+      scopeKey, identity: `upstream-error-${nextType}`,
+      index: nextType === 'normal' ? 2 : 1, userIndex: nextType === 'normal' ? 2 : 1,
+      content: '[API error] synthetic upstream failure',
+    };
+    runtime.received(target.index, nextType); runtime.ended(); await settle();
+
+    assert.equal(runtime.snapshot().status, 'failed');
+    assert.equal(runtime.snapshot().code, 'host_generation_error');
+    assert.equal(runtime.snapshot().requestCount, 0);
+    assert.equal(calls.length, 1, 'an upstream error reply never starts a new variable request');
+    assert.deepEqual(writes.map(entry => entry.value.status), ['accepted', 'settled'], 'the failed upstream reply writes no variable receipt');
+  });
+});
+
 test('automatic checking off leaves a completed reply idle and still manually retryable', async () => {
   const scope = { chatId: 'manual-off' }, target = {
     scopeKey: await digest(scope), identity: 'accepted-manual-off', index: 1, userIndex: 1, content: '正文',
