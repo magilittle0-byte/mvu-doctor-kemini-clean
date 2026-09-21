@@ -1,10 +1,10 @@
 import { loadModuleLock } from '../modular/lock.mjs';
 
-const P1_VERSION = '0.10.30';
-const P1_FINGERPRINT = '39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e';
-const P2_VERSION = '0.1.0-candidate.5';
-const P2_FINGERPRINT = '0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33';
-const P2_LOCK_SHA256 = '49a674502a759ad166b940fae27392739e32e199e008eb3c0922013cbfc813f5';
+const P1_VERSION = '0.10.33';
+const P1_FINGERPRINT = '062e6f4e2296d860b6e6ce02357efd26ca4b329b890af8ec4a1e3ab088a7015c';
+const P2_VERSION = '0.1.0-candidate.11';
+const P2_FINGERPRINT = 'e56abba5de0d6b0896ed0c5da15e6f5e861864b92fdc55cef10a6d59794c7847';
+const P2_LOCK_SHA256 = 'ccd26b43b11b9cd0b91deab48d7f60a597f82d90bbb0c35131cf9cb2ff148416';
 const HASH = /^[0-9a-f]{64}$/u;
 const P1_DEPENDENCY_PATHS = ['locks/phase1.json', 'locks/phase1-evidence.json', 'locks/phase1-supporting-files.json'];
 const KNOWN_FAILURES = new Set(['unsafe_dependency_path', 'dependency_missing', 'dependency_read_failed', 'crypto_unavailable', 'text_decoder_unavailable', 'text_encoder_unavailable', 'p2_lock_malformed', 'p1_supporting_malformed']);
@@ -74,7 +74,7 @@ export async function loadWorldDependencies(root, { fetch: fetchImpl = globalThi
     if (!validMap(p2.files) || Object.keys(p2.files).length !== 10) {
       return { locked: false, reason: 'p2_runtime_map_invalid' };
     }
-    if (!validMap(p2.supportingFiles) || Object.keys(p2.supportingFiles).length !== 12) {
+    if (!validMap(p2.supportingFiles) || Object.keys(p2.supportingFiles).length !== 13) {
       return { locked: false, reason: 'p2_supporting_map_invalid' };
     }
     if (!p2.p1Dependencies || !exactKeys(p2.p1Dependencies, P1_DEPENDENCY_PATHS)

@@ -34,8 +34,8 @@ function fetchFor(files) {
 test('loads approved P1 and P2 dependency maps from bytes', async () => {
   const result = await loadWorldDependencies('https://fixture.test/', { fetch: fetchFor(fixture()), crypto: webcrypto });
   assert.equal(result.locked, true);
-  assert.equal(result.p1.fingerprint, '39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e');
-  assert.equal(result.p2.fingerprint, '0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33');
+  assert.equal(result.p1.fingerprint, '062e6f4e2296d860b6e6ce02357efd26ca4b329b890af8ec4a1e3ab088a7015c');
+  assert.equal(result.p2.fingerprint, 'e56abba5de0d6b0896ed0c5da15e6f5e861864b92fdc55cef10a6d59794c7847');
 });
 
 test('fails closed when a P2 runtime byte is changed or missing', async () => {

@@ -3,7 +3,7 @@ import { createNativeWorldEngine, worldModelInput } from './engine.mjs';
 import { worldInstruction } from './content.mjs';
 import { buildDeliveries, makeRecall, settleDeliveries } from './recall.mjs';
 
-export const WORLD_VERSION = '0.1.0-candidate.6';
+export const WORLD_VERSION = '0.1.0-candidate.7';
 const PROMPT_KEY = 'mvu_doctor_world_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready',
   'variable_evidence_changed', 'stale_profiles', 'profiles_pending', 'profiles_unavailable']);
