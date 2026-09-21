@@ -43,11 +43,64 @@ export function createVariableModule({ host, store, story }) {
     const so = story();
     const mvu = await so.getMvu(); assert();
     if (!mvu?.getMvuData || !mvu.parseMessage || !mvu.replaceMvuData) throw fault('mvu_unavailable', '尚未取得MVU官方读写接口');
+    const wait = async ms => { assert(); await host.delay(ms, signal); assert(); };
     phase('waiting_mvu', '正在等待本轮MVU自身更新完成');
-    while (so.mvuIsBusy(mvu)) { await host.delay(200, signal); assert(); }
+    while (so.mvuIsBusy(mvu)) await wait(200);
+    if (reason === 'auto') await wait(1600);
     const options = { type: 'message', message_id: target.index };
     const read = async () => { assert(); const payload = clone(await mvu.getMvuData(options)); assert(); return payload; };
-    const before = await read();
+    phase('waiting_mvu', '正在等待本楼完整变量快照稳定');
+    const settleSnapshot = async () => {
+      const limitMs = 8000;
+      let elapsedMs = 0;
+      let lastWallTime = Date.now();
+      let previousSnapshot = null;
+      let matchingReads = 0;
+      const accountElapsed = () => {
+        const now = Date.now();
+        elapsedMs += Math.max(0, now - lastWallTime);
+        lastWallTime = now;
+      };
+      const waitWithinLimit = async requestedMs => {
+        const remainingMs = limitMs - elapsedMs;
+        if (remainingMs <= 0) return false;
+        const duration = Math.min(requestedMs, remainingMs);
+        const started = Date.now();
+        await wait(duration);
+        const ended = Date.now();
+        // Real hosts consume wall time; controlled test hosts may resolve delay
+        // immediately, so also account for the requested interval to keep this
+        // loop bounded under either clock.
+        elapsedMs += Math.max(duration, ended - started);
+        lastWallTime = ended;
+        return true;
+      };
+      while (elapsedMs <= limitMs) {
+        assert();
+        if (so.mvuIsBusy(mvu)) {
+          previousSnapshot = null;
+          matchingReads = 0;
+          if (!await waitWithinLimit(200)) break;
+          continue;
+        }
+        const snapshot = await read();
+        accountElapsed();
+        if (so.mvuIsBusy(mvu)) {
+          previousSnapshot = null;
+          matchingReads = 0;
+          if (!await waitWithinLimit(200)) break;
+          continue;
+        }
+        if (elapsedMs > limitMs) break;
+        if (!usable(snapshot)) throw fault('mvu_snapshot_missing', '本楼尚无可用变量快照，不能用空数据检查');
+        if (previousSnapshot && equal(snapshot, previousSnapshot)) matchingReads++;
+        else { previousSnapshot = snapshot; matchingReads = 0; }
+        if (matchingReads >= 3) return snapshot;
+        if (elapsedMs >= limitMs || !await waitWithinLimit(250)) break;
+      }
+      throw fault('mvu_snapshot_unstable', '本楼变量快照未能在8秒内稳定，未发送模型请求；请待前端更新完成后主动重试');
+    };
+    const before = await settleSnapshot();
     if (!usable(before)) throw fault('mvu_snapshot_missing', '本楼尚无可用变量快照，不能用空数据检查');
     const previous = await host.previousMvu(target, mvu); assert();
     const ctx = host.contextSnapshot(target);

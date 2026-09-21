@@ -290,7 +290,7 @@ function harness(overrides = {}) {
   const routeContext = { chatCompletionSettings: defaults, getPresetManager: () => ({ getCompletionPresetByName: () => preset }),
     ConnectionManagerRequestService: { getProfile(id) { if (profile.id !== id) throw Error('missing'); return profile; }, validateProfile: () => ({ selected: 'openai', source: 'custom' }) } };
   const routeHost = createHost(() => routeContext, async () => proxies);
-  const values = new Map(), calls = [], diagnosisCalls = [], parsed = [], writes = [], saves = [], eventSource = receiptEvents();
+  const values = new Map(), calls = [], diagnosisCalls = [], parsed = [], writes = [], saves = [], delays = [], eventSource = receiptEvents();
   const target = { scopeKey: 'chat-a', identity: 'reply-a', index: 2, swipeId: 0, content: '获奖7枚金币。', userText: '领取奖励。' };
   const host = {
     modelRouteHash: routeHost.modelRouteHash,
@@ -301,12 +301,12 @@ function harness(overrides = {}) {
     variableSchemaMaterial: () => schemaDrift ? 'changed schema' : '',
     async saveChat(_target, candidate) { saves.push(clone(candidate)); if (saveFailure) throw fault('host_mvu_durable_mismatch', 'failed'); },
     async readback() { if (saveFailure) throw fault('host_mvu_durable_mismatch', 'failed'); },
-    delay: async () => {},
+    delay: async ms => { delays.push(ms); await overrides.delay?.(ms); },
     parseMvuCandidate: (_target, mvu, block, before) => parseOfficialCandidate({ mvu, block, before, eventSource, assertCurrent: () => host.assertTarget() }),
   };
   const mvu = {
     events: { COMMAND_PARSED: 'synthetic_commands' },
-    getMvuData: async () => clone(current),
+    getMvuData: async (...args) => { await overrides.beforeRead?.(clone(current), ...args); return clone(current); },
     parseMessage: async (block, input) => {
       parsed.push({ block, input: clone(input) });
       const operations = parsePatch(block).operations, commands = operations.map(op => ({ type: op.op, full_match: JSON.stringify(op) }));
@@ -321,7 +321,7 @@ function harness(overrides = {}) {
     replaceMvuData: async (value, options) => { writes.push({ value: clone(value), options }); current = clone(value); },
   };
   const settings = { mode: 'profile', profileId: 'synthetic-model', maxTokens: 4096 };
-  const so = { getMvu: async () => mvu, mvuIsBusy: () => false, getSettings: () => settings,
+  const so = { getMvu: async () => mvu, mvuIsBusy: () => overrides.mvuIsBusy?.() ?? false, getSettings: () => settings,
     diagPickerActive: () => false, collectMvuUpdateRules: async () => ['coins tracks actual acquired money'],
     wiContextMode: () => 'st', buildWorldInfo: async () => 'Synthetic world rules',
     resolveModePrompt: settings => settings.diagnoseSystemPrompt || nativePrompt,
@@ -340,7 +340,7 @@ function harness(overrides = {}) {
   };
   const store = { read: async key => clone(values.get(key) ?? null), write: async (key, value) => { values.set(key, clone(value)); await overrides.onStore?.(key, value); } };
   const module = createVariableModule({ host, store, story: () => so });
-  return { module, host, store, so, mvu, target, values, calls, diagnosisCalls, parsed, writes, saves, settings, profile, preset, defaults, proxies, routeContext,
+  return { module, host, store, so, mvu, target, values, calls, diagnosisCalls, parsed, writes, saves, delays, settings, profile, preset, defaults, proxies, routeContext,
     change: value => { current = value; }, stale: () => { stale = true; }, driftScope: () => { scopeDrift = true; }, driftSchema: () => { schemaDrift = true; }, failSave: value => { saveFailure = value; }, current: () => clone(current) };
 }
 test('native prompt override removes conflicting stored-equals-correct instructions and keeps output contract', async () => {
@@ -725,10 +725,86 @@ test('manual feedback is omitted when the current baseline no longer matches the
   assert.equal(h.diagnosisCalls[1][1].some(message => /未通过校验、未保存的上一份模型候选/u.test(String(message.content))), false);
 });
 
+test('automatic diagnosis absorbs the frontend log clear before choosing baseline and model input', async () => {
+  let h, elapsed = 0, consumed = false;
+  h = harness({ delay: async ms => {
+    const before = elapsed; elapsed += ms;
+    if (!consumed && before < 1000 && elapsed >= 1000) {
+      consumed = true;
+      h.change({ stat_data: { coins: 7, systemLog: [] } });
+    }
+  }, reply: () => '[]' });
+  h.change({ stat_data: { coins: 7, systemLog: ['frontend-owned entry'] } });
+  const receipt = await h.module.run(h.target);
+  assert.equal(consumed, true);
+  assert.deepEqual(receipt.before.stat_data, { coins: 7, systemLog: [] });
+  const sent = h.diagnosisCalls[0][1].map(message => message.content).join('\n');
+  assert.ok(sent.includes(JSON.stringify({ coins: 7, systemLog: [] }, null, 2)), 'model input uses the settled cleared snapshot');
+  assert.deepEqual(h.delays, [1600, 250, 250, 250]);
+  assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0);
+});
+
+test('manual diagnosis skips startup grace but requires three matching reads after the baseline', async () => {
+  const h = harness({ reply: () => '[]' });
+  await h.module.run(h.target, { reason: 'manual' });
+  assert.deepEqual(h.delays, [250, 250, 250]);
+  assert.equal(h.calls.length, 1);
+});
+
+test('snapshot instability times out within the bounded local gate without request or write', async () => {
+  let h, sequence = 0;
+  h = harness({ delay: async ms => {
+    if (ms === 250) h.change({ stat_data: { coins: 7, systemLog: [++sequence] } });
+  } });
+  h.change({ stat_data: { coins: 7, systemLog: [0] } });
+  await assert.rejects(h.module.run(h.target), { code: 'mvu_snapshot_unstable' });
+  const stabilityWaitMs = h.delays.slice(1).reduce((sum, ms) => sum + ms, 0);
+  assert.ok(stabilityWaitMs >= 7500 && stabilityWaitMs <= 8000);
+  assert.ok(h.delays.length <= 34, 'instant test delays cannot create an unbounded polling loop');
+  assert.equal(h.calls.length, 0); assert.equal(h.parsed.length, 0);
+  assert.equal(h.writes.length, 0); assert.equal(h.saves.length, 0);
+});
+
+test('a busy transition resets stable reads instead of accepting the earlier matches', async () => {
+  let busy = false, activated = false;
+  const h = harness({
+    mvuIsBusy: () => busy,
+    delay: async ms => {
+      if (ms === 250 && !activated) { activated = true; busy = true; }
+      else if (ms === 200 && busy) busy = false;
+    },
+    reply: () => '[]',
+  });
+  await h.module.run(h.target);
+  assert.deepEqual(h.delays, [1600, 250, 200, 250, 250, 250]);
+  assert.equal(h.calls.length, 1);
+});
+
+test('cancel and target changes during settlement stop before model request', async t => {
+  await t.test('cancel', async () => {
+    const controller = new AbortController();
+    const h = harness({ delay: async ms => { if (ms === 250) controller.abort(); } });
+    await assert.rejects(h.module.run(h.target, { signal: controller.signal, reason: 'manual' }), { code: 'cancelled' });
+    assert.equal(h.calls.length, 0); assert.equal(h.writes.length, 0);
+  });
+  await t.test('target changed', async () => {
+    let h;
+    h = harness({ delay: async ms => { if (ms === 250) h.stale(); } });
+    await assert.rejects(h.module.run(h.target, { reason: 'manual' }), { code: 'stale_target' });
+    assert.equal(h.calls.length, 0); assert.equal(h.writes.length, 0);
+  });
+  await t.test('target changed during a fresh read', async () => {
+    let h;
+    h = harness({ beforeRead: () => h.stale() });
+    await assert.rejects(h.module.run(h.target, { reason: 'manual' }), { code: 'stale_target' });
+    assert.equal(h.calls.length, 0); assert.equal(h.writes.length, 0);
+  });
+});
+
 test('late model response after variable edit is discarded without parse or write', async () => {
   const h = harness({ reply() { h.change({ stat_data: { coins: 8 } }); return '[]'; } });
   await assert.rejects(h.module.run(h.target), { code: 'stale_mvu' });
-  assert.equal(h.writes.length, 0); assert.equal(h.parsed.length, 0);
+  assert.equal(h.calls.length, 1); assert.equal(h.writes.length, 0); assert.equal(h.parsed.length, 0);
 });
 test('late model response after chat switch is discarded', async () => {
   const h = harness({ reply() { h.stale(); return '[]'; } });
