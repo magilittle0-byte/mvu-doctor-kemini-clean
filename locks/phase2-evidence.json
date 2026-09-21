@@ -1,13 +1,17 @@
 {
-  "schema": "mvu-p2-r5-public-summary/v1",
+  "schema": "mvu-p2-r12-public-summary/v1",
+  "previewOnly": false,
   "stage": 2,
   "complete": true,
   "mechanismAcceptance": true,
   "fullDoctorAcceptance": false,
-  "version": "0.1.0-candidate.5",
-  "sourceHead": "eb538a2942a751df2f9958cb8b2aa4972df1cbcb",
-  "sourceFingerprint": "0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33",
-  "p1Fingerprint": "39deb6d8427e79742292d7fbf60b4e6fd9acaf7376a128770b5055c2966acb5e",
+  "strictAcceptance": false,
+  "version": "0.1.0-candidate.11",
+  "sourceHead": "e62a857d3f9c397659c4dad426d31cbff48e6225",
+  "sourceFingerprint": "e56abba5de0d6b0896ed0c5da15e6f5e861864b92fdc55cef10a6d59794c7847",
+  "p1Version": "0.10.33",
+  "p1Fingerprint": "062e6f4e2296d860b6e6ce02357efd26ca4b329b890af8ec4a1e3ab088a7015c",
+  "p1ModelExceptionCount": 6,
   "normalCount": 12,
   "pressureCount": 1,
   "rounds": [
@@ -16,1409 +20,2137 @@
       "kind": "first",
       "index": 2,
       "swipeId": 0,
+      "contentHash": "a6a81bd0b27648a0adc370a035be39d109e47280a85240d0e2ba88618c3d12bb",
+      "inputHash": "782dade6e4be515a3c2ed07a4fee87f7b4ea5d73e18ba6c9a211ccd7406dff37",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "ee22bd895b7cf0f6916b16102780567bfb493fcdd68eb01756c1a450369b2258",
+      "p1RecordHash": "2be188c277373f2a2b803a19d27b24085737e275cccc62dd4d21316a5e24a93b",
+      "p2RecordHash": "4d7ab036b793f8aa8f5feb78c086eb5e2d3ab8f349a68f8629fb5f67b06a3115",
       "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
-      "modelExceptions": [
-        {
-          "module": null,
-          "code": null,
-          "sourceSequence": null,
-          "inherited": false,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": 1,
-          "repairRecovered": true,
-          "semanticErrorFixed": null,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": false
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": true,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": false,
+          "sameReplyMultipleNewNpcs": false,
+          "all44FieldsRead": true,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": null
         }
-      ],
-      "modelFailureContained": false,
-      "mode": null,
+      },
+      "modelExceptions": [],
+      "modelExceptionCount": 0,
+      "inheritedProfileModelExceptions": null,
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": null,
+        "codeFailureConfirmed": null,
+        "unresolvedCodeFailure": null,
+        "codeFailuresObservedCount": null,
+        "addendum": {
+          "file": "seq1-root-code-assessment-addendum.json",
+          "sha256": "4002e402b691294e6b95e2c33b9d4e6d7c565f7f3702142c6b6c86d071acb752"
+        }
+      },
       "cost": {
-        "source": "seq1-cost-summary.json",
-        "sequence": 1,
-        "wholeTavernCalls": 7,
-        "doctorCalls": 5,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 2,
-        "manualButtonClicks": 1,
-        "automaticRetries": 0,
-        "totalTokens": 389248
+        "doctorPromptTokens": 125340,
+        "paidDoctorRequests": 2,
+        "otherRequests": 2,
+        "totalNativeRequests": 4,
+        "normalDoctorWallMs": 54809,
+        "p1DurationMs": 29102,
+        "p2DurationMs": 25194,
+        "mainDurationMs": 50212
       },
       "evidence": {
         "release": {
           "file": "seq1-review-release.json",
-          "sha256": "537dfbb9776573bc28aa3b0973b18a317c52a870da8e131286ae638e6e10868d"
+          "sha256": "e9f49bbf0b626080ce4c32dd174f80524f2c77bfe47204ab439158e1d1f437e3"
         },
-        "root": {
+        "rootReview": {
           "file": "seq1-root-review.json",
-          "sha256": "70f6799d72c01815341d8720c6c701df4d94eb8ead68b2ef0f4ec499315210af"
+          "sha256": "2abd59e5095e2ffc07a548c7d433fb033fe6b084591b09da174f0acdc4cbc9c4"
         },
-        "meta": {
-          "file": "seq1-mvu-final-meta-manual.json",
-          "sha256": "3a03e35fbd301803dd9451f84591d3afb3eb6237ce5ec6d95fbf5312a69bddd1"
+        "matchingMeta": {
+          "file": "seq1-mvu-final-meta-initial.json",
+          "sha256": "d5d2311679a095254b506a0f5915c28d11bdbeeebace419d57b75f4e1f0dafcb"
         },
-        "additional": [],
-        "p1Failure": null
-      }
+        "matchingSnapshot": {
+          "file": "seq1-initial-snapshot.json",
+          "sha256": "056cf2446fe7037455d2c13d8a8225c694d265117c77b730d72df9283b4e3ebe"
+        },
+        "codeFailureAddendum": {
+          "file": "seq1-root-code-assessment-addendum.json",
+          "sha256": "4002e402b691294e6b95e2c33b9d4e6d7c565f7f3702142c6b6c86d071acb752"
+        },
+        "rootReferences": [
+          {
+            "file": "seq1-mvu-final-meta-initial.json",
+            "sha256": "d5d2311679a095254b506a0f5915c28d11bdbeeebace419d57b75f4e1f0dafcb"
+          },
+          {
+            "file": "seq1-initial-snapshot.json",
+            "sha256": "056cf2446fe7037455d2c13d8a8225c694d265117c77b730d72df9283b4e3ebe"
+          },
+          {
+            "file": "seq1-cost-observed.json",
+            "sha256": "72b717e5dbb4a11ed54d835b5108f4469b0f0885211797297667e5040d99669b"
+          },
+          {
+            "file": "seq1-initial-read-pages-cleanup.json",
+            "sha256": "345998620a6819d5a5297a3382bc52b8f4dd4cd7511097077dd083baa83e99fd"
+          },
+          {
+            "file": "seq1-front-visual-review.json",
+            "sha256": "d52629e1933348e28a7b28681f1ab65425ac33ac1167761fa42886e3936acf3c"
+          }
+        ],
+        "retainedAttempts": [
+          {
+            "file": "seq1-mvu-final-meta-initial.json",
+            "sha256": "d5d2311679a095254b506a0f5915c28d11bdbeeebace419d57b75f4e1f0dafcb"
+          },
+          {
+            "file": "seq1-initial-snapshot.json",
+            "sha256": "056cf2446fe7037455d2c13d8a8225c694d265117c77b730d72df9283b4e3ebe"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 2,
       "kind": "next",
       "index": 4,
       "swipeId": 0,
+      "contentHash": "810a6ec8a75db2f5d0bac7d2dc9c00b79f94d208d5b82462382adac9a3a4bb95",
+      "inputHash": "efcd7b5852959f1e311b6bbbae10c83d7a67125311efe8a6c2e743ec3bec9c11",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "e670cdd0590b55cb8b1f1354f4aa0294f77bc64f69526ae94b1f7c8cce349e6a",
+      "p1RecordHash": "04a30cea1a2e61e4964b7fc92be138e142c1a18f1d9351b9ce9e6b7900d0b110",
+      "p2RecordHash": "91960f0176b3fe1132eb47c336888516167ff7b06ecb0a6224586fb90734f9f2",
       "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": true,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": false,
+          "sameReplyMultipleNewNpcs": false,
+          "all44FieldsRead": true,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 0,
+      "inheritedProfileModelExceptions": null,
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": null,
+        "codeFailureConfirmed": null,
+        "unresolvedCodeFailure": null,
+        "codeFailuresObservedCount": null,
+        "addendum": {
+          "file": "seq2-root-code-assessment-addendum.json",
+          "sha256": "ae9ac6c06cb3523b185302546cc8e973533cdeb6cae9f3589f3f9299bf7919ff"
+        }
+      },
       "cost": {
-        "source": "seq2-cost-summary.json",
-        "sequence": 2,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 0,
-        "manualButtonClicks": 0,
-        "automaticRetries": 0,
-        "totalTokens": 283632
+        "doctorPromptTokens": 107691,
+        "paidDoctorRequests": 2,
+        "otherRequests": 3,
+        "totalNativeRequests": 5,
+        "normalDoctorWallMs": 34852,
+        "p1DurationMs": 21915,
+        "p2DurationMs": 12443,
+        "mainDurationMs": 25673
       },
       "evidence": {
         "release": {
           "file": "seq2-review-release.json",
-          "sha256": "310e970da6f0fe5430e6b7326302f18bcfb90ddccfc6b86d8667b2838c7e05e7"
+          "sha256": "757c3cb84428d765753db3c911c774e7739c43894df9659555a7e85af7f5a8df"
         },
-        "root": {
+        "rootReview": {
           "file": "seq2-root-review.json",
-          "sha256": "be731059447491b2ac0990acc86e8451f0c8b29229ad8a077afcc10f160ee06f"
+          "sha256": "a3cd8060906f4cbd0548d494fa521a9723cff0856aebe9667b819784d37bb624"
         },
-        "meta": {
+        "matchingMeta": {
           "file": "seq2-mvu-final-meta-initial.json",
-          "sha256": "2036f3dde57d1586cdc7d7280e2a02c76864ba51de608c5017f8dc080b72fe83"
+          "sha256": "88e2bddf2c34d1e614353b4b65ce65cf64ffa25853f93b17f6aa63e149f5fad0"
         },
-        "additional": [],
-        "p1Failure": null
-      }
+        "matchingSnapshot": {
+          "file": "seq2-initial-snapshot.json",
+          "sha256": "b71592ad467e8fa47330c7a1b13dbb8f5d613c88f961c0f8230d552d8c8dc5f9"
+        },
+        "codeFailureAddendum": {
+          "file": "seq2-root-code-assessment-addendum.json",
+          "sha256": "ae9ac6c06cb3523b185302546cc8e973533cdeb6cae9f3589f3f9299bf7919ff"
+        },
+        "rootReferences": [
+          {
+            "file": "seq2-mvu-final-meta-initial.json",
+            "sha256": "88e2bddf2c34d1e614353b4b65ce65cf64ffa25853f93b17f6aa63e149f5fad0"
+          },
+          {
+            "file": "seq2-initial-snapshot.json",
+            "sha256": "b71592ad467e8fa47330c7a1b13dbb8f5d613c88f961c0f8230d552d8c8dc5f9"
+          },
+          {
+            "file": "seq2-cost-observed.json",
+            "sha256": "d0aa6c46bfeeb01115fb5e50c80eaa108e3298aa29d821558f2e99a1cecd70ba"
+          },
+          {
+            "file": "seq2-initial-read-pages-cleanup.json",
+            "sha256": "394bf2c8c068e61085fabcadbf3a94caf86ebf727924607682cf91525051ce44"
+          },
+          {
+            "file": "seq2-recall-meta-capture.json",
+            "sha256": "74c59454f787475efa9e8e203b921ffd6ae089b0186859df45a7bf4642456548"
+          },
+          {
+            "file": "seq2-recall-meta-settled.json",
+            "sha256": "52dd57d7e985fc036c90a8f516e911209d45838fcffde8adae6fcaaf7373eb45"
+          }
+        ],
+        "retainedAttempts": [
+          {
+            "file": "seq2-mvu-final-meta-initial.json",
+            "sha256": "88e2bddf2c34d1e614353b4b65ce65cf64ffa25853f93b17f6aa63e149f5fad0"
+          },
+          {
+            "file": "seq2-initial-snapshot.json",
+            "sha256": "b71592ad467e8fa47330c7a1b13dbb8f5d613c88f961c0f8230d552d8c8dc5f9"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 3,
       "kind": "next",
       "index": 6,
       "swipeId": 0,
+      "contentHash": "b2df8017ba5881e627fdda653c43140c3b12ae63d4e17f7319f40d8edd1aedea",
+      "inputHash": "b056a123c3b9011486fc876d8d79cb6fbb3fd723df196ff5b137b19ae68211d8",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "3b5497bf5c6c8bec75f0ec52bbf01c91c03e658f83c204ef861e0d430d736553",
+      "p1RecordHash": "398ed212df551d365e9a169d91a367a69cd6b5e70b94f83d55bd43ecd27f6543",
+      "p2RecordHash": "ca0120efe400b073c7123aeb4f9a659a540122dd23d5a9675c39d17414513aec",
       "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
-      "modelExceptions": [],
-      "modelFailureContained": false,
-      "mode": null,
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": true,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": false,
+          "sameReplyMultipleNewNpcs": false,
+          "all44FieldsRead": true,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
+      "modelExceptions": [
+        {
+          "module": "host-upstream",
+          "code": "stream_read_interrupted_after_complete_narrative_and_options",
+          "sourceSequence": null,
+          "observed": null,
+          "repaired": false,
+          "inherited": null,
+          "classification": null,
+          "repairAttempted": null,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": null
+        }
+      ],
+      "modelExceptionCount": 1,
+      "inheritedProfileModelExceptions": null,
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": null,
+        "codeFailureConfirmed": null,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": null,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq3-cost-summary.json",
-        "sequence": 3,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 0,
-        "manualButtonClicks": 0,
-        "automaticRetries": 0,
-        "totalTokens": 309007
+        "doctorPromptTokens": 112221,
+        "paidDoctorRequests": 2,
+        "otherRequests": 3,
+        "totalNativeRequests": 5,
+        "normalDoctorWallMs": 41802,
+        "p1DurationMs": 22951,
+        "p2DurationMs": 17399,
+        "mainDurationMs": 227053
       },
       "evidence": {
         "release": {
           "file": "seq3-review-release.json",
-          "sha256": "3d437d497d0a5164a6ed00a128a59471c01cfeb8d4dd667155da0d0b6b3d665a"
+          "sha256": "e42f8f8efb3e9754498ff0d79eb46979044a337b59caa22196966f10580ff9d1"
         },
-        "root": {
+        "rootReview": {
           "file": "seq3-root-review.json",
-          "sha256": "7a763891f2e1e7e20fd8b98869a518d6fbca43a9837c609cb3acb333f31249a2"
+          "sha256": "8619a3d716df08e7b432ff891a5a1b65dcbdf287f2ea1694678962af9b3c6ca6"
         },
-        "meta": {
+        "matchingMeta": {
           "file": "seq3-mvu-final-meta-initial.json",
-          "sha256": "2f14804c5533f15d1d3fd7e73b564f40af72aa3802c10b5fa3b8afd3065343d3"
+          "sha256": "1137cfda6c7748669a5fdc70cbea12d1aaa1f63081ed3dc53fe90dff60e2f2e7"
         },
-        "additional": [],
-        "p1Failure": null
-      }
+        "matchingSnapshot": {
+          "file": "seq3-initial-snapshot.json",
+          "sha256": "84a35a65f7c83a431b21be8dde7d1059a815dfdbd77d801826b95b2935d9ec47"
+        },
+        "codeFailureAddendum": null,
+        "rootReferences": [
+          {
+            "file": "seq3-mvu-final-meta-initial.json",
+            "sha256": "1137cfda6c7748669a5fdc70cbea12d1aaa1f63081ed3dc53fe90dff60e2f2e7"
+          },
+          {
+            "file": "seq3-initial-snapshot.json",
+            "sha256": "84a35a65f7c83a431b21be8dde7d1059a815dfdbd77d801826b95b2935d9ec47"
+          },
+          {
+            "file": "seq3-cost-observed.json",
+            "sha256": "f60644a3ee777a39b9701f24652dfe010586226c1ffb001ef9165e3eb86a9506"
+          },
+          {
+            "file": "seq3-initial-read-pages-cleanup.json",
+            "sha256": "de8ab1b1483768acd5522a8f8790b54cfe66be01b33ea609b4ef6b9f02ffb17b"
+          },
+          {
+            "file": "seq3-recall-meta-capture.json",
+            "sha256": "2924f3bc2aab2245eb210f4fc65a26819c71bce6329b76280d4937b11dfa92ba"
+          },
+          {
+            "file": "seq3-recall-meta-settled.json",
+            "sha256": "37ee1a531ea18cf82898541a8d59ae4e470ceeba302ec943f0e637d950971a10"
+          }
+        ],
+        "retainedAttempts": [
+          {
+            "file": "seq3-mvu-final-meta-initial.json",
+            "sha256": "1137cfda6c7748669a5fdc70cbea12d1aaa1f63081ed3dc53fe90dff60e2f2e7"
+          },
+          {
+            "file": "seq3-initial-snapshot.json",
+            "sha256": "84a35a65f7c83a431b21be8dde7d1059a815dfdbd77d801826b95b2935d9ec47"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 4,
       "kind": "next",
       "index": 8,
       "swipeId": 0,
-      "p2Status": "restored",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
-      "modelExceptions": [
-        {
-          "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": null,
-          "inherited": false,
-          "initialFailureRetained": true,
-          "repairAttempted": true,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": 1,
-          "repairRecovered": false,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
+      "contentHash": "ab0799bf9a0690dbfc90c3e7a2e1fc928e74c90541a2c0f0dde266279ac02a93",
+      "inputHash": "f4e12886690932b1d82cbea56f1ecd3389dd4c7c0177576601a35272daa07a33",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "3b5497bf5c6c8bec75f0ec52bbf01c91c03e658f83c204ef861e0d430d736553",
+      "p1RecordHash": "72bd2dd8e3f3ab17b9b893958fc465b171a6bfb15ccb2ae363417a3dca068804",
+      "p2RecordHash": "542151889abc9b0f89cade2cd11fa658b6e88588dcc7a7060405ff231bd29eb6",
+      "p2Status": "complete",
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": true,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": false,
+          "sameReplyMultipleNewNpcs": false,
+          "all44FieldsRead": true,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
         }
-      ],
-      "modelFailureContained": false,
-      "mode": null,
+      },
+      "modelExceptions": [],
+      "modelExceptionCount": 0,
+      "inheritedProfileModelExceptions": null,
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": null,
+        "codeFailureConfirmed": null,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": null,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq4-cost-final-summary.json",
-        "sequence": 4,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 2,
-        "manualDoctorCalls": 1,
-        "manualButtonClicks": 1,
-        "automaticRetries": 0,
-        "totalTokens": 334126
+        "doctorPromptTokens": 104394,
+        "paidDoctorRequests": 2,
+        "otherRequests": 3,
+        "totalNativeRequests": 5,
+        "normalDoctorWallMs": 65727,
+        "p1DurationMs": 42642,
+        "p2DurationMs": 21458,
+        "mainDurationMs": 29141
       },
       "evidence": {
         "release": {
           "file": "seq4-review-release.json",
-          "sha256": "346b7214b6dabaab604db46d06acc6f1ddeabb38e8177deaa59fe8ce7812ffdf"
+          "sha256": "6e87968cd89e870890b2905c76c1b4a6d43bc3799d3d117c78faae0dd5bb2a03"
         },
-        "root": {
+        "rootReview": {
           "file": "seq4-root-review.json",
-          "sha256": "8c69394e3fb899426a2b646c6fa17f9242da1f1d38d4612d2b1a5c3562794eee"
+          "sha256": "b4dd5d5dda3748f422f15794464a1071359944b4ec7757dbe439de6ba58ce738"
         },
-        "meta": {
+        "matchingMeta": {
           "file": "seq4-mvu-final-meta-initial.json",
-          "sha256": "57ae0ca33bbf4d0f51f5a4ee3d34d507c8cb7b44e197b5bd7e527a1db7109319"
+          "sha256": "daf74d6bbbf07848af756368941de92c53cdd513656f1558cfecdff1c60b2274"
         },
-        "additional": [
+        "matchingSnapshot": {
+          "file": "seq4-initial-snapshot.json",
+          "sha256": "d6d43538ec8f0e5eabd86ff86365bb1532bda59b43fb8adb68a2c8905e85ad2a"
+        },
+        "codeFailureAddendum": null,
+        "rootReferences": [
           {
-            "file": "checkpoint-4-failed.json",
-            "sha256": "4dfcc0b525ab11d3497296c84fde8221ff9318650306e9bcaa80f36804240e22"
+            "file": "seq4-mvu-final-meta-initial.json",
+            "sha256": "daf74d6bbbf07848af756368941de92c53cdd513656f1558cfecdff1c60b2274"
           },
           {
-            "file": "seq4-p1-independent-review.json",
-            "sha256": "4cbd2b24afcd95f320910cb163320d3f8dc16707c2338052cd108c1c72193396"
+            "file": "seq4-initial-snapshot.json",
+            "sha256": "d6d43538ec8f0e5eabd86ff86365bb1532bda59b43fb8adb68a2c8905e85ad2a"
           },
           {
-            "file": "seq4-p1-manual-independent-review.json",
-            "sha256": "af38a2a1f11f758a6d581c226e9b0647c72c4ca18f5f70d8530e471a69381255"
+            "file": "seq4-cost-observed.json",
+            "sha256": "1e4772eae8645029e91d18dd9b666baab788ed8b0b8f1195bf461b1e25140419"
           },
           {
-            "file": "seq4-p2-independent-review.json",
-            "sha256": "0a460fcf6f00b1e90a97b1efdb4cbc0a92f70c1c6c60e7aaa978b2ce8c1ebb8a"
+            "file": "seq4-initial-read-pages-cleanup.json",
+            "sha256": "66c03c83617a82cd0eb33291e01b55c136843cb92e88a43b74b04532ca3aedfc"
           },
           {
-            "file": "seq4-root-initial-review.json",
-            "sha256": "8dab0d6a2305c6a62ba6f3d13d3843f910fa4de1303cb722bad64a64c0a881d3"
+            "file": "seq4-recall-meta-capture.json",
+            "sha256": "e76d422cde7e9c2d19c4cb250bbafa38762e341c83f9501305f75b44fbef9cce"
           },
           {
-            "file": "seq4-root-manual-review.json",
-            "sha256": "a8ed59427de0bd59feb6d9247d667fcf0fd0ca625d151019578fdff228077256"
-          },
-          {
-            "file": "seq4-p1-manual-freshness.json",
-            "sha256": "598083af69ea83df7b3ab69486a039f8e4e001da6dad6117a064b90a7fc5fb1c"
-          },
-          {
-            "file": "seq4-cost-final-summary.json",
-            "sha256": "c07975fa9223f1b92b9b9acca4c8984b265110f39ff8f99d18d1808505a82f9f"
-          },
-          {
-            "file": "seq4-private-initial-reviewed-cleanup.json",
-            "sha256": "3e5e3d5959c110dc32e36239f74d230529d6dbc2bc935c948cc1195a8e90490c"
-          },
-          {
-            "file": "seq4-private-manual-reviewed-cleanup.json",
-            "sha256": "bd67330e5503a6e137db0a65fe3095689f073f893c87fa70ac9fa3bf30759d62"
+            "file": "seq4-recall-meta-settled.json",
+            "sha256": "b3df3f5eb582584df7cfacc77ac2c2d63a09a1beb7abb03110a3b50b337654f9"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": [
+          {
+            "file": "seq4-mvu-final-meta-initial.json",
+            "sha256": "daf74d6bbbf07848af756368941de92c53cdd513656f1558cfecdff1c60b2274"
+          },
+          {
+            "file": "seq4-initial-snapshot.json",
+            "sha256": "d6d43538ec8f0e5eabd86ff86365bb1532bda59b43fb8adb68a2c8905e85ad2a"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 5,
       "kind": "pressure",
       "index": 10,
       "swipeId": 0,
+      "contentHash": "daf6c5e3a57cd1efb62a16747076670e0f15b6ab814b98bbf146b1bca7eed47f",
+      "inputHash": "e77fd5e65f0ea8eecc8340ae1aed2e7984e73ac30d669f7fa357454523ead431",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "46642c930348e72f53a989fcdd22abdded03c5a57a75634e1471733b46732d11",
+      "p1RecordHash": "6782077b5b45a697ffefbb8689258948b9dc2412d06590218bead030d9927969",
+      "p2RecordHash": "aa1b662ca9724a9cb0447499396f66af99a3cef64cd93a478a1fbea74e8a9b51",
       "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": false,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": true,
+          "sameReplyMultipleNewNpcs": true,
+          "all44FieldsRead": true,
+          "allSavedProfilesComplete": true,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
           "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
+          "code": "explicit_clock_update_omitted",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": true,
+          "inherited": null,
+          "classification": "model-content-omission",
+          "repairAttempted": null,
+          "repairAttemptedThisRound": null,
           "manualButtonClicks": null,
           "repairRecovered": null,
-          "semanticErrorFixed": false,
+          "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": null
+        },
+        {
+          "module": "p2",
+          "code": "profile_incomplete",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": true,
+          "inherited": null,
+          "classification": null,
+          "repairAttempted": null,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": null
+        },
+        {
+          "module": "p2",
+          "code": "existing_goal_stale_after_departure",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": null,
+          "repairAttempted": null,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": null
+        },
+        {
+          "module": "p2",
+          "code": "ambiguous_narrative_clue_attributed_to_named_character",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "model-content-overreach",
+          "repairAttempted": null,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": null
         }
       ],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 4,
+      "inheritedProfileModelExceptions": null,
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": null,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": null,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq5-cost-summary.json",
-        "sequence": 5,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 0,
-        "manualButtonClicks": 0,
-        "automaticRetries": 0,
-        "totalTokens": 360594
+        "doctorPromptTokens": 307436,
+        "paidDoctorRequests": 4,
+        "otherRequests": 3,
+        "totalNativeRequests": 7,
+        "normalDoctorWallMs": 157037,
+        "p1DurationMs": 27590,
+        "p2DurationMs": 128381,
+        "mainDurationMs": 84776
       },
       "evidence": {
         "release": {
           "file": "seq5-review-release.json",
-          "sha256": "f03278ec0474cd74dea53e8df708f901a59e12b47e9e8c90eeed54cc2d5bf676"
+          "sha256": "6090cb6f9b5d7e42ce437787d3d1904d46f8e845826ae17dc6a427dca9923d63"
         },
-        "root": {
+        "rootReview": {
           "file": "seq5-root-review.json",
-          "sha256": "19631e7d9a40f4a798b553318051de096cf9086cb1a7fa209ffbd04bc7c57f2a"
+          "sha256": "f1a70d60912967ef2f68a348bd204f51e68b7c555c6c718ce65c59959da91381"
         },
-        "meta": {
-          "file": "seq5-mvu-final-meta-initial.json",
-          "sha256": "8fe8edc47912bcf49a1c6bd61c9fbe1eddff1ddf1fcf8685805fe83d4502e2ae"
+        "matchingMeta": {
+          "file": "seq5-mvu-final-meta-manual.json",
+          "sha256": "34216d5b1526eaecc460f41ef6f2c661bf7cc06fef0c9c824cb3c93b16ac6e09"
         },
-        "additional": [
+        "matchingSnapshot": {
+          "file": "seq5-manual-snapshot.json",
+          "sha256": "61ae59b82a1dd318ddf49bcc97797300ef5db5a239750c31172d84831ec71d45"
+        },
+        "codeFailureAddendum": null,
+        "rootReferences": [
           {
-            "file": "seq5-p1-independent-review.json",
-            "sha256": "2d8f3f100ec75718fe9827ca5d44b2b33bb6ae0bbdaffc98201a067cb7f44357"
+            "file": "seq5-root-initial-review.json",
+            "sha256": "09d675c6c6b28e0abef1ba8003cfc3f0c220ac817eb7e640d5da1c555bf12abb"
           },
           {
-            "file": "seq5-p2-independent-review.json",
-            "sha256": "f0d47b722e0ea4ecbc4ee665e35ebe312aa545d5ec973267add80e8df94afca4"
-          },
-          {
-            "file": "seq5-root-body-recall-ui-review.json",
-            "sha256": "caf94ea20e533251a42a047434fec6f2dac6845a98da97c8f9abcee625aa513b"
-          },
-          {
-            "file": "seq5-root-viewport-review.json",
-            "sha256": "03adb9c760f875417e03e8979fb2f0301ed778349aee4b882242a6567bc6ac4d"
-          },
-          {
-            "file": "seq5-cost-summary.json",
-            "sha256": "fbf92fa69da2daa8e0e7617145fdd1e1a401c35fe0823fcb60eed248b3c463d8"
-          },
-          {
-            "file": "seq5-private-reviewed-cleanup.json",
-            "sha256": "ac10282fe8304c571448329d14ebd0d09050646896b792cdc6c5b62d6c2254f4"
+            "file": "seq5-root-initial-review-addendum.json",
+            "sha256": "892e3aee608669cb830da0286801a213ba400f8e6b2f66dec18ee9f0f1aef5dc"
           },
           {
             "file": "seq5-initial-snapshot.json",
-            "sha256": "44168a6274b6777ed519a0318bf3a1ddff1a839992f341b68f24f37c413cbde7"
+            "sha256": "0f68e160813648ebdda91566ce81a6d7ab31ada3da26305d15f1861d04c77c85"
+          },
+          {
+            "file": "seq5-mvu-final-meta-initial.json",
+            "sha256": "dd667aca28365db3d54c9ea558c8034564071053bef1143032b85fc9613d0ebc"
+          },
+          {
+            "file": "seq5-initial-native-observed.json",
+            "sha256": "78b8e4c220cdf4c9aefbf628a2f4a9bb837656448c7a6028e3e366507a96c24c"
+          },
+          {
+            "file": "seq5-initial-ledger.json",
+            "sha256": "210b41893a53f2bd6d05942d711e2d64515035854692c2499e5babf2a0f56d8b"
+          },
+          {
+            "file": "seq5-initial-read-pages-cleanup.json",
+            "sha256": "9d7bcbfba5110488e3fad749902153e3ff427e50cd5db520712309f3efe6c302"
+          },
+          {
+            "file": "seq5-manual-snapshot.json",
+            "sha256": "61ae59b82a1dd318ddf49bcc97797300ef5db5a239750c31172d84831ec71d45"
+          },
+          {
+            "file": "seq5-mvu-final-meta-manual.json",
+            "sha256": "34216d5b1526eaecc460f41ef6f2c661bf7cc06fef0c9c824cb3c93b16ac6e09"
+          },
+          {
+            "file": "seq5-post-variable-proof.json",
+            "sha256": "4297a3bb1a23a20bf9bf74ee93b803044a36b304f6e1e136a47ed919ecc66de3"
+          },
+          {
+            "file": "seq5-manual-repair-click.json",
+            "sha256": "d062a77083e80f94de09a44c341a524caa94d3dab33feb105426a7b3d68f8499"
+          },
+          {
+            "file": "seq5-after-repair-cost-observed.json",
+            "sha256": "67ed7f1be48f4f7339591e370534aefd8bab7aab8529453fa872df6c67f72fad"
+          },
+          {
+            "file": "seq5-manual-read-pages-cleanup.json",
+            "sha256": "8d2398236b0416b171f19d4b518d71156ca83bdf5f2235a9666bd8c63a44838a"
+          },
+          {
+            "file": "seq5-recall-meta-capture.json",
+            "sha256": "e7e4f8aa9d8d8b613a8b7ff1adb1a811d722fe6e1dc438e91d25e6cc0ed2391e"
           },
           {
             "file": "seq5-recall-meta-settled.json",
-            "sha256": "703d0fa26370183011f99f0c629e45e6ea9ab7cc53d37e5bb6bb622bdd829d05"
+            "sha256": "3f1f03b3d042c7549b9d09fcc5a96513c9bb9e99fc119413feca521d12c22cbb"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": [
+          {
+            "file": "seq5-mvu-final-meta-failure.json",
+            "sha256": "c00e2389a8edd1a21985ab0892b1c194571ccb5de59f5001ac33a98c4cbf3e41"
+          },
+          {
+            "file": "seq5-mvu-final-meta-initial.json",
+            "sha256": "dd667aca28365db3d54c9ea558c8034564071053bef1143032b85fc9613d0ebc"
+          },
+          {
+            "file": "seq5-mvu-final-meta-manual.json",
+            "sha256": "34216d5b1526eaecc460f41ef6f2c661bf7cc06fef0c9c824cb3c93b16ac6e09"
+          },
+          {
+            "file": "seq5-initial-snapshot.json",
+            "sha256": "0f68e160813648ebdda91566ce81a6d7ab31ada3da26305d15f1861d04c77c85"
+          },
+          {
+            "file": "seq5-manual-snapshot.json",
+            "sha256": "61ae59b82a1dd318ddf49bcc97797300ef5db5a239750c31172d84831ec71d45"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 6,
       "kind": "next",
       "index": 12,
       "swipeId": 0,
+      "contentHash": "7e6e4dc0582b01b2d32ce8519137e32bccb616db93a4493c55fe938a45aeb95a",
+      "inputHash": "55abc3f03ef0548e5aee1c6d47ca033474d63c4abdf130be152e1f1f9d3dc0c6",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "5c72a4bf702112096a64b7ce7a59d08f6cfc99206b6a3245ac22c2391e10bcea",
+      "p1RecordHash": "5ee0d4a788f3ef76e439f1186d12923113b19195f414244e02f1591c73637976",
+      "p2RecordHash": "262e553e6c3b837a25c373d3fb71aa55b81cbad4e515713723f4d9218a0b8f14",
       "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": true,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": true,
+          "sameReplyMultipleNewNpcs": false,
+          "all44FieldsRead": true,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
-          "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
+          "module": "p2",
+          "code": "discovery_evidence_unbound",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": true,
+          "inherited": null,
+          "classification": "model-joins-two-exact-source-segments-with-ellipsis",
+          "repairAttempted": null,
+          "repairAttemptedThisRound": null,
           "manualButtonClicks": null,
           "repairRecovered": null,
-          "semanticErrorFixed": false,
+          "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": null
+        },
+        {
+          "module": "narrative",
+          "code": "player_internal_desire_asserted",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "retained-preset-model-boundary-exception",
+          "repairAttempted": null,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": null,
+          "repairRecovered": null,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": null
         }
       ],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 2,
+      "inheritedProfileModelExceptions": [
+        "seq5-existing_goal_stale_after_departure",
+        "seq5-ambiguous_narrative_clue_attributed_to_named_character"
+      ],
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": false,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": null,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq6-cost-summary.json",
-        "sequence": 6,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 0,
-        "manualButtonClicks": 0,
-        "automaticRetries": 0,
-        "totalTokens": 351227
+        "doctorPromptTokens": 186022,
+        "paidDoctorRequests": 3,
+        "otherRequests": 3,
+        "totalNativeRequests": 6,
+        "normalDoctorWallMs": 73308,
+        "p1DurationMs": 49615,
+        "p2DurationMs": 23022,
+        "mainDurationMs": 71672
       },
       "evidence": {
         "release": {
           "file": "seq6-review-release.json",
-          "sha256": "5780143a1192537af83bf62221ab385338fa3860f98e8cf3b92dd25c70b20ca4"
+          "sha256": "b229ada608a9b8c93a4f67a4bc749f48742543f3b046aa764fee0e9cba6e1382"
         },
-        "root": {
+        "rootReview": {
           "file": "seq6-root-review.json",
-          "sha256": "7d16230d4bbba87538951cf2ba9a4149f8c76d3ff8a25cc0a43be262970f6adb"
+          "sha256": "2cd536f5617d83216063a0f6df6b3569ee3012525e1db5944f173b8ccf281af3"
         },
-        "meta": {
-          "file": "seq6-mvu-final-meta-initial.json",
-          "sha256": "3b261e817b7eb0171d333817cbab7f570cd587df9cf4b47558391b35f7cf8b5d"
+        "matchingMeta": {
+          "file": "seq6-mvu-final-meta-manual.json",
+          "sha256": "ce299eeccd6c3951c749e95269af36428d2bc01d30e0fd09db6724730d370cd3"
         },
-        "additional": [
+        "matchingSnapshot": {
+          "file": "seq6-manual-snapshot.json",
+          "sha256": "2d438010bb4848f56ca1a38afad4d630e4181df0994901bd7f896e23473eeeff"
+        },
+        "codeFailureAddendum": null,
+        "rootReferences": [
           {
-            "file": "seq6-p1-independent-review.json",
-            "sha256": "70b0c821f373e68fea6fdc11084035c93e98f176a47406060f96179d6eb7a705"
+            "file": "seq6-root-global-failure-review.json",
+            "sha256": "375315c1c869f7e3d42cc8540bccc293f8e5c1af7ab23a513c2fc7814f179a1b"
           },
           {
-            "file": "seq6-p2-independent-review.json",
-            "sha256": "d974f066634af72765bf6df64d821d425b3af5098cdded9570fb2497da626e57"
+            "file": "seq6-global-failure-initial.json",
+            "sha256": "59e72d6bd90d8c0b41258399c0461b1b00546a4afb89a46c721ff7d3f2d7ef01"
           },
           {
-            "file": "seq6-root-body-recall-ui-review.json",
-            "sha256": "d4eb3de84c64f5b0a77b99000a9fb779392e0ec3ee6101bce577801e7ab81321"
+            "file": "seq6-global-failure-click.json",
+            "sha256": "e1e2b81cc3a43a4e816752f7b155a1a8c63b3731ae7ba99a89e4cdbfb42b718a"
           },
           {
-            "file": "seq6-cost-summary.json",
-            "sha256": "121ae3bf1b29999897661a327a766bb879f2406302ddb8ae2f73559c8d40be0a"
+            "file": "seq6-global-failure-readback.json",
+            "sha256": "2ef2207bb20a675e1d1f20377b3c292aaf66c8c885a3d2e0e18a7f5c657a87fc"
           },
           {
-            "file": "seq6-private-reviewed-cleanup.json",
-            "sha256": "e35089c6a0abffb8b1f2f493f8b8b3ed3ca48de28f7e4ab9293447bd1caf8f83"
+            "file": "seq6-initial-raw-review.json",
+            "sha256": "6a125a8dd204c279b3adaa9f03d4752fe6d4e24c56ec771eda76354b6874d341"
           },
           {
-            "file": "seq6-initial-snapshot.json",
-            "sha256": "0c70d06350cc2acfb0f12a327d528d7f7a71a9ad961800dc9817a85daf9f3c1f"
+            "file": "seq6-initial-raw-review-hash-method-addendum.json",
+            "sha256": "bb69b124b619e711297676ca71ef17919471a25da9622366661ffc1b42965ab1"
+          },
+          {
+            "file": "seq6-manual-raw-review.json",
+            "sha256": "6582cc582388858d678f4868232207b6770a536193c8afbefad27714ae7d525d"
+          },
+          {
+            "file": "seq6-initial-read-pages-cleanup.json",
+            "sha256": "f5fab50690b6cdd1c1126c9057e62e1614d6a4b637f96b6cc7c7ca082a9ce360"
+          },
+          {
+            "file": "seq6-manual-read-pages-cleanup.json",
+            "sha256": "01f7ab27f83256a27ccf4b13ee284eb6f209c49c8e4c1f852b834fb28c465964"
+          },
+          {
+            "file": "seq6-after-repair-cost-observed.json",
+            "sha256": "bbe31883bdc8829f3d11ded310cca3c0be5dbd44f2fe83bee1eb2c137d107d62"
+          },
+          {
+            "file": "seq6-recall-meta-capture.json",
+            "sha256": "0b6a009ec06b48e1c607a9d729a3a7538df460717ea26bdc4d69023e4c7ae571"
           },
           {
             "file": "seq6-recall-meta-settled.json",
-            "sha256": "32ab002e6cc6b22b2be82a85a46912edc4f1510725992fceb7cd83b360ab0aef"
+            "sha256": "27821faf5a8b6a46239afdc7d72505b546be63fef6827a7794f1cb07c73deedf"
+          },
+          {
+            "file": "seq6-manual-snapshot.json",
+            "sha256": "2d438010bb4848f56ca1a38afad4d630e4181df0994901bd7f896e23473eeeff"
+          },
+          {
+            "file": "seq6-mvu-final-meta-manual.json",
+            "sha256": "ce299eeccd6c3951c749e95269af36428d2bc01d30e0fd09db6724730d370cd3"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": [
+          {
+            "file": "seq6-mvu-final-meta-failure.json",
+            "sha256": "31c7b2e0be5bf7be5c59bdecd5b3819124ef50408a1ed4de90dd79005511c526"
+          },
+          {
+            "file": "seq6-mvu-final-meta-manual.json",
+            "sha256": "ce299eeccd6c3951c749e95269af36428d2bc01d30e0fd09db6724730d370cd3"
+          },
+          {
+            "file": "seq6-manual-snapshot.json",
+            "sha256": "2d438010bb4848f56ca1a38afad4d630e4181df0994901bd7f896e23473eeeff"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 7,
       "kind": "next",
       "index": 14,
       "swipeId": 0,
+      "contentHash": "2387b203e3e13579f195ac4e538dd30870aca7675efc039a54e5ef577cbd19a8",
+      "inputHash": "358b2848bab81c7ac92463615ef6e3782863c397cf5e834a0fb4252574019c47",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "fca69f2feb5a28714b7bf242056a52102c380661be6c4db17e1ceb3a4eb67873",
+      "p1RecordHash": "09ac077b638798b1abc4e01e848402ae12ab354d0097fcfa090b9d912b5e787c",
+      "p2RecordHash": "9faa35b8c259813f491127ee7511acd0bf8493a4e9670236ea0cca3d0ee1604a",
       "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": false,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": true,
+          "sameReplyMultipleNewNpcs": false,
+          "all44FieldsRead": null,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
-          "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
-        },
-        {
-          "module": "main",
-          "code": "body_time_marker_vs_main_patch_time_advance",
-          "sourceSequence": 7,
-          "inherited": false,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
+          "module": "p2",
+          "code": "individually_distinguishable_npc_omitted",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "model-discovery-omission",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 1,
+          "repairRecovered": false,
           "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": false
-        },
-        {
-          "module": "p2",
-          "code": "profile_incomplete",
-          "sourceSequence": 7,
-          "inherited": false,
-          "initialFailureRetained": true,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": true,
-          "manualButtonClicks": 1,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": true,
-          "priorCandidateCompleted": false,
-          "recoveryMethod": "rediscovery-excluded-uncommitted-group",
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": false
-        },
-        {
-          "module": "p2",
-          "code": "grouped_distinguishable_opponents",
-          "sourceSequence": 7,
-          "inherited": false,
-          "initialFailureRetained": true,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": false
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": true
         }
       ],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 1,
+      "inheritedProfileModelExceptions": [
+        "seq5-existing_goal_stale_after_departure",
+        "seq5-ambiguous_narrative_clue_attributed_to_named_character"
+      ],
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": false,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": 0,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq7-cost-final-summary.json",
-        "sequence": 7,
-        "wholeTavernCalls": 8,
-        "doctorCalls": 5,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 2,
-        "manualButtonClicks": 1,
-        "automaticRetries": 0,
-        "totalTokens": 543805
+        "doctorPromptTokens": 200638,
+        "paidDoctorRequests": 3,
+        "otherRequests": 3,
+        "totalNativeRequests": 6,
+        "normalDoctorWallMs": 74149,
+        "p1DurationMs": 38011,
+        "p2DurationMs": 35654,
+        "mainDurationMs": 70105
       },
       "evidence": {
         "release": {
           "file": "seq7-review-release.json",
-          "sha256": "feacf583a2838ab9563ced359bc0609f940153adc932735df8be88a100558028"
+          "sha256": "e15f8bffd4f76c45b63daee6675007381c48406d55f8100fa66481933a1cead3"
         },
-        "root": {
+        "rootReview": {
           "file": "seq7-root-review.json",
-          "sha256": "551c2283eaef9fd40534c77af551f5ee25e57ca927622dbff402c7e962cb8f08"
+          "sha256": "6b0adaba48f2ef8a0d52e3b2c46d55bb9fdb0bd0cf5d4191b13de4a9f25fc235"
         },
-        "meta": {
+        "matchingMeta": {
           "file": "seq7-mvu-final-meta-manual.json",
-          "sha256": "353ba870216c1c29b07ea5876ec6d41b54d873d90c52c4dd23fae4e522e078e0"
+          "sha256": "87b715fa24b2d0a82661db4fce6606d77ac4d74aca1b17ecdea2cf551f0804c2"
         },
-        "additional": [
+        "matchingSnapshot": {
+          "file": "seq7-manual-snapshot.json",
+          "sha256": "535df37cbc15f49f8678c108a5ab42165e815b0076771eb56dc6d26ff49b0e3e"
+        },
+        "codeFailureAddendum": null,
+        "rootReferences": [
           {
-            "file": "seq7-p1-independent-review.json",
-            "sha256": "3ae1c18628e329bd82b67c54613569f12d6ee5906b3807f8435833abd0d28935"
-          },
-          {
-            "file": "seq7-p2-initial-independent-review.json",
-            "sha256": "3fa7c3e90dd1394955059ddc5ea4a3b86df7dc8f151c06d0adbab8e022754e9d"
-          },
-          {
-            "file": "seq7-p2-manual-independent-review.json",
-            "sha256": "e2716a1db09c1256e95aa2d3ff22b4b0db0e5942112b33a4b30a3a1f695ac2c4"
-          },
-          {
-            "file": "seq7-root-initial-review.json",
-            "sha256": "2ea44d1b56150831b6e5eef7e448a0773dd14f173bd96bab930cbc52a22d6483"
-          },
-          {
-            "file": "seq7-root-pre-profile-repair-review.json",
-            "sha256": "9adc20dec50725dc4f9ec9cf6e60942407701cebd7df9ab3ed1553f731aa774c"
-          },
-          {
-            "file": "seq7-root-manual-review.json",
-            "sha256": "983d440dce5b715d060ca9fa0a19ca4c2ce5a11a18dae8ab2298071226ade2bb"
-          },
-          {
-            "file": "seq7-cost-final-summary.json",
-            "sha256": "1c00009fe364055035983ce11be4144d19c57ec95649943f81c139450a51d032"
-          },
-          {
-            "file": "seq7-cost-manual-observed.json",
-            "sha256": "f6f9858e27a64e8096f19199e6bb52d33f935184d0b913292abf1f9655e8327c"
-          },
-          {
-            "file": "seq7-private-initial-reviewed-cleanup.json",
-            "sha256": "b2e99a70179aaf2554d668a763d60c375d31d22782672b425872d36a39b415ed"
-          },
-          {
-            "file": "seq7-private-manual-reviewed-cleanup.json",
-            "sha256": "28a00657be572328cdf7a8aacf34af7fdbcb45cb22a84d5c20483b80ca760349"
+            "file": "seq7-initial-raw-review.json",
+            "sha256": "2e9a4ae236b1e9ce6bfaa687b2c6025b61b2490020822f84f1f11ca3e3424ab9"
           },
           {
             "file": "seq7-initial-snapshot.json",
-            "sha256": "01c99e5478838354e60aa8edcd60b86eb07dd2f0f4726c27f2f3f26503a62813"
+            "sha256": "6f78812d4a493fa9f258ff1d1eaf0221d0c5643646d14e8c59d84564dbf5eb71"
           },
           {
-            "file": "seq7-manual-snapshot.json",
-            "sha256": "c9f4a357f55aef04b6483b97ef214806e4b609f74bbfe67d2940b8bb3cff9a21"
+            "file": "seq7-mvu-final-meta-initial.json",
+            "sha256": "d2b92bb7ef810fe750f43006b2da185167378025cf25befced2e6389fb18ae9e"
+          },
+          {
+            "file": "seq7-recall-meta-capture.json",
+            "sha256": "e36d6f529c99515bad2832bdd22c9d7bb165e28983a0b3d9f616a18e55564cb9"
           },
           {
             "file": "seq7-recall-meta-settled.json",
-            "sha256": "4f7f2a5ea9736cce02bbaa2d32ed425f7567a919cfe5335451688e5905364755"
+            "sha256": "cba714fed9361949a0b7c073b658a0ce6f2a21d7152bbe328a3c750a5d092c28"
           },
           {
-            "file": "seq7-profile-manual-readback.json",
-            "sha256": "ae75ce0717b0f15aab7adf605a29558e8f24fac1955fe0b775afd983aead16d1"
+            "file": "seq7-cost-observed.json",
+            "sha256": "753f406d3eecf693b11dbd912a14c70cf7ad862afc7b45d7acdc93b6496fbfff"
+          },
+          {
+            "file": "seq7-initial-read-pages-cleanup.json",
+            "sha256": "972406bb74e639703c984a217aa1385ccd8c12ed5c6ea0ec9610f7c0a60449f4"
+          },
+          {
+            "file": "seq7-root-semantic-review.json",
+            "sha256": "a512429e40c93cc65ba9bf994dc3d9b5201975b8f497668b33b5624c1fe110c6"
+          },
+          {
+            "file": "seq7-profile-manual-click.json",
+            "sha256": "d9e89a30cf9be2c5205ca750883fa928b29cbd5ed149b4bb6406b82bf8abea9c"
+          },
+          {
+            "file": "seq7-manual-snapshot.json",
+            "sha256": "535df37cbc15f49f8678c108a5ab42165e815b0076771eb56dc6d26ff49b0e3e"
           },
           {
             "file": "seq7-mvu-final-meta-manual.json",
-            "sha256": "353ba870216c1c29b07ea5876ec6d41b54d873d90c52c4dd23fae4e522e078e0"
+            "sha256": "87b715fa24b2d0a82661db4fce6606d77ac4d74aca1b17ecdea2cf551f0804c2"
+          },
+          {
+            "file": "seq7-manual-identity-proof.json",
+            "sha256": "8e9dcea73ec7e131bd7fa033c5ab1b56322e283c5a98e1d037326a1c0ddb7dfd"
+          },
+          {
+            "file": "seq7-manual-raw-review.json",
+            "sha256": "84595a12d5937c48c5f959af39f05eedd6973ddc30ca9a6f0fd46f93b76bc849"
+          },
+          {
+            "file": "seq7-manual-read-pages-cleanup.json",
+            "sha256": "41e76a8e8b32ee03da346837c48d0bf1b4ccec4ba5cc2b9129b3550aa3386871"
+          },
+          {
+            "file": "seq7-after-repair-cost-observed.json",
+            "sha256": "e478ba7b41dc902bd3bfd0697ffc75ea878516324dd1fdab34c2e2fe125ebba6"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": [
+          {
+            "file": "seq7-mvu-final-meta-initial.json",
+            "sha256": "d2b92bb7ef810fe750f43006b2da185167378025cf25befced2e6389fb18ae9e"
+          },
+          {
+            "file": "seq7-mvu-final-meta-manual.json",
+            "sha256": "87b715fa24b2d0a82661db4fce6606d77ac4d74aca1b17ecdea2cf551f0804c2"
+          },
+          {
+            "file": "seq7-initial-snapshot.json",
+            "sha256": "6f78812d4a493fa9f258ff1d1eaf0221d0c5643646d14e8c59d84564dbf5eb71"
+          },
+          {
+            "file": "seq7-manual-snapshot.json",
+            "sha256": "535df37cbc15f49f8678c108a5ab42165e815b0076771eb56dc6d26ff49b0e3e"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 8,
       "kind": "next",
       "index": 16,
       "swipeId": 0,
+      "contentHash": "411a84d12e922ebbe9529c580b3930b77dd495eaf34bf0d6ce876564cff7bae3",
+      "inputHash": "155d82b91f92fb21feeeb6fe1a5e729e397302b1f8b33c2f46d0e254ed2926a3",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "62cfcb885964f713e9218e6818bf7439c910edf2ec67ba5f07ada58354cdaaf5",
+      "p1RecordHash": "ced801a4888b35cf1b11825aa63df459bb4335a6ca2bd9efbb67d669df7a30f1",
+      "p2RecordHash": "4bd91fc2b7f0b36865753083e1942a9b6ad5b91ce352e1b2047b22b2fed33e62",
       "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": false,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": true,
+          "sameReplyMultipleNewNpcs": true,
+          "all44FieldsRead": null,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
-          "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
+          "module": "p2",
+          "code": "individually_distinguishable_npc_omitted",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "model-discovery-omission",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 1,
+          "repairRecovered": false,
+          "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
+          "codeFailureObserved": null,
           "continuedByExplicitUserAuthorization": true
         }
       ],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 1,
+      "inheritedProfileModelExceptions": [
+        "seq5-existing_goal_stale_after_departure",
+        "seq5-ambiguous_narrative_clue_attributed_to_named_character",
+        "seq7-individual_guard_omission_not_recovered"
+      ],
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": false,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": 0,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq8-cost-summary.json",
-        "sequence": 8,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 0,
-        "manualButtonClicks": 0,
-        "automaticRetries": 0,
-        "totalTokens": 404226
+        "doctorPromptTokens": 174602,
+        "paidDoctorRequests": 3,
+        "otherRequests": 3,
+        "totalNativeRequests": 6,
+        "normalDoctorWallMs": 88532,
+        "p1DurationMs": 29419,
+        "p2DurationMs": 58203,
+        "mainDurationMs": 49868
       },
       "evidence": {
         "release": {
           "file": "seq8-review-release.json",
-          "sha256": "59ef020e5fbbde3349af345b6753ab0f31540d2279108c29c0ac811cf1e3b302"
+          "sha256": "de176a4f91ed0b788985a4fa13e934538f42f7aaa50bb8f05b3423bbfce68903"
         },
-        "root": {
+        "rootReview": {
           "file": "seq8-root-review.json",
-          "sha256": "5ec9d3cac3c129721b887b467a6d0b8fb712de0477a48d6752afdc494c1ba2e3"
+          "sha256": "738306972afa9777f6eea4ad7617f98ef0bde750219aaae0b34134813474b598"
         },
-        "meta": {
-          "file": "seq8-mvu-final-meta-initial.json",
-          "sha256": "c748c19e217b14eb4fc32b8f2f45cd5dec9a5ac7ed6cf3b18d788d14c9bdaee0"
+        "matchingMeta": {
+          "file": "seq8-mvu-final-meta-manual.json",
+          "sha256": "c5c5fe3b60bbd2ae5ec2ae4755da71e483ad5fd478afc4836d99a489b10f84a1"
         },
-        "additional": [
+        "matchingSnapshot": {
+          "file": "seq8-manual-snapshot.json",
+          "sha256": "678442075ede72957a57550f1a2ca383b63eebbd336306cddb287d32185c2739"
+        },
+        "codeFailureAddendum": null,
+        "rootReferences": [
           {
-            "file": "seq8-p1-independent-review.json",
-            "sha256": "46f3532437f81b2abb1ad8e3c0df3668d92bde529078bfc3b7db9574010de517"
-          },
-          {
-            "file": "seq8-p2-independent-review.json",
-            "sha256": "06b090d1c63e2180cb2faaa69447a46f352d86339afe97510d0d8124287f8c60"
-          },
-          {
-            "file": "seq8-root-body-recall-ui-review.json",
-            "sha256": "b9cd47adf3ee549bd57f01801badf077a2e30d3f1612a843945a6f2811fbf842"
-          },
-          {
-            "file": "seq8-cost-summary.json",
-            "sha256": "473b923b50828e9f873b541a19674f72159339a0cb8425d35a0ab12317e3c84b"
-          },
-          {
-            "file": "seq8-private-reviewed-cleanup.json",
-            "sha256": "ba93a2cd3bf682bbc569f058566150a8fe6fe7dff584d408c34f499e26cc4677"
+            "file": "seq8-initial-raw-review.json",
+            "sha256": "fa2ee788a0d5549a6adbd3bcdf4cf1c1ade39591c083ea7217ee2fcd8265c463"
           },
           {
             "file": "seq8-initial-snapshot.json",
-            "sha256": "46bdbcc2ca3e615838752e629124037dd0574da3de30489817e211dde87c986e"
+            "sha256": "72a9628e6471b6a40a28528ada063e00359f2d0e634f029a3155b82e9829dca7"
           },
           {
             "file": "seq8-mvu-final-meta-initial.json",
-            "sha256": "c748c19e217b14eb4fc32b8f2f45cd5dec9a5ac7ed6cf3b18d788d14c9bdaee0"
+            "sha256": "b0d97cb43fe22decb7414fa550e4263f3fe79064d8b7769da16acd2f96caa477"
+          },
+          {
+            "file": "seq8-recall-meta-capture.json",
+            "sha256": "8ffed78aa6e83215cd09553b08d7985a93b553fd6da632c4d297aeef24c4ea71"
           },
           {
             "file": "seq8-recall-meta-settled.json",
-            "sha256": "770f4860e3d07828084e1a76d76a2fc745f91c0be35c0c724941bc04ace5bb8f"
+            "sha256": "be4d2ee1043eb3a07f61d10d94237ce7d8483ddf557ea298d650bd9d29ac33be"
           },
           {
-            "file": "seq8-viewport-capture.json",
-            "sha256": "7dd167b19f64a4af6e3707a3dad085f096e809caa9da07cdc2d2060fe704b8c7"
+            "file": "seq8-cost-observed.json",
+            "sha256": "dfe7abf0602ccfafee14e1c31df5648e05c219c0a32d3915c48f7fd173e3e656"
+          },
+          {
+            "file": "seq8-initial-read-pages-cleanup.json",
+            "sha256": "91f33d3a6cf3afaa2dff45112fd30c012b3564e121d59cac5c2cf3fa9e416e67"
+          },
+          {
+            "file": "seq8-root-semantic-review.json",
+            "sha256": "d7db6cdcfb8cc09641c9fd987fce50820e0e0e233edb5ea8f5b99badfb3a9a97"
+          },
+          {
+            "file": "seq8-profile-manual-click.json",
+            "sha256": "2f4c197d6e9e421e2f481495cbe86301db4e7507b83b389c9534177c5fac4644"
+          },
+          {
+            "file": "seq8-manual-snapshot.json",
+            "sha256": "678442075ede72957a57550f1a2ca383b63eebbd336306cddb287d32185c2739"
+          },
+          {
+            "file": "seq8-mvu-final-meta-manual.json",
+            "sha256": "c5c5fe3b60bbd2ae5ec2ae4755da71e483ad5fd478afc4836d99a489b10f84a1"
+          },
+          {
+            "file": "seq8-manual-identity-proof.json",
+            "sha256": "3bc9c171f79ae44c66ff3e3a14340c8c3de2948d4727fd2ca3ac30a0d6d7219c"
+          },
+          {
+            "file": "seq8-manual-raw-review.json",
+            "sha256": "355db065a1502e69704aecaab0ab53778d2f4fa9cc584f6e0005a5d4c726771e"
+          },
+          {
+            "file": "seq8-manual-request-proof.json",
+            "sha256": "78911d9a9228f397e43b8e815f04c711ca428465390b77f564c38fa0e8acec6c"
+          },
+          {
+            "file": "seq8-manual-read-pages-cleanup.json",
+            "sha256": "dfeda93c6aac2f81ea1a0b3ea9f71f69d1ed6c13d9dabae17cbf4db5cc86a1b1"
+          },
+          {
+            "file": "seq8-after-repair-cost-observed.json",
+            "sha256": "af3299453f7504824a270ec47e97ff48326958cfc58c5bebca7d7ae92a81e118"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": [
+          {
+            "file": "seq8-mvu-final-meta-initial.json",
+            "sha256": "b0d97cb43fe22decb7414fa550e4263f3fe79064d8b7769da16acd2f96caa477"
+          },
+          {
+            "file": "seq8-mvu-final-meta-manual.json",
+            "sha256": "c5c5fe3b60bbd2ae5ec2ae4755da71e483ad5fd478afc4836d99a489b10f84a1"
+          },
+          {
+            "file": "seq8-initial-snapshot.json",
+            "sha256": "72a9628e6471b6a40a28528ada063e00359f2d0e634f029a3155b82e9829dca7"
+          },
+          {
+            "file": "seq8-manual-snapshot.json",
+            "sha256": "678442075ede72957a57550f1a2ca383b63eebbd336306cddb287d32185c2739"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 9,
       "kind": "next",
       "index": 18,
       "swipeId": 0,
-      "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "contentHash": "2ca322470ecd2822df60731d0949dabe4e3f77012496d60b628e111e6974dd5a",
+      "inputHash": "fdd7f505ec933e9337d71ec6a1e3e5fe5a900c98cbc7bbdfd2a1d091f1b5449f",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "de494ff4a2279e9a95170bd8f0ca6c6e69f0e1cda43312e15af8e3f2a1b96bf6",
+      "p1RecordHash": "0ef3d543582e92212f546e8dbdb198a6fe702765c55cd1c1f2c398eeed2b2c0f",
+      "p2RecordHash": "0b43d2a3b3eefb6784ebd8b4f78d1c2e337edfffbff66d77835c0a16ffaf37cb",
+      "p2Status": "failed",
+      "p2Readback": false,
+      "p2FieldCount": 44,
+      "continuationOnly": true,
+      "approved": false,
+      "semanticPass": false,
+      "approvalStatus": "continued-only-model-exception",
+      "semanticReview": {
+        "variablesSemanticPass": false,
+        "profileSemanticPass": false,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": null,
+          "sameReplyMultipleNewNpcs": null,
+          "all44FieldsRead": null,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
           "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
-        },
-        {
-          "module": "p1",
-          "code": "body_header_vs_elapsed_minute_time_interpretation",
-          "sourceSequence": 9,
-          "inherited": false,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
+          "code": "unsupported_exact_clock_increment",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "unverified-model-time-estimate",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 1,
+          "repairRecovered": false,
           "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": false
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": true
         },
         {
           "module": "p2",
-          "code": "profile_incomplete",
-          "sourceSequence": 9,
-          "inherited": false,
-          "initialFailureRetained": true,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": true,
-          "manualButtonClicks": 1,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": true,
+          "code": "discovery_evidence_unbound",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "literal-source-contract-not-met",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 0,
+          "repairRecovered": false,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
           "priorCandidateCompleted": null,
-          "recoveryMethod": "fresh-batch-saves-three-independent-profiles-with-unspecified-age-values",
-          "codeFailureObserved": false,
+          "recoveryMethod": null,
+          "codeFailureObserved": null,
           "continuedByExplicitUserAuthorization": true
         }
       ],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 2,
+      "inheritedProfileModelExceptions": [
+        "seq5-existing_goal_stale_after_departure",
+        "seq5-ambiguous_narrative_clue_attributed_to_named_character",
+        "seq7-individual_guard_omission_not_recovered",
+        "seq8-distinct_reporter_omission_not_recovered"
+      ],
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": false,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": 0,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq9-cost-final-summary.json",
-        "sequence": 9,
-        "wholeTavernCalls": 8,
-        "doctorCalls": 5,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 2,
-        "manualButtonClicks": 1,
-        "automaticRetries": 0,
-        "totalTokens": 559578
+        "doctorPromptTokens": 220821,
+        "paidDoctorRequests": 4,
+        "otherRequests": 3,
+        "totalNativeRequests": 7,
+        "normalDoctorWallMs": 86468,
+        "p1DurationMs": 43268,
+        "p2DurationMs": 41690,
+        "mainDurationMs": 44391
       },
       "evidence": {
-        "release": {
-          "file": "seq9-review-release.json",
-          "sha256": "62cb9230917a94f77ff10abefa00f648f37951cfd6047dc62b17208f20a763bc"
+        "continuation": {
+          "file": "seq9-model-failure-continuation-only.json",
+          "sha256": "c71907e32d29d9f8ffdcda81a26caf7a411408af1b464624ba74f35180afe854"
         },
-        "root": {
-          "file": "seq9-root-review.json",
-          "sha256": "784173c9eeef3cdccaff338e4ced2965588fd38509f73c1b93371ff32c08bb65"
+        "continuationReview": {
+          "file": "seq9-root-continuation-review.json",
+          "sha256": "7d7b3519a20a232487292bed972a75472fa47ac24feab05e29381a14bbaa82b9"
         },
-        "meta": {
-          "file": "seq9-mvu-final-meta-manual.json",
-          "sha256": "19943d8fb120d03f7ad21dffeae68d143c212b26c95a6f2652824259286db534"
-        },
-        "additional": [
+        "sourceEvidence": [
           {
-            "file": "seq9-p1-independent-review.json",
-            "sha256": "e9142135e54a83504a0a90e2d836a0511e6612848ff140f1ffea2a4ce2322c8c"
+            "file": "seq9-global-failure-initial.json",
+            "sha256": "ac8801c2baa3082e736629fa66dfd4408cbd2327e1ae075532e8cad5b08a7328"
           },
           {
-            "file": "seq9-p2-initial-independent-review.json",
-            "sha256": "558ef97611bc1be832d7695e089be617006c1f0b1c9b5bd9634ab797d2102b43"
+            "file": "seq9-initial-raw-review.json",
+            "sha256": "742d6f7abd2c42e27462888e87dbd47c1d7acafe5e044616d8c55ebdc4afa7af"
           },
           {
-            "file": "seq9-p2-manual-independent-review.json",
-            "sha256": "9a45e8d412c4f4442a5e3de58ff353596d4b8369c442cc1dc86f5a915d587575"
+            "file": "seq9-initial-raw-review-addendum.json",
+            "sha256": "7d329eaf7a9ca6f0cf0bf52151ea41860a2ada174ad3bfeefbf235a295937757"
           },
           {
             "file": "seq9-root-initial-review.json",
-            "sha256": "38a35252bf1e391fcaeba8168b45683006c071485f6e20d840e68f8992bf46e5"
+            "sha256": "645bc78d7105bb3b3208c5a6075e048f1fde4dc890812d39c05283933ae1e006"
           },
           {
-            "file": "seq9-root-pre-profile-repair-review.json",
-            "sha256": "2fd530c952c1233af033b0888449f1bf32035de92a56695b28c0c4e389fd1bfa"
+            "file": "seq9-time-audit.json",
+            "sha256": "f1c5f31e7eee2ab74b1539b2b735232ee14a292ab87afe19bae2e152de029d46"
           },
           {
-            "file": "seq9-root-manual-review.json",
-            "sha256": "f480cd0370fd8c7efee62fb14c67e354e012e5169fce0c7fb16860c289527cb6"
+            "file": "seq9-repair-contract.json",
+            "sha256": "4390c71df361fe7345818a543f891333977c26db3f5b8077f0586f993dde3ee8"
           },
           {
-            "file": "seq9-cost-final-summary.json",
-            "sha256": "611b8957b9a1784fe76ce1a3177645084ef09cf8ed79abfbc478188ed58a399d"
+            "file": "seq9-manual-repair.started.json",
+            "sha256": "0af69e5705a76e1927e74ad0981a19ace5545d32f74a145044efa9626130fe71"
           },
           {
-            "file": "seq9-private-initial-reviewed-cleanup.json",
-            "sha256": "44366cf6b72446acd9024da4589817359755a37fa56b35f107471e0ab48a1a9e"
+            "file": "seq9-manual-repair-click.json",
+            "sha256": "bd3d8dff92df7ce222ce71a5b3fe7626f7d5e0c552f177d1dab5b1ebfbabf575"
           },
           {
-            "file": "seq9-private-manual-reviewed-cleanup.json",
-            "sha256": "ddba6a5c10e2ffa686a85187d89752d97f4d7b3cd49fe4e46cc837bf89430071"
+            "file": "seq9-post-variable-proof.json",
+            "sha256": "bf7786812a040fcab462ec689c0f160d25cb487a8e990d3c4d42e7b9a68804b7"
           },
           {
-            "file": "seq9-initial-snapshot.json",
-            "sha256": "72707824146643919911ac4c8fbdfff944dea108081172f7b5af02dcc3549440"
+            "file": "seq9-after-p1-raw-review.json",
+            "sha256": "915dea3ef4fd7eeb6488757930fb070d9b080ed8dbf27c005f669aff37406994"
           },
           {
-            "file": "seq9-manual-snapshot.json",
-            "sha256": "48ed6dc7bcd14ea93bfded9845c055c1711dbc86d708980e6eef3f8ea57d0a37"
+            "file": "seq9-initial-read-pages-cleanup.json",
+            "sha256": "b416cc9306036faaf474429423007e63ac92c49d932d41fe3ad02a527cf31d06"
           },
           {
-            "file": "seq9-mvu-final-meta-manual.json",
-            "sha256": "19943d8fb120d03f7ad21dffeae68d143c212b26c95a6f2652824259286db534"
+            "file": "seq9-manual-read-pages-cleanup.json",
+            "sha256": "a9bdc07c4622c842b175c168d7eba59f7ef0009859d4dac33385e351c6596740"
           },
           {
-            "file": "seq9-recall-meta-settled.json",
-            "sha256": "03cf9c3b6605fa631b9904a6b77d29ddf5a0721968f3e90c056a10232fe0b4ce"
+            "file": "seq9-recall-meta-capture.json",
+            "sha256": "b1bca8f4f5e1d9d9a31797923a97bc3aa66f8e4d291b39e696826a768f1e3f1c"
           },
           {
-            "file": "seq9-recall-ally-binding.json",
-            "sha256": "f069cdbafeca650664cdc52c63ebc54141307e7651ed203740d1a81f75e72594"
+            "file": "seq9-cost-observed.json",
+            "sha256": "0109de657fbb258823f55b6ad40a00280aeaa58557987aaf7daee24a213c2576"
           },
           {
-            "file": "seq9-profile-manual-readback.json",
-            "sha256": "33693d862dd60ed91bfbfaf9d8f7297e3f3a8cc3e6cfc7c9461d0f380eca5387"
+            "file": "seq9-after-repair-cost-observed.json",
+            "sha256": "9bc7c518922c7750bd20aeb11603e643b0ab019f7e6f01dd564645ab38d7d9c5"
+          },
+          {
+            "file": "seq9-ledger-before-manual-settle.json",
+            "sha256": "f72446012505d85e92e641a5047b0890845ae0f8c98bbdde6db1818c14086746"
+          },
+          {
+            "file": "seq9-initial-native-observed.json",
+            "sha256": "8e8183d79ccb2a00055126d96cad4506299bbea3c66f5754f7eaf8ddecb7742b"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": []
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 10,
       "kind": "next",
       "index": 20,
       "swipeId": 0,
-      "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "contentHash": "7c6d6ab423744893af7c13505c436cff4835a22682056d50dcd6a329304fbda1",
+      "inputHash": "7e55328072f91f2e18d3231548cdd731eff180e874552d455d2e252bbcb79931",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "b65ba4de513c1664b3bfff5ed1f38e8e770214ac0f144e842b7fc8b94a532463",
+      "p1RecordHash": "20fc9f9b4fa8b7478e28895536acfbfe6eed58b36acff72af04f58e6379db36d",
+      "p2RecordHash": "ec7233d51b05d5ee2919612ddc7d28e58ba06b004e2daab4b542727171357737",
+      "p2Status": "failed",
+      "p2Readback": false,
+      "p2FieldCount": 44,
+      "continuationOnly": true,
+      "approved": false,
+      "semanticPass": false,
+      "approvalStatus": "continued-only-model-exception",
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": false,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": null,
+          "sameReplyMultipleNewNpcs": null,
+          "all44FieldsRead": null,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
-          "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
-        },
-        {
           "module": "p2",
-          "code": "age_placeholder_semantic_incompleteness",
-          "sourceSequence": 9,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
+          "code": "discovery_evidence_unbound",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "literal-source-contract-not-met",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 1,
+          "repairRecovered": false,
+          "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
+          "codeFailureObserved": null,
           "continuedByExplicitUserAuthorization": true
         }
       ],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 1,
+      "inheritedProfileModelExceptions": [
+        "seq5-existing_goal_stale_after_departure",
+        "seq5-ambiguous_narrative_clue_attributed_to_named_character",
+        "seq7-individual_guard_omission_not_recovered",
+        "seq8-distinct_reporter_omission_not_recovered",
+        "seq9-two_old_profiles_not_updated"
+      ],
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": false,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": 0,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq10-cost-summary.json",
-        "sequence": 10,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 0,
-        "manualButtonClicks": 0,
-        "automaticRetries": 0,
-        "totalTokens": 399134
+        "doctorPromptTokens": 169701,
+        "paidDoctorRequests": 3,
+        "otherRequests": 3,
+        "totalNativeRequests": 6,
+        "normalDoctorWallMs": 63767,
+        "p1DurationMs": 19464,
+        "p2DurationMs": 43815,
+        "mainDurationMs": 40055
       },
       "evidence": {
-        "release": {
-          "file": "seq10-review-release.json",
-          "sha256": "1fe346fc90276921e7fb0778590f753bf10ae7a16ec1e838f619effde418f9f5"
+        "continuation": {
+          "file": "seq10-model-failure-continuation-only.json",
+          "sha256": "7b21667a6cd0f7380b68a8d27515b2d47f1b1d771e905c08586bb6ce20e35721"
         },
-        "root": {
-          "file": "seq10-root-review.json",
-          "sha256": "0e8e8ff7853292e53960caf830e4d0a7c23f396da06ede5dff566dc53cca65af"
+        "continuationReview": {
+          "file": "seq10-root-continuation-review.json",
+          "sha256": "aa5686cf1dbeb5b258a6bc8ba297303808ec7ae9981e9cdf9a46a4a1b5fa25cf"
         },
-        "meta": {
-          "file": "seq10-mvu-final-meta-initial.json",
-          "sha256": "2554ddfb0b2bb01764f9708c55195aaf16b8d4f819fa2be95c0a69974ffc2e12"
-        },
-        "additional": [
+        "sourceEvidence": [
           {
-            "file": "seq10-p1-independent-review.json",
-            "sha256": "200af5f56c48daf0833c8b9158aa62e1b293357891dd07a788c3e8b037fd1aeb"
+            "file": "seq10-global-failure-initial.json",
+            "sha256": "993336fcbcdc1e94863cd97f26e107053a2a989df1f206ddd1366ded3e6cb01a"
           },
           {
-            "file": "seq10-p2-independent-review.json",
-            "sha256": "99844f09078dd3635fee304dac29699291b7d0a4054866b103f340a72c1a2b70"
+            "file": "seq10-root-global-failure-review.json",
+            "sha256": "228c0cf0ab9d03384700ff41cff8eafd576cd4200ac0ce6d6071cec498607fd1"
           },
           {
-            "file": "seq10-root-body-recall-ui-review.json",
-            "sha256": "df09df87ccae6d7668bf1bdb328a66d87d7ccdf41f14aa4bd0eb37672c027b6b"
+            "file": "seq10-root-quote-proof.json",
+            "sha256": "0dee6122fb35a26d53d1ef6386a3579dde01548d6f7ef27e2f1f7c4ac2712cbd"
           },
           {
-            "file": "seq10-cost-summary.json",
-            "sha256": "0ecd6eb45339b733f5bf3f9a1343864c5a07646cafb608cc2968fedd48a494b4"
+            "file": "seq10-p1-semantic-review.json",
+            "sha256": "734472e17812071320daa696fe65b85576fa34368d7546c4baf7862fbcc8093a"
           },
           {
-            "file": "seq10-private-reviewed-cleanup.json",
-            "sha256": "9e8dba04add2ecd12b8a48cdd04eaea2d50817286b12519aa2feb47413967683"
+            "file": "seq10-initial-raw-review.json",
+            "sha256": "38b168940865a5a74be9328768f772a1f5f5f4e1ac8e6f8ec0a98d7e66287012"
           },
           {
-            "file": "seq10-initial-snapshot.json",
-            "sha256": "9a0d5b70b45144f66c707efac7d2edd0e083ae4ba48734cc43293e5e5f400729"
+            "file": "seq10-global-failure-click.json",
+            "sha256": "c0f874018085be31c5274b450a288afb3651f7bd846afc9886a76dc4989de7bc"
           },
           {
-            "file": "seq10-mvu-final-meta-initial.json",
-            "sha256": "2554ddfb0b2bb01764f9708c55195aaf16b8d4f819fa2be95c0a69974ffc2e12"
+            "file": "seq10-global-failure-readback.json",
+            "sha256": "70e2565d0b28afc619572b25966884c3d4ab5f226c5d9120c4ede84f5bf17549"
           },
           {
-            "file": "seq10-recall-meta-settled.json",
-            "sha256": "35f911ddcb0843c7f2a9cf5d9c75391885e1637170124594d15e1ba4177dd519"
+            "file": "seq10-failed-final-meta-manual.json",
+            "sha256": "345e7a3de7b8d79a00b4ec47d7aab963dc3a04211fd07f5d31bd6e3aa11c721d"
           },
           {
-            "file": "seq10-recall-actor-binding.json",
-            "sha256": "ee55dd5b59b4560d0b35e0f19c8bb18df8ea1e87ba440de9c5e13e0eb6b34b1b"
+            "file": "seq10-manual-raw-comparison.json",
+            "sha256": "ff1bb95d8bb584360d322193d9afcd01ec889ab3bdd9dec744cb0fefe85b2578"
           },
           {
-            "file": "seq10-viewport-capture.json",
-            "sha256": "e93543d5dc5bd38f5dc4ca2543cef8f4090d89723d7012385376f59852e11ad2"
+            "file": "seq10-manual-recall-proof.json",
+            "sha256": "cf3348cb927d7267b9f424b3e697b09c3585c4022e3482fedfcbaa37d6b0927b"
+          },
+          {
+            "file": "seq10-recall-meta-capture.json",
+            "sha256": "09829f5f687f931ede491385ec40b732314abe43cfed3e338626598590785e93"
+          },
+          {
+            "file": "seq10-cost-observed.json",
+            "sha256": "cc35ce76a991fac45fe4e50e49321450d047c907d9e2ef7fb0bc0397d777905f"
+          },
+          {
+            "file": "seq10-after-repair-cost-observed.json",
+            "sha256": "b31ed27c56dc0c59b2fad5296fdf76b6521a46af0deded0f38538edaa10bc41f"
+          },
+          {
+            "file": "seq10-initial-read-pages-cleanup.json",
+            "sha256": "8b81fe525d7a80a3f40cbee74880c579370fcc23b6f84b40f675b93196461752"
+          },
+          {
+            "file": "seq10-manual-read-pages-cleanup.json",
+            "sha256": "5e2cdfa1bcb8f93db41e650cff5847a8c72882fa1bff0379776804d36e61214e"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": [
+          {
+            "file": "seq10-failed-final-meta-manual.json",
+            "sha256": "345e7a3de7b8d79a00b4ec47d7aab963dc3a04211fd07f5d31bd6e3aa11c721d"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 11,
       "kind": "next",
       "index": 22,
       "swipeId": 0,
-      "p2Status": "cancelled",
-      "failedTaskCount": 0,
-      "reviewOutcome": "p1-model-failure-contained-p2-skipped",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "contentHash": "bc168dfa5bd601c60bba289d68902c6bb9d3f7cc79e1ea215907996696ab910b",
+      "inputHash": "5d22d83bd9ccfc2392cd5b07f23e95d60bf98fdd226801733fabaf3c3c735f7f",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "6a00cc4ba50e26f8f75696617e5525fad4a8c972942bc07e1ab05541827ee609",
+      "p1RecordHash": "a8e74c4616a779f53844c100c2f68ca1917f37f9e48cc3aa38f22b695bf61f69",
+      "p2RecordHash": "4e17f891591d16abd803f26ed67e79a2c766aa57801f5186f23c0fceb029bf89",
+      "p2Status": "complete",
+      "p2FieldCount": 44,
+      "semanticReview": {
+        "variablesSemanticPass": false,
+        "profileSemanticPass": false,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": null,
+          "sameReplyMultipleNewNpcs": null,
+          "all44FieldsRead": true,
+          "allSavedProfilesComplete": true,
+          "p2OldStableIdsPreserved": true,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
           "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
-        },
-        {
-          "module": "p2",
-          "code": "age_placeholder_semantic_incompleteness",
-          "sourceSequence": 9,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
-        },
-        {
-          "module": "p1",
-          "code": "patch_outcome",
-          "sourceSequence": 11,
-          "inherited": false,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
+          "code": "dungeon_clock_elapsed_minute_omitted",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "model-time-omission",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 1,
           "repairRecovered": false,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
-        },
-        {
-          "module": "p2",
-          "code": "upstream_failed_skipped_current_round_update",
-          "sourceSequence": 11,
-          "inherited": false,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
           "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": false
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p2",
+          "code": "individually_distinguishable_companion_omitted",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "model-discovery-omission",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 0,
+          "repairRecovered": false,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": "single-natural-downstream-call-after-P1-manual-repair",
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": true
         }
       ],
-      "modelFailureContained": true,
-      "mode": null,
+      "modelExceptionCount": 2,
+      "inheritedProfileModelExceptions": [
+        "seq5-existing_goal_stale_after_departure",
+        "seq5-ambiguous_narrative_clue_attributed_to_named_character",
+        "seq7-individual_guard_omission_not_recovered",
+        "seq8-distinct_reporter_omission_not_recovered",
+        "seq9-two_old_profiles_not_updated"
+      ],
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": false,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": 0,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq11-cost-summary.json",
-        "sequence": 11,
-        "wholeTavernCalls": 5,
-        "doctorCalls": 2,
-        "automaticDoctorCalls": 1,
-        "manualDoctorCalls": 1,
-        "manualButtonClicks": 1,
-        "automaticRetries": 0,
-        "totalTokens": 321160
+        "doctorPromptTokens": 221811,
+        "paidDoctorRequests": 4,
+        "otherRequests": 3,
+        "totalNativeRequests": 7,
+        "normalDoctorWallMs": 117375,
+        "p1DurationMs": 62643,
+        "p2DurationMs": 53649,
+        "mainDurationMs": 75941
       },
       "evidence": {
         "release": {
           "file": "seq11-review-release.json",
-          "sha256": "417c6dcf8c82ebf63e3093b446b346d6ceb102682fdd00be8456d1e77a775218"
+          "sha256": "670153207961da7f43a4c9ae8791dbbddaf50129ed8762bb7cd332e535b2cc7a"
         },
-        "root": {
+        "rootReview": {
           "file": "seq11-root-review.json",
-          "sha256": "12825cfb33f1f32d93013ddc7b78b8949e8b9973fb52dd339a2ece0831c8b53a"
+          "sha256": "7d33501d449abb744f58ca76b4aaf82dd6ee6c8af6ff3845bd59bf75f1aad0d8"
         },
-        "meta": null,
-        "additional": [
+        "matchingMeta": {
+          "file": "seq11-mvu-final-meta-manual.json",
+          "sha256": "defaa24e707141840225efc11f278676788730149e49e0f8c44883b1d69c6212"
+        },
+        "matchingSnapshot": {
+          "file": "seq11-manual-snapshot.json",
+          "sha256": "e28486c88aebb74fa00777bd0e29cef2c465cbb057aa92ae16f6ea0ca42e0359"
+        },
+        "codeFailureAddendum": null,
+        "rootReferences": [
           {
-            "file": "seq11-p1-initial-independent-review.json",
-            "sha256": "3e103a856df741f6bf1b86acf96270880684985dba2ade64ba2631bb49af3429"
-          },
-          {
-            "file": "seq11-p2-independent-review.json",
-            "sha256": "531c27c5629d17a3571f84749e2e1fd4d99e315aa7cda8ab02532683441a31e6"
-          },
-          {
-            "file": "seq11-root-initial-review.json",
-            "sha256": "e6a396d2c853253f1c48648ffccb659ed51825e1922d6a528bc442e588b8b2d8"
-          },
-          {
-            "file": "seq11-root-manual-recall-ui-review.json",
-            "sha256": "4b88e1c8791eb57bd2b865cbb379461cabcc7ce3cea6f2e9ada932922ce81c00"
-          },
-          {
-            "file": "seq11-p1-failure-containment.json",
-            "sha256": "5662afb6a5ee9d01dfa72edbc7715b721c3822479e60cb3f7863ad91ded4b252"
-          },
-          {
-            "file": "seq11-cost-summary.json",
-            "sha256": "bbc561a3c8d9cae80ebe5eea1222f98d6d4be8b83e8ec3f4d4668cde8030fac5"
+            "file": "seq11-after-repair-cost-observed.json",
+            "sha256": "f2c95db6a3767f57d3621c211be1795c63d3010347c6d1c216c8516b108dee80"
           },
           {
             "file": "seq11-cost-observed.json",
-            "sha256": "ae9c157e4fb2ee778e7e4de2717e2568d463c825378ebf01d34f0596f32522cb"
+            "sha256": "0384ee3e64b05738add9b66c72a3b9d991c05c6e37b9ef947a677d8156ae1202"
           },
           {
-            "file": "seq11-private-reviewed-cleanup.json",
-            "sha256": "bb185882c5139bf83706e4a2cbaa0d0dadbf32f8dbd45d965235d3588f6671ca"
+            "file": "seq11-initial-raw-review.json",
+            "sha256": "90b4f68741971bdf1aee8db67cd273d52d5b43dc8f98a2a6bd5b93907e79a9d6"
           },
           {
-            "file": "seq11-initial-failure.json",
-            "sha256": "e51dfaa3ca44ecf5b8fc7f53ab7bf956b8f765561f1850d336b7d58d866c2236"
+            "file": "seq11-initial-read-pages-cleanup.json",
+            "sha256": "dcda9bdf1045d9fd23b847e38e6520e4235c6089d029e1cd61731136f4146eec"
           },
           {
-            "file": "seq11-p1-manual-failure.json",
-            "sha256": "7b1f5747b4eeb93c5282a7a2bb34f5ea085d28103fb21ece62ac2bc66accc6e6"
+            "file": "seq11-initial-snapshot.json",
+            "sha256": "c2f8310cedb7d35785546cc0e8bff325cac7b63defb02ebe9c84248fe123950e"
           },
           {
-            "file": "seq11-p1-manual-repair-click.json",
-            "sha256": "d6c1cda4b5b7926ea497cbb0d57c65d2d7c4480e170e3587555037ffce91dad4"
+            "file": "seq11-manual-raw-review.json",
+            "sha256": "cd69dcb3dbb04a47f9a6f578bfa8c09e2da2d1c74707170c63559dfe82fa4ced"
           },
           {
-            "file": "seq11-p1-repair-contract.json",
-            "sha256": "01c961024d19db09bc44b21ace7fb6dc4c72f7cc35913cf6f7d95c95d1051f50"
+            "file": "seq11-manual-read-pages-cleanup.json",
+            "sha256": "c6b264cd6c7f80c957f92159f6e2e198b35b7b0de944b6e0f76e11babd9df786"
+          },
+          {
+            "file": "seq11-manual-repair-click.json",
+            "sha256": "82b43cd96199a3629b13e1770d9c48409a7f5875be987c8c8e819d2ed3d78983"
+          },
+          {
+            "file": "seq11-manual-repair.started.json",
+            "sha256": "237cf55803ccc62ccaccd9573a6e1901bab3e3a160f46d74545d51da90c39951"
+          },
+          {
+            "file": "seq11-manual-snapshot.json",
+            "sha256": "e28486c88aebb74fa00777bd0e29cef2c465cbb057aa92ae16f6ea0ca42e0359"
+          },
+          {
+            "file": "seq11-mvu-final-meta-initial.json",
+            "sha256": "2a2fd40a60530745b213a88c30025383b468d5727795521368c00064fe3b3f6b"
+          },
+          {
+            "file": "seq11-mvu-final-meta-manual.json",
+            "sha256": "defaa24e707141840225efc11f278676788730149e49e0f8c44883b1d69c6212"
+          },
+          {
+            "file": "seq11-native-observed.json",
+            "sha256": "081de7e4ac159ac7c3eab8b054bcda5e252db1a3c7bd5d1388f024b368f52122"
+          },
+          {
+            "file": "seq11-p1-semantic-review-time-addendum.json",
+            "sha256": "e987fd13d7d07268c67b048d9ce58804fa85d57d4e280af37ec11d4d8c889002"
+          },
+          {
+            "file": "seq11-p1-semantic-review.json",
+            "sha256": "1512cc4f48fdc99d5371850f2c9fbb0d5900392eaaff378c88f8602fd2a7a262"
           },
           {
             "file": "seq11-recall-meta-capture.json",
-            "sha256": "c2635c55a8df070fcb08e9f9fff82c9201a7549f8d76f1e706bbf1856ae8b094"
+            "sha256": "7a25634693f242a6f6e106677a61f62aec6b79e5c92f054f4a470d1f13f15bf8"
           },
           {
-            "file": "seq11-viewport-capture.json",
-            "sha256": "e93543d5dc5bd38f5dc4ca2543cef8f4090d89723d7012385376f59852e11ad2"
+            "file": "seq11-recall-meta-settled.json",
+            "sha256": "7a3b121aa62b80a5ebc7fa3074325f8694ed31f50ab85b5006faa42ee68a984e"
+          },
+          {
+            "file": "seq11-repair-contract.json",
+            "sha256": "e913257f015af9bb316358b082514ba0a6bcc856699f643fa27b2016448de74f"
+          },
+          {
+            "file": "seq11-root-initial-review.json",
+            "sha256": "fd2ca27a6055a3aadd603672c606bf1706a36f8f23e9b883d0d24a611de38273"
           }
         ],
-        "p1Failure": {
-          "p1Status": "failed",
-          "p1Code": "patch_outcome",
-          "p1RecordHash": null,
-          "p1FailureEvidence": {
-            "file": "seq11-p1-failure-containment.json",
-            "sha256": "5662afb6a5ee9d01dfa72edbc7715b721c3822479e60cb3f7863ad91ded4b252"
+        "retainedAttempts": [
+          {
+            "file": "seq11-mvu-final-meta-initial.json",
+            "sha256": "2a2fd40a60530745b213a88c30025383b468d5727795521368c00064fe3b3f6b"
           },
-          "p1ReviewHash": "1e282508d647f5555602454cdbea9815360ca1eccbb5f937733650ba7ab24894",
-          "p1PendingHash": "e8d5ee7c7751ce3498b407de681c8725e39f5d3f017902a7b5af52fd191a1799",
-          "p2Skipped": true,
-          "p2Status": "cancelled",
-          "p2RequestCount": 0
-        }
-      }
+          {
+            "file": "seq11-mvu-final-meta-manual.json",
+            "sha256": "defaa24e707141840225efc11f278676788730149e49e0f8c44883b1d69c6212"
+          },
+          {
+            "file": "seq11-initial-snapshot.json",
+            "sha256": "c2f8310cedb7d35785546cc0e8bff325cac7b63defb02ebe9c84248fe123950e"
+          },
+          {
+            "file": "seq11-manual-snapshot.json",
+            "sha256": "e28486c88aebb74fa00777bd0e29cef2c465cbb057aa92ae16f6ea0ca42e0359"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 12,
       "kind": "next",
       "index": 24,
       "swipeId": 0,
-      "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "contentHash": "e30f3f3722b72b67ea3d20694fc484f163ecbe85ee0ff47a44f7f5a3abb98b07",
+      "inputHash": "5fa824ce237002efb4c3ce90d5f0932e5a653fbe9112ed4025c9cd2d9e60784c",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "2ee48d96bbd884c718d57a1412827088da921431eeb3cb16754499e2ab0c5fd4",
+      "p1RecordHash": "24a7677e136755bf7e5c0be9f64c46307a49109f2e7d0e1d0b7b9b4b223ed7c2",
+      "p2RecordHash": "f72f98dbdb441422718f861b29a15cd375b08154b084ffddb175c2f958335f2e",
+      "p2Status": "failed",
+      "p2Readback": false,
+      "p2FieldCount": 44,
+      "continuationOnly": true,
+      "approved": false,
+      "semanticPass": false,
+      "approvalStatus": "continued-only-model-exception",
+      "semanticReview": {
+        "variablesSemanticPass": true,
+        "profileSemanticPass": false,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": null,
+          "sameReplyMultipleNewNpcs": null,
+          "all44FieldsRead": null,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
-          "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
+          "module": "p2",
+          "code": "profile_incomplete",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "model-content-incomplete",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 1,
+          "repairRecovered": false,
+          "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
+          "codeFailureObserved": null,
           "continuedByExplicitUserAuthorization": true
         },
         {
           "module": "p2",
-          "code": "age_placeholder_semantic_incompleteness",
-          "sourceSequence": 9,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
+          "code": "discovery_evidence_unbound",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "literal-source-contract-not-met",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 1,
+          "repairRecovered": false,
+          "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
+          "codeFailureObserved": null,
+          "continuedByExplicitUserAuthorization": true
+        },
+        {
+          "module": "p2",
+          "code": "stale_profile_fields_after_state_transition",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "model-incremental-update-omission",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 1,
+          "repairRecovered": false,
+          "semanticErrorFixed": null,
+          "statusRecovered": null,
+          "priorCandidateCompleted": null,
+          "recoveryMethod": null,
+          "codeFailureObserved": null,
           "continuedByExplicitUserAuthorization": true
         }
       ],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 3,
+      "inheritedProfileModelExceptions": [
+        "seq5-existing_goal_stale_after_departure",
+        "seq5-ambiguous_narrative_clue_attributed_to_named_character",
+        "seq7-individual_guard_omission_not_recovered",
+        "seq8-distinct_reporter_omission_not_recovered",
+        "seq9-two_old_profiles_not_updated"
+      ],
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": false,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": 0,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq12-cost-summary.json",
-        "sequence": 12,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 0,
-        "manualButtonClicks": 0,
-        "automaticRetries": 0,
-        "totalTokens": 383896
+        "doctorPromptTokens": 181144,
+        "paidDoctorRequests": 3,
+        "otherRequests": 3,
+        "totalNativeRequests": 6,
+        "normalDoctorWallMs": 74152,
+        "p1DurationMs": 31918,
+        "p2DurationMs": 42020,
+        "mainDurationMs": 52721
       },
       "evidence": {
-        "release": {
-          "file": "seq12-review-release.json",
-          "sha256": "b7132fa7af4ea5494f1b47441921a5d0c54d2dc7d3e1d762ce6bfeb3abbc19ac"
+        "continuation": {
+          "file": "seq12-model-failure-continuation-only.json",
+          "sha256": "e7e62c77e4f7a41d7aff08f339479bdc90052af7f5a6595ca3b51e9fce895e0d"
         },
-        "root": {
-          "file": "seq12-root-review.json",
-          "sha256": "4528c8ad1b0c3bf8a3523e6230001cc4e507ee82ba66fb36766a1ed22025141d"
+        "continuationReview": {
+          "file": "seq12-root-continuation-review.json",
+          "sha256": "ee409cd9aa0681d0c9d4d5c310dd0c6a239064d537fce6993c67a45e1163bea5"
         },
-        "meta": {
-          "file": "seq12-mvu-final-meta-initial.json",
-          "sha256": "b3d14c09e0c3a7c536de7c17a68382ff47394d80b2708c3fdc70e83836140d00"
-        },
-        "additional": [
+        "sourceEvidence": [
           {
-            "file": "seq12-p1-independent-review.json",
-            "sha256": "65f64f99de40ddc9753c40a714d34a4556e3eccdff69eb015552d6b79fac529e"
+            "file": "seq12-after-repair-cost-observed.json",
+            "sha256": "a2589857e79f00d58bb0f5e341cfaaad28124b6a37e453ce4776a53241844699"
           },
           {
-            "file": "seq12-p2-independent-review.json",
-            "sha256": "8cf6ea3a4e1d2474478557e0f690516147d730d1da5696216208e91ab83e0d9e"
+            "file": "seq12-cost-observed.json",
+            "sha256": "623d5157c566e1083554cd5538d4c487415e8a8f40540feb15d396f57ddd69ae"
           },
           {
-            "file": "seq12-root-body-recall-ui-review.json",
-            "sha256": "10c0b8b96699e93f71fa554700a9d0328ff93aa2330fff3a5ae9f9c679f37175"
+            "file": "seq12-failed-final-meta-manual.json",
+            "sha256": "0a3576e236bd2a6e7cbc834243d2c051e52c0b59b40b76a7ae315ae56d550c55"
           },
           {
-            "file": "seq12-cost-summary.json",
-            "sha256": "be1e434a50de388113360ec0eb904469b89e37bdd8f35004f1e0629fd38028f9"
+            "file": "seq12-global-failure-readback.json",
+            "sha256": "3a26c1954d4a5939e5b7b87e09d1b493f866b9edefd8f8426cee42036c14f930"
           },
           {
-            "file": "seq12-private-reviewed-cleanup.json",
-            "sha256": "3e66b71233bef2b98930f9c8c12c8438f3cd5ec614c914a5b405e17a33ad1d26"
+            "file": "seq12-initial-raw-review.json",
+            "sha256": "5f3e04fb247855c7876d1966821d2e39adfabf0fecb275fe36fc80a036917c92"
+          },
+          {
+            "file": "seq12-initial-read-pages-cleanup.json",
+            "sha256": "5222da645bd865e6a44f3dc3d7d16beef56dee500bae4e6121dff757d63cebe7"
           },
           {
             "file": "seq12-initial-snapshot.json",
-            "sha256": "24e466bdbc2c17951096d8b173a46433a85bfbb168936fdd634d467e91b6acb5"
+            "sha256": "19479b4c2bbf85cfafc3992b7f61eb7fd8d310622606af6bf761f1405e1a5b7e"
+          },
+          {
+            "file": "seq12-manual-raw-review.json",
+            "sha256": "3d2eed194003e5b9be620abaa585cf6a847fca21f17fd46b7f7927815e8b7bfe"
+          },
+          {
+            "file": "seq12-manual-read-pages-cleanup.json",
+            "sha256": "ae78623ae81253f2573cd2538dfe1947a5bfc401230e50751d307d751c85ac66"
+          },
+          {
+            "file": "seq12-manual-recall-proof.json",
+            "sha256": "99d3ab62017c10e78dd7e82f619a36124d0231a43470585fda33dae6140d8744"
           },
           {
             "file": "seq12-mvu-final-meta-initial.json",
-            "sha256": "b3d14c09e0c3a7c536de7c17a68382ff47394d80b2708c3fdc70e83836140d00"
+            "sha256": "ea6ae25d25ea82568d2fdbdc2563fe5a4794edef0229c1927a490ff5ab447611"
+          },
+          {
+            "file": "seq12-native-observed.json",
+            "sha256": "cd5e2e0032f672f59d395e4743e3011fb6e058f3b71a4b347a1bed6f3f0c1ad5"
+          },
+          {
+            "file": "seq12-p1-semantic-review.json",
+            "sha256": "65ddc6ea8bce6f9c86eb9fd2bb12f581b238328c08c484f7eb829862521311a7"
+          },
+          {
+            "file": "seq12-profile-manual-click.json",
+            "sha256": "3e82a1a125cfe1a3466b5aa690bd2447ab08a4a93f2b767991fdd0a20eb183ff"
+          },
+          {
+            "file": "seq12-recall-meta-capture.json",
+            "sha256": "4b8403ed414d5e40062356db6f53f36283ded6a6ad2327a4b73dd3a88dff83df"
           },
           {
             "file": "seq12-recall-meta-settled.json",
-            "sha256": "b5f1dd68730b6b88c7cd09ab8c2dcfcfc3a751cf42ab30febde494595d5e4c7c"
+            "sha256": "4efb1a4b89dd3003acf3e0ab8ab9204fb4dca18221be8b7035cc855e1f102f1a"
           },
           {
-            "file": "seq12-recall-actor-binding.json",
-            "sha256": "5055f3a2d75cd8bfcf219410402a429f9bd1ef12a654c7be0175692808dbb47e"
-          },
-          {
-            "file": "seq12-viewport-capture.json",
-            "sha256": "46b66ca66c34b26396fe724a38816af5b33a5a3263fe8280f8f98bafee768594"
+            "file": "seq12-root-initial-review.json",
+            "sha256": "8df8562bc2f9965575ba6382e08e4b5a9d5ebaeb5ad1bc2069da877971759edb"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": [
+          {
+            "file": "seq12-failed-final-meta-manual.json",
+            "sha256": "0a3576e236bd2a6e7cbc834243d2c051e52c0b59b40b76a7ae315ae56d550c55"
+          },
+          {
+            "file": "seq12-mvu-final-meta-initial.json",
+            "sha256": "ea6ae25d25ea82568d2fdbdc2563fe5a4794edef0229c1927a490ff5ab447611"
+          },
+          {
+            "file": "seq12-initial-snapshot.json",
+            "sha256": "19479b4c2bbf85cfafc3992b7f61eb7fd8d310622606af6bf761f1405e1a5b7e"
+          }
+        ]
+      },
+      "realAcceptance": false
     },
     {
       "sequence": 13,
       "kind": "next",
       "index": 26,
       "swipeId": 0,
-      "p2Status": "complete",
-      "failedTaskCount": 0,
-      "reviewOutcome": "complete-record-reviewed",
-      "mechanismApproved": true,
-      "modelExceptionsPresent": true,
+      "contentHash": "c0bb33460d1fff21139500d69c26960735470f0948fc7194c2163a09cac0a5b3",
+      "inputHash": "0d45107afef3e4a9b52c62a2a01ae0ef3070aa77b95f7cdb7dbadaf99e245a4a",
+      "scopeHash": "0b148a6e9aa3ec461ad2942ce20c893e80188558f844a2e823d6e0c2581429fa",
+      "p1AfterHash": "38e5cf932eb420631df716c649a0f0a5f6a9774740db21c24e4132b8b212beeb",
+      "p1RecordHash": "e43c2fa4b9517a416ea4049082105bfe1ce23eeeaa80a32b2435c84787fdba1c",
+      "p2RecordHash": "c6ad5ed6ca5b22716841daea7d0c8282d0150179879b98daa6f37d30442268aa",
+      "p2Status": "failed",
+      "p2Readback": false,
+      "p2FieldCount": 44,
+      "continuationOnly": true,
+      "approved": false,
+      "semanticPass": false,
+      "approvalStatus": "continued-only-model-exception",
+      "semanticReview": {
+        "variablesSemanticPass": false,
+        "profileSemanticPass": false,
+        "semanticChecksPresent": true,
+        "semanticChecks": {
+          "dungeonReached": null,
+          "sameReplyMultipleNewNpcs": null,
+          "all44FieldsRead": null,
+          "allSavedProfilesComplete": null,
+          "p2OldStableIdsPreserved": null,
+          "recallInjectedOnce": true
+        }
+      },
       "modelExceptions": [
         {
-          "module": "p1",
-          "code": "premature_equipment_activation",
-          "sourceSequence": 4,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
-        },
-        {
           "module": "p2",
-          "code": "age_placeholder_semantic_incompleteness",
-          "sourceSequence": 9,
-          "inherited": true,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
-          "semanticErrorFixed": false,
-          "statusRecovered": null,
-          "priorCandidateCompleted": null,
-          "recoveryMethod": null,
-          "codeFailureObserved": false,
-          "continuedByExplicitUserAuthorization": true
-        },
-        {
-          "module": "p1",
-          "code": "header_end_timestamp_ambiguity",
-          "sourceSequence": 13,
-          "inherited": false,
-          "initialFailureRetained": false,
-          "repairAttempted": false,
-          "repairAttemptedThisRound": false,
-          "manualButtonClicks": null,
-          "repairRecovered": null,
+          "code": "discovery_evidence_unbound",
+          "sourceSequence": null,
+          "observed": true,
+          "repaired": false,
+          "inherited": null,
+          "classification": "literal-source-contract-not-met",
+          "repairAttempted": true,
+          "repairAttemptedThisRound": null,
+          "manualButtonClicks": 0,
+          "repairRecovered": false,
           "semanticErrorFixed": null,
           "statusRecovered": null,
           "priorCandidateCompleted": null,
           "recoveryMethod": null,
-          "codeFailureObserved": false,
+          "codeFailureObserved": null,
           "continuedByExplicitUserAuthorization": true
         }
       ],
-      "modelFailureContained": false,
-      "mode": null,
+      "modelExceptionCount": 1,
+      "inheritedProfileModelExceptions": null,
+      "codeFailureAssessment": {
+        "productionCodeFailureConfirmed": false,
+        "codeFailureConfirmed": false,
+        "unresolvedCodeFailure": false,
+        "codeFailuresObservedCount": 0,
+        "addendum": null
+      },
       "cost": {
-        "source": "seq13-cost-summary.json",
-        "sequence": 13,
-        "wholeTavernCalls": 6,
-        "doctorCalls": 3,
-        "automaticDoctorCalls": 3,
-        "manualDoctorCalls": 0,
-        "manualButtonClicks": 0,
-        "automaticRetries": 0,
-        "totalTokens": 393923
+        "doctorPromptTokens": 289957,
+        "paidDoctorRequests": 4,
+        "otherRequests": 3,
+        "totalNativeRequests": 7,
+        "normalDoctorWallMs": 126855,
+        "p1DurationMs": 84550,
+        "p2DurationMs": 40954,
+        "mainDurationMs": 68733
       },
       "evidence": {
-        "release": {
-          "file": "seq13-review-release.json",
-          "sha256": "6bf733498b48322e657066214ddae789691d22835b39ae5aca38b2c9ea686bde"
+        "continuation": {
+          "file": "seq13-model-failure-continuation-only.json",
+          "sha256": "b199b0ae787a4ee7ff447c21d4ddcc05f731f4d51cac7a8dfbe350f8a6efef15"
         },
-        "root": {
-          "file": "seq13-root-review.json",
-          "sha256": "33235efe22c7f7bb53d0f6ee4612e1ed47f99a3c9276e6097953628fda424d35"
+        "continuationReview": {
+          "file": "seq13-root-continuation-review.json",
+          "sha256": "6a30af2991de47b35345893ca3c7d1cab9d46aeeaa9560bbe16f5953fc14aced"
         },
-        "meta": {
-          "file": "seq13-mvu-final-meta-initial.json",
-          "sha256": "ad6543bbd86239df88614c47b14c0aee6260dc7abaacb55ac64646a5a7a12952"
-        },
-        "additional": [
+        "sourceEvidence": [
           {
-            "file": "seq13-p1-independent-review.json",
-            "sha256": "5f88024a0b72226628a0ace5883458ca64d2f2b574fccba0c8118e4a9149fb4a"
+            "file": "seq13-global-failure-initial.json",
+            "sha256": "20a217b593b2c40c1914291ad46b705dc98d01bb0ef610f87a0f6a9b9474eb81"
           },
           {
-            "file": "seq13-p2-independent-review.json",
-            "sha256": "48ab854d7931fc2d68caa87162f1417c76e9f160515c1be9a831eb38d0892b98"
+            "file": "seq13-failed-final-meta-initial.json",
+            "sha256": "1438573d15b87c4b8a27076f246d9f9685bd71ed4b3a0a438cb142c4404246ac"
           },
           {
-            "file": "seq13-root-body-recall-ui-review.json",
-            "sha256": "14d1345719126388b79148dc6d68e1d57c3bc46c9ca657a2ae9df5e10f196470"
+            "file": "seq13-initial-raw-review.json",
+            "sha256": "786fafab466caedaf0dc10ecec1411279ff3a329013ea08610fadc94707a46c0"
           },
           {
-            "file": "seq13-cost-summary.json",
-            "sha256": "57893f508882f8703eca57caaaf35262a748926bd8c63706de08e0d1b759f9f0"
+            "file": "seq13-identity-reattribution-addendum.json",
+            "sha256": "0452ffa3e2aaa22bc8c8872293f34a77a6e43e5a0e7cd56651a307d91ab6ab8e"
           },
           {
-            "file": "seq13-private-reviewed-cleanup.json",
-            "sha256": "45567d4fc349afb181bc07eaa96bc5a2d4ec5e90ca3af5f78f20d2a9a1ed44f2"
+            "file": "seq13-p1-semantic-review.json",
+            "sha256": "da583532d9ed54a7d7121d340baa38da2ff577c1723fc58824a427298f9a50cf"
           },
           {
-            "file": "seq13-initial-snapshot.json",
-            "sha256": "984ce8654c44ac6334d32d81ea072f5a568631e8614bfb48e66743d2f5b4ea9b"
+            "file": "seq13-root-initial-review.json",
+            "sha256": "3afd85d4777ccbf78c0863dd81bc7c1127b8113eafa2ae1c087063e87e333820"
           },
           {
-            "file": "seq13-mvu-final-meta-initial.json",
-            "sha256": "ad6543bbd86239df88614c47b14c0aee6260dc7abaacb55ac64646a5a7a12952"
+            "file": "seq13-repair-contract.json",
+            "sha256": "9c599489cf2fbd2693e8d622bc54bd412cea5b83b97538c51e617956cfe62c5e"
           },
           {
-            "file": "seq13-recall-meta-settled.json",
-            "sha256": "b7abdabd0c4e6ac8e3f6a32fa1eaf052df8c7fafde588f87adbec26e23c83af3"
+            "file": "seq13-manual-repair.started.json",
+            "sha256": "356c2677c73a47d52b42ccd412c36ad40abb2f147b58fafb3a47aab0532c6414"
           },
           {
-            "file": "seq13-recall-actor-binding.json",
-            "sha256": "ea62ec8950cfb421d02d82331f4facb1b491f1701e3c3d0600ea4a210a2d481a"
+            "file": "seq13-manual-repair-click.json",
+            "sha256": "de67c096d295ed758cae49f710e29d2117efc552c2e213075112bf5c834e5696"
           },
           {
-            "file": "seq13-viewport-capture.json",
-            "sha256": "1ce8ef91fd7740458b133cd617fea2226fe3fe961aa7d7932bd2b33f240974d4"
+            "file": "seq13-post-variable-proof.json",
+            "sha256": "fbfe3392519c1e0aa98e08d78953158cf6f9d359219dd86a6eaf9e0813251c14"
+          },
+          {
+            "file": "seq13-p1-manual-semantic-review.json",
+            "sha256": "084614f3965c820bcbb8b02362c77fb6ecf4aab66bd29300f36a94b89939a703"
+          },
+          {
+            "file": "seq13-manual-raw-review.json",
+            "sha256": "b8398bba49a85cf1ddf7a52487bb2d77c4410f09d0607850f3731a17cff1ecda"
+          },
+          {
+            "file": "seq13-initial-read-pages-cleanup.json",
+            "sha256": "fe39a269336df28076370c20cc041b08ee9f4de8e99ba2a5020e1e39a606f591"
+          },
+          {
+            "file": "seq13-manual-read-pages-cleanup.json",
+            "sha256": "0143a95db18b73e190ead47970616ded4db9b5efddc99947ff4d029f4014c77d"
+          },
+          {
+            "file": "seq13-recall-meta-capture.json",
+            "sha256": "f9c6075bb123fa53d4564a1441d6f9acec364b84778c3fa8298feb065a599ced"
+          },
+          {
+            "file": "seq13-cost-observed.json",
+            "sha256": "3128f89c169925718c959a72cae3f8a047b91550f712a6ad887d29ce1377b2d1"
+          },
+          {
+            "file": "seq13-after-repair-cost-observed.json",
+            "sha256": "13ab097f32f4d0d8f3743a1e97870bd8970f18428ab71c8da555125bb10f08f8"
+          },
+          {
+            "file": "seq13-native-observed.json",
+            "sha256": "ba797da53c5682cb033fe9886e1bd8ad71292c59076dc93bdcd0aeb7ba783ab5"
           }
         ],
-        "p1Failure": null
-      }
+        "retainedAttempts": [
+          {
+            "file": "seq13-failed-final-meta-initial.json",
+            "sha256": "1438573d15b87c4b8a27076f246d9f9685bd71ed4b3a0a438cb142c4404246ac"
+          }
+        ]
+      },
+      "realAcceptance": false
     }
   ],
   "finalReadback": {
-    "p2-r4-final-snapshot-pre.json": {
-      "file": "p2-r4-final-snapshot-pre.json",
-      "sha256": "bb8ba58198541a4b89e98ed6a03515d319442c9f4b7286e7b1fd1ac11d434118"
+    "p2-r12-final-snapshot-pre.json": {
+      "file": "p2-r12-final-snapshot-pre.json",
+      "sha256": "3822db4dc9877b093bd9503ae4dedf6e50fe7cb85e1f11a616f913c918afddf4"
     },
-    "p2-r4-final-snapshot-post.json": {
-      "file": "p2-r4-final-snapshot-post.json",
-      "sha256": "dce12cf16b30894de158df3997585378ff1e5b4fa009037c1115173bcd1db789"
+    "p2-r12-final-snapshot-post.json": {
+      "file": "p2-r12-final-snapshot-post.json",
+      "sha256": "c0d0fffac1de968656a86a5a6f1edc418cab903428efd5604e542a7b30d6e7e0"
     },
-    "p2-r4-final-reload-intent.json": {
-      "file": "p2-r4-final-reload-intent.json",
-      "sha256": "fe58f052b8550e56227edcbd7bfe4ffe10262b8b4914a9555cdb32326e528aea"
+    "p2-r12-final-reload-intent.json": {
+      "file": "p2-r12-final-reload-intent.json",
+      "sha256": "fc1d0218aee826a59005def89b1277251d21d561a5286d283ee66a18f52520d7"
     },
-    "p2-r4-final-reload-result.json": {
-      "file": "p2-r4-final-reload-result.json",
-      "sha256": "4305651cb24c2e058c6418af4856006017cc51da4f34d00a078011d58ebc0f28"
+    "p2-r12-final-reload-result.json": {
+      "file": "p2-r12-final-reload-result.json",
+      "sha256": "2d59f6329c65c37b53f1698558a2e212c5aacee277e409cddc39ff6772d6ce22"
     }
   },
+  "finalModelOutcomeFailed": true,
+  "finalStorageReadbackVerified": true,
   "modelFailuresRetained": true,
+  "modelExceptionCount": 18,
   "semanticCorrectnessProven": false,
   "retirementExercised": null,
-  "realAcceptance": false
+  "realAcceptance": false,
+  "note": "Mechanism evidence is recorded with model exceptions retained; strict, full Doctor, semantic correctness, and real acceptance remain unproven."
 }

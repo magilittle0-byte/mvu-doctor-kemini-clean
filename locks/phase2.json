@@ -1,35 +1,36 @@
 {
   "locked": true,
   "stage": 2,
-  "version": "0.1.0-candidate.5",
-  "fingerprint": "0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33",
+  "version": "0.1.0-candidate.11",
+  "fingerprint": "e56abba5de0d6b0896ed0c5da15e6f5e861864b92fdc55cef10a6d59794c7847",
   "files": {
-    "profiles/content.mjs": "f2424ab67d9d28e927168f9c7ff54aa35783e94fc5e97e430016ea3e2ac9efd3",
+    "profiles/content.mjs": "e15052fd02376e4ca7728e5e4095993a6d6c611be373677bf710b46e336c6cde",
     "profiles/entry.js": "749d5e16a9c9c35c50a7218ecddf7c3f46eb24fab20f813ce87f6d9423421b8b",
-    "profiles/host.mjs": "0cc58f8a069e722e907e30a7fc83dc24c8c3f50977974a05c76e32ad91045308",
-    "profiles/install.json": "f98034a3371ab7cdd1d9a7090ba2bc4b4652a555d858db06250f9516d9015b9f",
+    "profiles/host.mjs": "cff0fea6013b1486f2ac09cb11ae11b871a3ccdfa5f721908668dc7b2377e31c",
+    "profiles/install.json": "c37148c067d27b41ba7aadd0fa2a6627a091563171782e3c66968febb8e4d951",
     "profiles/loader.js": "738555c918d00958628ef747a87527ed5ff657b25ca8a11928df7f29894ed1d4",
-    "profiles/manifest.json": "a32e439c45083fb1a7208b7e1519f27b1a04f727d020c4e14fe78a58981b6ea5",
-    "profiles/runtime.mjs": "85356a90f838cd269c63cf2323f9e52908f29cfbf434e71f5ee3c0ced4045d28",
+    "profiles/manifest.json": "073883f5f1800547135ab509e58253a01cd2876e65683d6fc8fef5fe3c337153",
+    "profiles/runtime.mjs": "9a604470902eb6be7ed97633292a7262dfb5d95b24ccfccb3ccc2d3a6d150a54",
     "profiles/store.mjs": "1d21fe4f7fabe701508480fc4ca2ae71df5c76512622c812f85de009be64a264",
     "profiles/style.css": "61618891e01068845a08eb95b1c963161cbb4748f4b186621c2157da4b4ebaf4",
-    "profiles/ui.mjs": "8715afcb50b16afa2cec4d7d0798101c68ecdbeda9f4fa51563172453840de07"
+    "profiles/ui.mjs": "1d1fa9b972bf2d4bbac85d351de6399919b9e9cbacbc41857456860b668784ac"
   },
   "p1Dependencies": {
-    "locks/phase1.json": "71c569c61b5186c85143bd30d6cb28c3eb658078bc496148604726158a23d8a6",
-    "locks/phase1-evidence.json": "48f1625d29677240f496fc8045a1cf3bf347a0bc4033955bf72094679873b4c8",
-    "locks/phase1-supporting-files.json": "905be6fcb2d190a5957fcfaf1b841faa3f0f66c5296806ff007910e73c0bd5f3"
+    "locks/phase1.json": "cd78f9dd76449e444051a6df014de5dd3064da138cee3a420077f68fdf0faf99",
+    "locks/phase1-evidence.json": "8d6ce8c7c5f581b5812d3887392ce4dc78152a63c213dc74315732d9c2a857de",
+    "locks/phase1-supporting-files.json": "f095db862f7a3dff1ac04016d0aeae09170eddd01fb73e798f63506926555a09"
   },
   "supportingFiles": {
     "profiles/.gitattributes": "a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9",
-    "scripts/check-profiles.mjs": "5b7c36a07e79ddb317ee89a42bcb93a905ef84a3e3c3be7d555c452f43e02587",
-    "tests/profiles-content.test.mjs": "273b4f754370f9939def7af48d988e986261cb8ee682ab136fc94f21c3f6dc77",
-    "tests/profiles-runtime.test.mjs": "fdea2cbeb6bc478386974d71527c7adf164bfba1ae8c2470f2f95e8557567dfb",
+    "scripts/check-profiles.mjs": "83d29b682bba4fef329117ed6e8d9948cda152fae4413a2db4f0f31a89126eb5",
+    "tests/profiles-content.test.mjs": "f052bd11cf4f59a059e2620e746c7c947ac7aab867b075c49ec9b2f3a8ca87d4",
+    "tests/profiles-runtime.test.mjs": "284157a345fee06971d36c82a39880cefa26547b13634213bac544d9008d730f",
     "tests/profiles-store.test.mjs": "b0507771b8db1b1ecd8c44a917022bc7de10d7174d969c952e97b293f82b672e",
     "tests/profiles-recall.test.mjs": "ac0528ebeff556df5416e2696e38631050b7845ac06fe7e94ca34817d9149ddc",
+    "tests/profiles-host.test.mjs": "4a416780b47bf6ed7fe46858d79c7d43d74483af908132454d5b4d771a87e7e1",
     "docs/profiles/PHASE2_SOURCE_MAP.md": "7b8b42a2a0a078cd8eb182e67776d97a2c4a871148a76287dd252a7631db794a",
-    "docs/profiles/README.md": "89223a22c298043a3c253a75ef8860ba80863ba29aee7b0259e1b758663b8754",
-    "docs/profiles/P2_BATCH_SOURCE_MAP.md": "26da91cb4c94f3766de2c402fa43e3655917f580f108d944f5b1de2577722536",
+    "docs/profiles/README.md": "de671adadeb72bf0b73aa68c64cc2d3ca2f64674210e66eafa2448dd2067c9f4",
+    "docs/profiles/P2_SINGLE_CALL_SOURCE_MAP_2026-09-20.md": "12e61c77a92d106571853cb13331075f721d0cba59abeec07c93c08cf1367796",
     "scripts/.gitattributes": "19d2c970b78892931bf6749843d25f96d91fd54aa9b594d59f1ac33616dd8952",
     "tests/.gitattributes": "6e514e4d0bcd8473b6d72ecaebbcb95af7712ece86d3ca5567be8eff41c209a0",
     "docs/profiles/.gitattributes": "a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9"
@@ -43,8 +44,8 @@
     "fullDoctorAcceptance": false,
     "mechanismAcceptance": true,
     "modelFailuresRetained": true,
-    "sourceFingerprint": "0171d48820fb2a009edda28eae6c9e88b7c4fdae67e9d6df0966c695488ddf33",
+    "sourceFingerprint": "e56abba5de0d6b0896ed0c5da15e6f5e861864b92fdc55cef10a6d59794c7847",
     "summaryPath": "locks/phase2-evidence.json",
-    "summarySha256": "173f4fd84c3eb7459e15d2764573a711da6ee96cdc57d3910729f25fccb1c84a"
+    "summarySha256": "130a91854c41867e161ab41bfc53dc158d19493d340018e69237daf15cf598b6"
   }
 }
