@@ -224,6 +224,59 @@ test('a fresh runtime bind reads running state without replaying the old receipt
   await h.runtime.bind(); await h.notifyDoctor();
   assert.equal(h.counters.factory, 0); assert.equal((await h.store.read(b)).status, 'running'); h.runtime.destroy();
 });
+
+test('late chat restoration reads the saved world without rerolling dynamic authority', async () => {
+  const h = makeHarness();
+  try {
+    await h.runtime.bind();
+    await h.runtime.run(h.receipt);
+    const saved = await h.store.read(h.branch);
+    const writes = h.f.calls.filter(([kind]) => kind === 'write').length;
+    h.receipt.restored = true;
+    h.setP2({ status: 'restored', restored: true, busy: false, readback: true });
+    h.setInputFacts({ authority: { card: 'card facts', world: 'same rules with a newly rendered dice pool' } });
+    await h.events.emit('chat_loaded');
+    await waitFor(() => h.runtime.snapshot().restored && !h.runtime.snapshot().busy);
+    await h.notifyDoctor();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await h.notifyDoctor();
+    assert.equal(h.counters.model, 1);
+    assert.equal(h.runtime.snapshot().restored, true);
+    assert.deepEqual(await h.store.read(h.branch), saved);
+    assert.equal(h.f.calls.filter(([kind]) => kind === 'write').length, writes);
+
+    // A real P2 repair completion still invalidates/rechecks dependent work.
+    const profiles = h.host.profilesApi().record();
+    h.setProfiles({ ...profiles, profileRecordHash: 'new-profile-facts', revision: profiles.revision + 1 });
+    h.setP2({ status: 'complete', restored: false, busy: false, readback: true });
+    await h.notifyDoctor();
+    await waitFor(() => h.counters.model === 2 && !h.runtime.snapshot().busy);
+    assert.equal((await h.store.read(h.branch)).world.round, saved.world.round);
+    await h.runtime.retry();
+    assert.equal(h.counters.model, 3);
+  } finally { h.runtime.destroy(); }
+});
+
+test('restoring late upstream records does not retry an absent or incomplete world', async t => {
+  for (const status of [null, 'running', 'failed', 'partial']) await t.test(String(status), async () => {
+    const b = makeBranch();
+    const h = makeHarness({ startBranch: b, p2Busy: true,
+      existing: status ? recordFor(b, { status }) : null });
+    try {
+      await h.runtime.bind();
+      await h.events.emit('chat_loaded');
+      await h.notifyDoctor();
+      h.receipt.restored = true;
+      h.setP2({ status: 'restored', restored: true, busy: false, readback: true });
+      await h.notifyDoctor();
+      await new Promise(resolve => setTimeout(resolve, 30));
+      assert.equal(h.counters.model, 0);
+      assert.equal(h.counters.factory, 0);
+      assert.equal(h.f.calls.filter(([kind]) => kind === 'write').length, 0);
+      assert.equal((await h.store.read(b))?.status ?? null, status);
+    } finally { h.runtime.destroy(); }
+  });
+});
 test('recall settles only for the bound target, and a different chat reads null', async () => {
   async function prepare(mismatch) {
     const b = makeBranch('chat-a', 9);

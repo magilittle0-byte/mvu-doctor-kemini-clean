@@ -3,7 +3,7 @@ import { createNativeWorldEngine, worldModelInput } from './engine.mjs';
 import { worldInstruction } from './content.mjs';
 import { buildDeliveries, makeRecall, settleDeliveries } from './recall.mjs';
 
-export const WORLD_VERSION = '0.1.0-candidate.7';
+export const WORLD_VERSION = '0.1.0-candidate.8';
 const PROMPT_KEY = 'mvu_doctor_world_v1';
 const INVALIDATED = new Set(['cancelled', 'stale_target', 'stale_mvu', 'variables_not_ready',
   'variable_evidence_changed', 'stale_profiles', 'profiles_pending', 'profiles_unavailable']);
@@ -276,6 +276,13 @@ export function createWorldRuntime({ host, store, notify = () => {}, engineFacto
       const key = attemptKey(receipt, profiles);
       if (lastAttempt === key || state.busy) return;
       lastAttempt = key;
+      // Loading an existing chat is not a new accepted turn or a repair.
+      // Live worldbook macros may change on reload; they must not reroll a
+      // saved world. Real upstream completions clear their restored flags.
+      if (!generation && receipt.restored === true && p2.restored === true) {
+        await refresh();
+        return;
+      }
       void run(receipt).catch(() => { if (!disposed) publish({ status: 'failed', error: 'world_failed', busy: false }); });
     } catch {
       if (!disposed) publish({ status: 'waiting', detail: '本轮世界输入尚未就绪，已有存档保留', error: 'world_not_ready' });
