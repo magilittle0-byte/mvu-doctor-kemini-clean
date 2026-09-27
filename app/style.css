@@ -1,0 +1,25 @@
+@import url("../style.css");
+@import url("../modular/style.css");
+
+#mvu-ref-panel > section > h3 { margin: 2px 0 14px; color: var(--mvu-ref-accent); }
+#mvu-ref-panel .mvu-app-overview,
+#mvu-ref-panel .mvu-app-modules { display: grid; gap: 10px; }
+#mvu-ref-panel .mvu-app-module-card {
+  display: grid; gap: 5px; min-width: 0; padding: 12px 14px;
+  border: 1px solid var(--mvu-ref-line); border-radius: 13px; background: var(--mvu-ref-surface);
+}
+#mvu-ref-panel .mvu-app-module-card strong { color: var(--mvu-ref-text); }
+#mvu-ref-panel .mvu-app-module-card span,
+#mvu-ref-panel .mvu-app-note { color: var(--mvu-ref-muted); font-size: 13px; overflow-wrap: anywhere; }
+#mvu-ref-panel .mvu-app-note { margin-top: 14px; }
+#mvu-ref-panel [data-lock][hidden] { display: none !important; }
+#mvu-ref-panel [data-module="variables"] > details > summary { display: none; }
+#mvu-ref-panel [data-module="variables"] > details[open] > .mvu-modular-body { display: block; }
+#mvu-ref-panel [data-page="profiles"] .mvu-profiles-panel,
+#mvu-ref-panel [data-page="world"] #mvu-doctor-world-root { display: block; }
+#mvu-ref-panel [data-module="profiles"] > .mvu-profiles-panel > summary { display: none; }
+#mvu-ref-panel [data-module="profiles"] > .mvu-profiles-panel[open] > .mvu-profiles-body { display: grid; }
+
+@media (max-width: 680px) {
+  #mvu-ref-panel [data-page="overview"] { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+}

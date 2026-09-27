@@ -9,7 +9,7 @@ const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import
 test('运行时、manifest与package共享同一个发布版本', () => {
   const match = source.match(/const VERSION = '([^']+)';/u);
   assert.ok(match, 'manifest选择的运行入口必须声明唯一VERSION');
-  assert.equal(manifest.js, 'modular/entry.js', '第一阶段只加载独立模块入口');
+  assert.equal(manifest.js, 'app/entry.js', '完整安装必须加载三个模块的统一入口');
   assert.doesNotMatch(source, /profile-engine\.js|world-engine\.js/);
   assert.equal(
     match[1],

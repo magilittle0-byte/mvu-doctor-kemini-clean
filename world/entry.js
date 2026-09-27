@@ -2,7 +2,6 @@ import { createWorldHost } from './host.mjs';
 import { createWorldStore } from './store.mjs';
 import { createWorldRuntime, WORLD_VERSION } from './runtime.mjs';
 import { createWorldSurface } from './surface.mjs';
-import { loadWorldDependencies } from './dependencies.mjs';
 
 // Minimal independent-owner adaptation of the locked profiles/entry.js.
 const root = new URL('../', import.meta.url), owners = new Set();
@@ -28,11 +27,18 @@ async function initialize() {
       if (Date.now() - started > 60000) throw new Error('dependencies_not_loaded');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    const dependencies = await loadWorldDependencies(root);
+    const response = await fetch(new URL('world/manifest.json', root), { cache: 'no-store' });
+    if (!response.ok) throw new Error('dependencies_incompatible');
+    const manifest = await response.json();
     assertOwner(value);
-    if (!dependencies.locked || !globalThis.MVUDoctorModular.locked
-      || globalThis.MVUDoctorModular.version !== dependencies.p1.version
-      || globalThis.MVUDoctorProfiles.version !== dependencies.p2.version) throw new Error('dependencies_not_locked');
+    if (manifest.version !== WORLD_VERSION || manifest.stage !== 3 || manifest.requires?.length !== 2
+      || manifest.requires[0]?.stage !== 1 || manifest.requires[1]?.stage !== 2
+      || globalThis.MVUDoctorModular.version !== manifest.requires[0].version
+      || globalThis.MVUDoctorProfiles.version !== manifest.requires[1].version)
+      throw new Error('dependencies_incompatible');
+    const dependencies = { compatible: true, locked: false,
+      p1: { stage: 1, version: globalThis.MVUDoctorModular.version },
+      p2: { stage: 2, version: globalThis.MVUDoctorProfiles.version } };
     value.css = document.createElement('link'); value.css.rel = 'stylesheet';
     value.css.href = new URL('world/style.css', root).href; document.head.appendChild(value.css);
     value.surface = createWorldSurface({ getStatus: () => value.runtime?.snapshot(), getRecord: () => value.runtime?.record(),
@@ -48,10 +54,10 @@ async function initialize() {
     stopSession(value);
     if (!active() || error.message === 'world_unloaded') return null;
     session = value;
-    const code = ['dependencies_not_loaded', 'dependencies_not_locked'].includes(error.message) ? error.message : 'world_boot_failed';
+    const code = ['dependencies_not_loaded', 'dependencies_incompatible'].includes(error.message) ? error.message : 'world_boot_failed';
     globalThis.MVUDoctorWorld = Object.freeze({ ready: false, stage: 3, version: WORLD_VERSION, code, dispose });
     value.note = document.createElement('p'); value.note.id = 'mvu-world-load-error';
-    value.note.textContent = code === 'dependencies_not_locked' ? '世界模块未启动：已锁定的变量或人物模块文件与锁定记录不一致。'
+    value.note.textContent = code === 'dependencies_incompatible' ? '世界模块未启动：变量或人物模块版本与当前安装包不匹配，请完整更新医生。'
       : '世界模块未能加载，请检查三个模块的安装后重新加载。';
     (document.querySelector('#extensions_settings2') || document.body).appendChild(value.note);
     return globalThis.MVUDoctorWorld;
