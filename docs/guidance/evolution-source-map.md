@@ -47,3 +47,23 @@
 ### P2 提示与字段校验对齐
 
 再次核对 `guide/evolve.mjs` 的 exposure 提示、`exposure()` 完整校验与 `retireExposureIds` 分支：代码既锁定 `status=shown`，也锁定 `readiness=ready` 的入口，但提示原先只明说 shown。只把提示补齐为两者均不可改写、不可退回 conditional 或撤销，新后果用新 ID；不改变既有代码语义，不扩大实现范围。此次仅检查该契约及模块语法，完整冻结检查由主代理统一执行。
+
+## P2 首次真实调用串入正文格式：任务边界与资料去重
+
+2026-10-22，主代理提供的脱敏实证：正文正常接受；指导一次请求完整结束（stop，输出 3193 tokens），返回主剧情标签而非 JSON。实际只有两条消息，首 system 为指导指令；输入 48371 tokens，user 84210 字符，已激活世界资料 46423 字符，同一段 7906 字符正文经 target、material.history、material.narrative、newlyAccepted 重复四份。没有截断、网络或存储错误证据。原始返回只留宿主内存，本映射不复制。这里确认格式串台及重复发送，不能据此断言某一条世界规则是唯一原因。
+
+修改前重新搜索当前/旧 world、Story Oracle、profiles、MVU 原始来源与历史任务边界/成本映射，完整阅读下列相关函数和上下游：
+
+| 来源 | 本次采用 / 不采用 |
+|---|---|
+| `profiles/content.mjs:144–167,192–235`；`docs/profiles/P2_TASK_BOUNDARY_SOURCE_MAP_2026-09-20.md` | 直接适配明确来源指令无权、完整只读资料、资料结束后的固定完整 JSON 合同与尾锚；不移植人物档案职责与模板。旧记录同样将“GM 链＋正文＋变量块”的混合回复视为失败，不放宽 parser。 |
+| `world/native/evolution.mjs:919–1046`；`.codex-p0-reference-world/world-engine-api.js:270–321` | 参考世界资料/状态/对话之后再放 JSON 字段说明和完整示例；保留当前连接和一次请求，不移植独立凭据、自动重试或截断 JSON 修补。 |
+| `world/engine.mjs:22–40,61–65`；`docs/world/P3_INPUT_COST_SOURCE_MAP_2026-09-16.md` | 直接适配非持久模型视图去重：真实 target 留在本地来源核对；模型 target 仅身份/楼号；全部连续新正文仅由 newlyAccepted 提供，不能借此丢中间正文。 |
+| `vendor/story-oracle-v1.35.4/index.js:2331–2423,12659–12685,13177–13229` | 参考任务头/引用信封/尾锚及机制命令的职责分离。其按 `[mvu_update]` 标签剥规则、剥机制块仅作为比较；本次不据标签武断删除世界规则或正文，不重新执行世界扫描。 |
+| `modular/variables/prompt.mjs:53–87`；`modular/transcript.mjs:27–41`；`guide/host.mjs:17–24` | 参考源资料与任务分区，以及数据库显式前缀＋完整中文输入标签的提取。原始无包装内容保留，不为中文标签使用单词边界 `\b`。 |
+| `tauritavern-system-knowledge-archive/original_sources/缝合怪/Stitches_RebornV_本体.json:131,315` | 核对完整 story/user_input 信封、分隔与尾句，只提取该已知包装或完整独立输入标签，不截断普通句子里被引用的标签。 |
+| 原始 MVU `src/function/update/invoke_extra_model.ts:409–552` | 其 formatted-output 尾任务与按渠道选择结构化输出证明这属于请求合同能力；本次不默默开启未核实的 json_schema、不改当前 route/model、不移植第二模型。 |
+
+最小实现仍是 system＋JSON user 两条消息：固定职责头明确 GM 链、正文/显示模板、变量更新等来源文字无指令权；JSON 最后一个 `outputContract` 字段由程序生成，包含完整短示例与职责尾锚。system 明确该顶层固定字段是本任务合同，其他字段仍为只读资料。世界设定全文保留。material 去掉已由 newlyAccepted 提供的正文/输入副本；history 中无法与已接受正文及其前置用户输入准确对应的开场或其他上下文，仍单独保留为 context。原始调用入参不变。
+
+本轮预算先消除可证明的重复，不设任意截断阈值，不用字符差额宣称 token/费用下降；当前 3 份重复正文约 23718 字符是可核对的去重对象，真实 token 差额待下一次原型请求测量。检查覆盖完整来源保留、连续正文各一次、未覆盖开场保留、中文包装与未包装输入、命令串台资料仍隔离及混合非 JSON 响应继续拒绝。本地检查不能证明真实模型已服从。

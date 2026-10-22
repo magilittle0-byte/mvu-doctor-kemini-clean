@@ -4,7 +4,7 @@
   --guide-text: #edf5ef;
   --guide-muted: #b6c9be;
   --guide-accent: #b7dfc6;
-  position: fixed; inset: 0; z-index: 1500; pointer-events: none;
+  position: fixed; inset: 0; z-index: 100021; pointer-events: none;
   color: var(--guide-text); font: 14px/1.55 system-ui, sans-serif;
 }
 #mvu-guidance-root *, #mvu-guidance-root *::before, #mvu-guidance-root *::after { box-sizing: border-box; }

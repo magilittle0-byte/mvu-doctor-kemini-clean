@@ -5,8 +5,17 @@ const text = value => typeof value === 'string' ? value : '';
 
 export function currentGuideInput(value = '') {
   const input = text(value);
-  const matches = [...input.matchAll(/<(user_input|本轮用户输入|current_user_input|input)\b[^>]*>([\s\S]*?)<\/\1>/gi)];
-  return matches.length ? matches.at(-1)[2].trim() : input.trim();
+  // Chinese tags do not have a JavaScript word boundary before `>`.
+  const matches = [...input.matchAll(/<(user_input|本轮用户输入|current_user_input|input)(?=[\s>])[^>]*>([\s\S]*?)<\/\1\s*>/gi)];
+  if (!matches.length) return input;
+  const last = matches.at(-1), before = input.slice(0, last.index).trim(), after = input.slice(last.index + last[0].length).trim();
+  const standalone = !before && !after;
+  const database = input.trimStart().startsWith('以下是用户的本轮输入：') && last[1] === '本轮用户输入';
+  const stitches = last[1].toLowerCase() === 'user_input'
+    && /^<story(?=[\s>])[^>]*>[\s\S]*<\/story>\s*(?:═══ 故事信息结束，下接user_input ═══)?$/u.test(before)
+    && (!after || after === 'DM爱德华：好，user_input我看到了，我会寻找相关记忆。');
+  // A quoted tag inside an ordinary sentence is not a producer envelope.
+  return standalone || database || stitches ? last[2].trim() : input;
 }
 
 function sceneText(scene) {

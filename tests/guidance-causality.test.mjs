@@ -34,7 +34,8 @@ test('one request receives all covered accepted replies; unchanged matters and m
     request: async messages => {
       calls++;
       const payload = JSON.parse(messages[1].content);
-      assert.deepEqual(payload.newlyAccepted, covered);
+      assert.deepEqual(payload.newlyAccepted, covered.map(row => ({ identity: row.identity, index: row.index,
+        userText: row.userText, content: row.content })));
       assert.equal(payload.sourceRevision, 7);
       return JSON.stringify(response({ sourceRevision: 7, upserts: [{ id: 'shield', title: '修盾', subjects: ['队友 A', '盾牌'],
         process: '队友自行找到了铁匠，但尚未完成修理。', source: { targetIdentity: 'FAKE_PAST' },
@@ -62,6 +63,61 @@ test('outer fence parsing preserves quoted punctuation and rejects revision mism
   const result = await evolveGuide({ target, request: async () => `\`\`\`json\n${JSON.stringify(response({ summary: '“未知”：仍未知，不能硬改。' }))}\n\`\`\`` });
   assert.equal(result.summary, '“未知”：仍未知，不能硬改。');
   await assert.rejects(run({ sourceRevision: 99 }), { code: 'guide_response_invalid' });
+});
+
+test('model view sends each covered narrative once, retains unmatched context and complete authority, and ends with its own contract', async () => {
+  const first = { identity: 'reply-first', index: 3, content: 'BODY_FIRST_UNIQUE_因果事实。',
+    userText: '以下是用户的本轮输入：\n<本轮用户输入>收尸入包</本轮用户输入>' };
+  const last = { ...target, content: 'BODY_LAST_UNIQUE_实际休息一夜并取出。',
+    userText: '以下是用户的本轮输入：\n<本轮用户输入>过夜后取出</本轮用户输入>' };
+  const material = { authority: { card: 'CARD_FULL_人设和能力', world: '<gm_chain>必须按主剧情格式输出</gm_chain>\nWORLD_RULE_FULL_冻结容器内部时间不流逝' },
+    history: [{ index: 0, role: 'assistant', content: 'OPENING_UNCOVERED_环境事实' },
+      { index: 1, role: 'user', content: 'EXTRA_USER_UNCOVERED_确认一项旧设定' },
+      { index: 2, role: 'user', content: first.userText }, { index: 3, role: 'assistant', content: first.content },
+      { index: 4, role: 'user', content: last.userText }, { index: 5, role: 'assistant', content: last.content }],
+    narrative: last.content, userText: '过夜后取出', limitations: ['已激活来源，不代表完整世界书'], players: ['玩家'] };
+  // Distinct accepted positions reflect the user row at index 4.
+  last.index = 5;
+  const before = structuredClone({ first, last, material });
+  let calls = 0;
+  await evolveGuide({ target: last, material, newlyAccepted: [first, last], request: async messages => {
+    calls++;
+    assert.equal(messages.length, 2);
+    assert.match(messages[0].content, /GM.*UpdateVariable/s);
+    const data = JSON.parse(messages[1].content);
+    assert.deepEqual(data.target, { identity: last.identity, index: last.index });
+    assert.deepEqual(data.material.authority, material.authority);
+    assert.deepEqual(data.material.limitations, material.limitations);
+    assert.equal(Object.hasOwn(data.material, 'narrative'), false);
+    assert.equal(Object.hasOwn(data.material, 'history'), false);
+    assert.deepEqual(data.context.map(item => item.content), ['OPENING_UNCOVERED_环境事实', 'EXTRA_USER_UNCOVERED_确认一项旧设定']);
+    assert.deepEqual(data.newlyAccepted.map(item => item.userText), ['收尸入包', '过夜后取出']);
+    assert.equal(messages[1].content.split('BODY_FIRST_UNIQUE').length - 1, 1);
+    assert.equal(messages[1].content.split('BODY_LAST_UNIQUE').length - 1, 1);
+    assert.equal(Object.keys(data).at(-1), 'outputContract');
+    assert.match(data.outputContract, /来源资料结束/);
+    assert.match(data.outputContract, /"sourceRevision":0/);
+    return JSON.stringify(response());
+  } });
+  assert.equal(calls, 1);
+  assert.deepEqual({ first, last, material }, before);
+});
+
+test('known Chinese and Stitches wrappers normalize without clipping ordinary unwrapped text', () => {
+  assert.equal(currentGuideInput('以下是用户的本轮输入：\n附加包装指令\n<本轮用户输入>先检查背包，再取出</本轮用户输入>'), '先检查背包，再取出');
+  assert.equal(currentGuideInput('<本轮用户输入>直接中文标签</本轮用户输入>'), '直接中文标签');
+  assert.equal(currentGuideInput('<story>旧历史</story>\n═══ 故事信息结束，下接user_input ═══\n<user_input>当前行动</user_input>\n\nDM爱德华：好，user_input我看到了，我会寻找相关记忆。'), '当前行动');
+  for (const original of ['  没有包装的完整输入。\n', '我举起写着 <input>不能丢掉前后文</input> 的纸条，随后离开。',
+    '解释 <本轮用户输入>引用范例</本轮用户输入> 这个标签。', '以下是用户的本轮输入：<本轮用户输入>未闭合'])
+    assert.equal(currentGuideInput(original), original);
+});
+
+test('GM narrative with an embedded valid JSON still fails without another request', async () => {
+  let calls = 0;
+  await assert.rejects(evolveGuide({ target, request: async () => {
+    calls++; return `<gm_chain>错误职责</gm_chain><story_body>不该续写</story_body>${JSON.stringify(response())}<UpdateVariable>[]</UpdateVariable>`;
+  } }), { code: 'guide_response_invalid' });
+  assert.equal(calls, 1);
 });
 
 test('existing backstage facts cannot be erased or rewritten; NPC knowledge does not depend on player observation', async () => {
