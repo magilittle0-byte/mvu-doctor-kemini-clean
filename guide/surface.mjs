@@ -1,5 +1,5 @@
 // Minimal independent adaptation; see docs/guidance/surface-source-map.md.
-const STATUS = Object.freeze({ idle: '等待正文', loading: '读取记录', waiting: '正文生成中', queued: '等待幕后处理',
+const STATUS = Object.freeze({ idle: '等待正文', loading: '读取记录', waiting: '正文生成中', accepting: '确认正文存档', queued: '等待幕后处理',
   generating: '幕后推演中', saving: '保存中', settled: '已保存', restored: '已恢复', conflict: '有待核对事项',
   failed: '本次未完成', cancelled: '已停止', disabled: '已关闭' });
 const finite = value => Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 0;
@@ -110,7 +110,7 @@ export function createGuideSurface({ getStatus = () => ({}), getRecord = () => n
     metrics.textContent = `${finite(state.matters)} 个事项 · 修订 ${finite(state.revision)}`;
     // Turning guidance off must stay available while a manual request is active.
     toggle.checked = enabled; toggle.disabled = state.ready === false;
-    retryButton.disabled = actionBusy || state.ready === false || !enabled || !!state.busy || ['waiting', 'loading', 'saving', 'queued'].includes(state.status);
+    retryButton.disabled = actionBusy || state.ready === false || !enabled || !!state.busy || ['waiting', 'accepting', 'loading', 'saving', 'queued'].includes(state.status);
     launcher.dataset.state = state.status || 'idle';
     launcher.title = `指导：${label}`;
     renderDiagnostics(state, lastRecord);

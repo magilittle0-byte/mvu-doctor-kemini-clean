@@ -42,3 +42,7 @@ candidate.2 真实主生成期间，在指导面板关闭按钮上按 Escape 后
 `tests/guidance-surface.test.mjs` 使用真实隔离 Chromium DOM、当前 surface 源码和事先注册的模拟宿主冒泡 Escape 停止处理器。覆盖打开时关闭但不停止生成、其他键传递、关闭后恢复传递、销毁后无捕获监听残留；不连接真实酒馆、不调用模型。
 
 本次隔离 Chrome 回归已通过（1/1，约 5.7 秒），`node --check guide/surface.mjs` 通过。检查也确认输入法组合 Escape 不关闭面板且不阻止传播，正常 Escape 的默认动作被取消，390×720 下顶部留出 72px、底部至少留出 8px；销毁发生在面板仍打开时，因此不会被已隐藏状态掩盖遗留监听。它只证明独立 DOM 的事件传播与当前 CSS 几何，尚不能证明当前酒馆无遮挡或模型链恢复；真实复核由根任务在空闲时完成。
+
+## candidate.6：准确显示存档确认阶段
+
+真实 candidate.5 在正文已结束而原生保存尚未完成时拒收；修正后 runtime 将用 accepting 表示严格读回确认。重新检索并完整核对当前 surface 的 STATUS/render/act/retryButton、runtime notify/finish/retry 上下游，以及 app/surface 的 LABELS/statusLabel 与 world/surface 状态字典。沿用现有状态字典和按钮禁用名单，仅增加“确认正文存档”与 accepting 禁止重复重算；不新增调度器、面板或模型动作。用户仍可继续发正文或关闭自动推进。既有隔离界面回归补检查这个等待标签和重算禁用，不能把它当成真实保存完成证据。

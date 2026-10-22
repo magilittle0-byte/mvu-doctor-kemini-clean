@@ -3,7 +3,7 @@ import { createGuideStore } from './store.mjs';
 import { createGuideRuntime } from './runtime.mjs';
 import { createGuideSurface } from './surface.mjs';
 
-export const VERSION = '0.12.0-candidate.5';
+export const VERSION = '0.12.0-candidate.6';
 const INSTANCE = Symbol.for('mvu-guidance.instance.v1');
 const LEGACY = ['MVUDoctorApp', 'MVUDoctorModular', 'MVUDoctorProfiles', 'MVUDoctorWorld',
   'MVUDoctorReferenceBaseline', 'MVUDoctorProfileEngine'];

@@ -39,7 +39,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     invalidate(); ticket = null; pending = null; lastDelivery = null; deliveries.clear(); host.clearPrompt();
     const token = epoch;
     saved = null; restoredScope = '';
-    publish({ status: 'loading', detail: '读取当前分支的指导记录', readback: false, code: null });
+    publish({ status: 'loading', detail: '读取当前分支的指导记录', readback: false, code: null, delivery: null });
     try {
       const target = await host.capture();
       if (!valid(token)) return;
@@ -72,14 +72,17 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     type = String(type || 'normal').toLowerCase();
     if (disposed || dryRun || options?.dryRun || options?.quiet || options?.silent || options?.raw
       || !['normal', 'swipe', 'regenerate', 'continue'].includes(type)) return;
-    const missed = !!active || !!pending;
+    const missed = !!active || !!pending || !!ticket?.finishing || Number.isInteger(ticket?.received);
     invalidate();
-    ticket = { token: epoch, type, scope: canonical(host.scope()), baselineIndex: host.latestIndex(),
+    const baselineIndex = host.latestIndex();
+    const hasPendingUser = (host.context().chat || []).slice(baselineIndex + 1).some(row => row?.is_user && !row.is_system);
+    ticket = { token: epoch, type, scope: canonical(host.scope()), baselineIndex,
+      waitingForUser: type === 'normal' && !options?.automatic_trigger && !hasPendingUser,
       received: null, ended: false, finishing: false, delivery: null, worldEntries: [], worldObserved: false };
     let preparationFailed = false;
-    try { ticket.delivery = preparePrompt(); }
+    try { if (ticket.waitingForUser) host.clearPrompt(); else ticket.delivery = preparePrompt(); }
     catch (error) { preparationFailed = true; host.clearPrompt(); publish({ code: safeCode(error) }); }
-    publish({ status: 'waiting', latestApplied: !missed, coverageLimited: preparationFailed || ticket.delivery?.coverageLimited === true,
+    publish({ status: 'waiting', delivery: null, latestApplied: !missed, coverageLimited: preparationFailed || ticket.delivery?.coverageLimited === true,
       detail: missed ? '本轮未应用最新指导，正文继续；后台将在接受新正文后续接' : '正文生成中；按已有幕后事实与条件准备提示' });
   }
   function sent(index) {
@@ -91,6 +94,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
       || !row?.is_user || row.is_system) return;
     // Native START precedes inserting this user row; MESSAGE_SENT is awaited
     // before the host snapshots extension prompts for the main request.
+    ticket.waitingForUser = false;
     ticket.delivery = null;
     try {
       ticket.delivery = preparePrompt();
@@ -113,7 +117,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     ticket.ended = true; scheduleFinish();
   }
   function settingsReady(data) {
-    if (!ticket || !valid(ticket.token) || ticket.scope !== canonical(host.scope()) || data?.dryRun
+    if (!ticket || ticket.waitingForUser || !valid(ticket.token) || ticket.scope !== canonical(host.scope()) || data?.dryRun
       || !Object.prototype.hasOwnProperty.call(data || {}, 'type') || !Array.isArray(data.messages)
       || (data.type === undefined ? 'normal' : data.type) !== ticket.type) return;
     ticket.worldObserved = true;
@@ -129,6 +133,51 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     if (!ticket?.ended || ticket.received === null || ticket.finishing) return;
     ticket.finishing = true;
     void finish(ticket);
+  }
+  // Observations are retry material only, never an accepted/persisted receipt.
+  // The existing epoch invalidates them on a new generation, branch or lifecycle.
+  let acceptanceRecovery = null;
+  function sameObservedTarget(observed, target) {
+    return observed?.target?.scopeKey === target.scopeKey && observed.target.identity === target.identity
+      && observed.target.lineage === target.lineage;
+  }
+  function retainAcceptanceObservation(target, current) {
+    acceptanceRecovery = { token: current.token, target: clone(target), delivery: clone(current.delivery || null),
+      worldEntries: clone(current.worldEntries || []), worldObserved: current.worldObserved === true };
+    // Provision was observed in this main prompt. A later full-prefix readback
+    // may prove this paragraph even if a new START supersedes its save wait.
+    bindDelivery(target, current);
+  }
+  function assertAcceptance(target, current) {
+    if (ticket !== current) throw fault('guide_stale', '正文确认票据已经变化');
+    guard(target, current.token);
+  }
+  async function waitForSavedTarget(target, current) {
+    let interval = 250;
+    publish({ status: 'accepting', code: null, detail: '确认正文存档；等待宿主自然保存，尚未启动指导调用' });
+    for (;;) {
+      assertAcceptance(target, current);
+      try {
+        await host.readback(target);
+        assertAcceptance(target, current);
+        return;
+      } catch (error) {
+        assertAcceptance(target, current);
+        if (error?.code !== 'host_readback_target') throw error;
+      }
+      // Throttle read-only probes. Elapsed time never proves success or failure.
+      await host.delay(interval);
+      assertAcceptance(target, current);
+      interval = Math.min(interval * 2, 1000);
+    }
+  }
+  function bindDelivery(target, current) {
+    lastDelivery = current.delivery ? { ...current.delivery, targetIdentity: target.identity,
+      targetScopeKey: target.scopeKey, targetLineage: target.lineage } : null;
+    if (lastDelivery) deliveries.set(target.identity, { scopeKey: target.scopeKey, lineage: target.lineage,
+      receipt: { targetIdentity: target.identity, providedIds: lastDelivery.providedIds, exposureIds: lastDelivery.exposureIds,
+        promptObserved: lastDelivery.promptObserved === true, sourceRevision: lastDelivery.sourceRevision } });
+    return lastDelivery;
   }
   async function finish(current) {
     try {
@@ -150,13 +199,8 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
       target = fresh; guard(target, current.token);
       if (/^\[(?:(?:api|http|request)\s*)?(?:error|failed|failure|错误|失败)\]/iu.test(target.content))
         throw fault('guide_main_failed', '主正文返回错误');
-      await host.readback(target);
-      guard(target, current.token);
-      lastDelivery = current.delivery ? { ...current.delivery, targetIdentity: target.identity } : null;
-      if (lastDelivery) deliveries.set(target.identity, {
-        targetIdentity: target.identity, providedIds: lastDelivery.providedIds, exposureIds: lastDelivery.exposureIds,
-        promptObserved: lastDelivery.promptObserved === true, sourceRevision: lastDelivery.sourceRevision,
-      });
+      retainAcceptanceObservation(target, current);
+      await waitForSavedTarget(target, current);
       ticket = null;
       pending = { target, token: current.token, delivery: lastDelivery, manual: false,
         worldEntries: current.worldEntries, worldObserved: current.worldObserved };
@@ -191,12 +235,17 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
       guard(target, token);
       const baseline = clone(exact?.beforeSnapshot || previous?.snapshot || { matters: [], revision: 0 });
       const afterIndex = exact?.baselineIndex ?? previous?.target?.index ?? -1;
-      const newlyAccepted = (await host.captureHistory(target, afterIndex)).map(row => ({
+      const captured = await host.captureHistory(target, afterIndex);
+      const newlyAccepted = captured.map(row => ({
         identity: row.identity, index: row.index, userText: currentGuideInput(row.userText), content: row.content,
       }));
       guard(target, token);
       const priorReceipts = new Map((exact?.receipts || []).map(receipt => [receipt.targetIdentity, receipt]));
-      const receipts = newlyAccepted.map(row => deliveries.get(row.identity) || priorReceipts.get(row.identity)).filter(Boolean);
+      const receipts = captured.map(row => {
+        const observed = deliveries.get(row.identity);
+        return observed?.scopeKey === row.scopeKey && observed.lineage === row.lineage
+          ? observed.receipt : priorReceipts.get(row.identity);
+      }).filter(Boolean);
       const worldObservation = job.worldObserved === true
         ? { activatedEntries: job.worldEntries || [], observed: true }
         : exact?.worldObservation || { activatedEntries: [], observed: false };
@@ -251,14 +300,27 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
   }
   async function retry() {
     if (active || ticket || disposed) return;
+    const recovery = acceptanceRecovery?.token === epoch ? acceptanceRecovery : null;
     invalidate(); const token = epoch;
     try {
       const target = await host.capture();
       if (!target) throw fault('guide_target_missing', '没有可重算的正文');
-      await host.readback(target); guard(target, token);
-      pending = { target, token, manual: true, delivery: lastDelivery };
+      guard(target, token);
+      const observed = sameObservedTarget(recovery, target) ? recovery : null;
+      const priorDelivery = lastDelivery?.targetIdentity === target.identity && lastDelivery.targetScopeKey === target.scopeKey
+        && lastDelivery.targetLineage === target.lineage ? lastDelivery : null;
+      const current = { token, finishing: true, delivery: clone(observed?.delivery || priorDelivery),
+        worldEntries: clone(observed?.worldEntries || []), worldObserved: observed?.worldObserved === true };
+      ticket = current;
+      retainAcceptanceObservation(target, current);
+      await waitForSavedTarget(target, current);
+      ticket = null;
+      pending = { target, token, manual: true, delivery: lastDelivery,
+        worldEntries: current.worldEntries, worldObserved: current.worldObserved };
       return drain();
-    } catch (error) { if (valid(token)) publish({ status: 'failed', code: safeCode(error), detail: '无法确认当前正文，未启动重算' }); }
+    } catch (error) {
+      if (valid(token)) { ticket = null; publish({ status: 'failed', code: safeCode(error), detail: '无法确认当前正文，未启动重算；本次观测材料仍按来源保留' }); }
+    }
   }
   function cancelled() {
     invalidate(); ticket = null; pending = null; host.clearPrompt();
@@ -281,7 +343,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     on('GENERATION_STARTED', started); on('MESSAGE_RECEIVED', received); on('GENERATION_ENDED', ended);
     on('GENERATION_STOPPED', cancelled); on('CHAT_COMPLETION_SETTINGS_READY', settingsReady);
     on('WORLD_INFO_ACTIVATED', entries => {
-      if (ticket && !ticket.worldObserved && Array.isArray(entries)
+      if (ticket && !ticket.waitingForUser && !ticket.worldObserved && Array.isArray(entries)
         && ticket.scope === canonical(host.scope())) ticket.worldEntries = clone(entries);
     });
     on('MESSAGE_SENT', sent);

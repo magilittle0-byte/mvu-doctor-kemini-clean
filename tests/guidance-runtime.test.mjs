@@ -252,8 +252,8 @@ test('quiet settings and later world scans cannot overwrite the main request wor
   } finally { h.runtime.destroy(); }
 });
 
-for (const auxiliaryEnd of [false, true]) {
-test(`native START ${auxiliaryEnd ? 'then auxiliary END ' : ''}then MESSAGE_SENT replaces previous-input selection before the main prompt`, async () => {
+for (const auxiliaryType of [null, 'quiet', 'normal']) {
+test(`native START ${auxiliaryType ? `then ${auxiliaryType} auxiliary settings and END ` : ''}then MESSAGE_SENT selects the current input`, async () => {
   const h = harness();
   const conditional = (id, subject) => ({ id, title: subject, subjects: [subject], process: '等待接触', status: 'active', history: [],
     facts: [], conditions: [{ id: `${id}-condition`, when: `实际到达${subject}`, change: '可以看见当地告示', basis: ['合成测试设定'] }],
@@ -264,13 +264,15 @@ test(`native START ${auxiliaryEnd ? 'then auxiliary END ' : ''}then MESSAGE_SENT
     await h.seed({ snapshot: { revision: 1, matters: [conditional('old', '旧港口'), conditional('new', '新酒馆')] } });
     await h.runtime.bind();
     h.eventSource.emit('GENERATION_STARTED', 'normal');
-    if (auxiliaryEnd) {
+    assert.equal(h.prompt(), '');
+    h.eventSource.emit('WORLD_INFO_ACTIVATED', [{ uid: 'synthetic-before-send', content: '合成辅助世界条目' }]);
+    if (auxiliaryType) {
       h.eventSource.emit('CHAT_COMPLETION_PROMPT_READY', { chat: [{ role: 'system', content: h.prompt() }], dryRun: false });
-      h.observePrompt('quiet');
+      h.observePrompt(auxiliaryType);
       h.eventSource.emit('GENERATION_ENDED');
     }
-    assert.match(h.prompt(), /old-exposure/u);
-    assert.doesNotMatch(h.prompt(), /new-exposure/u);
+    assert.notEqual(h.runtime.snapshot().delivery, 'provided');
+    assert.equal(h.calls.length, 0);
     const index = h.context.chat.push({ is_user: true, name: 'Player', mes: '改去新酒馆' }) - 1;
     h.eventSource.emit('MESSAGE_SENT', index);
     assert.match(h.prompt(), /new-exposure/u);
@@ -287,9 +289,31 @@ test(`native START ${auxiliaryEnd ? 'then auxiliary END ' : ''}then MESSAGE_SENT
     assert.equal(receipt.promptObserved, true);
     assert.deepEqual(receipt.providedIds, ['new']);
     assert.deepEqual(receipt.exposureIds, ['new-exposure']);
+    assert.deepEqual(h.runtime.record().worldObservation, { observed: true, activatedEntries: [] });
   } finally { h.runtime.destroy(); }
 });
 }
+
+test('first normal send supplies only narrative boundaries after the user arrives and has no event receipt IDs', async () => {
+  const h = harness();
+  try {
+    await h.runtime.bind();
+    h.eventSource.emit('GENERATION_STARTED', 'normal');
+    h.observePrompt();
+    assert.equal(h.prompt(), '');
+    assert.notEqual(h.runtime.snapshot().delivery, 'provided');
+    const index = h.context.chat.push({ is_user: true, name: 'Player', mes: '开始普通交谈' }) - 1;
+    h.eventSource.emit('MESSAGE_SENT', index);
+    assert.match(h.prompt(), /指导 · 叙事边界/u);
+    assert.doesNotMatch(h.prompt(), /shield-delivery|修盾/u);
+    h.observePrompt(); h.complete('对话刚刚开始。'); await h.settle();
+    const receipt = h.calls[0].input.priorDelivery.receipts[0];
+    assert.equal(receipt.promptObserved, true);
+    assert.deepEqual(receipt.providedIds, []);
+    assert.deepEqual(receipt.exposureIds, []);
+    assert.equal(h.calls.length, 1);
+  } finally { h.runtime.destroy(); }
+});
 
 test('a later accepted body can bind observed provision and record actual exposure with real evolve', async () => {
   const h = harness({ response: input => ({ ...noChange(input), adoptionChecks: [{ matterId: 'shield', exposureId: 'shield-delivery',

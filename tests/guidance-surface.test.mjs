@@ -54,6 +54,11 @@ test('panel Escape is isolated from host stop, composing is preserved, and destr
     });
     const bounds = await page.locator('#mvu-guidance-panel').boundingBox();
     assert.ok(bounds.y >= 72 && bounds.y + bounds.height <= 712, 'narrow layout reserves host controls and bottom space');
+    await page.evaluate(() => surface.render({ ready: true, enabled: true, status: 'accepting', detail: '等待严格存档读回' }));
+    assert.equal(await page.locator('.guide-status').textContent(), '指导 · 确认正文存档');
+    assert.equal(await page.locator('.guide-retry').isDisabled(), true);
+    assert.equal(await page.locator('.guide-toggle input').isEnabled(), true);
+    await page.evaluate(() => surface.render({ ready: true, enabled: true, status: 'idle' }));
     await page.locator('.guide-close').press('F2');
     assert.deepEqual(await page.evaluate(() => ({ hidden: surface.panel.hidden, keys: hostKeys })), { hidden: false, keys: ['F2'] });
 
