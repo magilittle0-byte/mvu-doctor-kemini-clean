@@ -1,13 +1,13 @@
 {
   "name": "mvu-doctor-kemini-clean",
-  "version": "0.12.0-candidate.2",
+  "version": "0.12.0-candidate.3",
   "private": true,
   "type": "module",
   "scripts": {
     "check:app": "node scripts/check-app.mjs",
     "verify:vendor": "bash vendor/story-oracle-v1.35.4/verify-copy.sh && bash scripts/verify-world-engine-v3.0.2.sh && node scripts/verify-life-state-v5.35.mjs",
     "test": "npm run test:guide",
-    "test:guide": "node --test tests/guidance-causality.test.mjs tests/guidance-host.test.mjs tests/guidance-runtime.test.mjs tests/guidance-store.test.mjs",
+    "test:guide": "node --test tests/guidance-causality.test.mjs tests/guidance-host.test.mjs tests/guidance-runtime.test.mjs tests/guidance-store.test.mjs tests/guidance-surface.test.mjs",
     "check:guide": "node scripts/check-guide.mjs && npm run test:guide",
     "test:modular": "node --test tests/modular-variables.test.mjs tests/modular-group-material.test.mjs tests/modular-structure-feedback.test.mjs tests/module-lock.test.mjs",
     "check:modular": "node scripts/check-modular.mjs && npm run test:modular",

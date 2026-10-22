@@ -10,7 +10,7 @@ export function createGuideSurface({ getStatus = () => ({}), getRecord = () => n
   if (!document?.body) throw new Error('guide_document_missing');
   if (document.getElementById('mvu-guidance-root')) throw new Error('guide_surface_duplicate');
   const listen = [];
-  const on = (node, name, fn) => { node.addEventListener(name, fn); listen.push(() => node.removeEventListener(name, fn)); };
+  const on = (node, name, fn, options) => { node.addEventListener(name, fn, options); listen.push(() => node.removeEventListener(name, fn, options)); };
   const node = (parent, tag, text = '', className = '') => {
     const element = document.createElement(tag);
     if (className) element.className = className;
@@ -135,7 +135,12 @@ export function createGuideSurface({ getStatus = () => ({}), getRecord = () => n
   });
   on(retryButton, 'click', () => { if (!retryButton.disabled) void act(retry); });
   on(backstage, 'toggle', () => { if (backstage.open) renderMatters(lastRecord); });
-  on(document, 'keydown', event => { if (event.key === 'Escape' && !panel.hidden) { event.preventDefault(); setOpen(false); } });
+  // The host's document bubble handler uses Escape to stop generation. Capture
+  // only this open panel's close gesture before it can reach that handler.
+  on(document, 'keydown', event => {
+    if (event.key !== 'Escape' || panel.hidden || event.isComposing) return;
+    event.preventDefault(); event.stopPropagation(); setOpen(false);
+  }, true);
   if (window?.addEventListener) on(window, 'resize', viewport);
   if (window?.visualViewport?.addEventListener) { on(window.visualViewport, 'resize', viewport); on(window.visualViewport, 'scroll', viewport); }
   viewport(); render();

@@ -52,7 +52,7 @@
 #mvu-guidance-root .guide-feedback { color: #f0c1a5; }
 #mvu-guidance-root .guide-candidate { margin: 14px 0 0; }
 @media (max-width: 520px) {
-  #mvu-guidance-root .guide-panel { left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); width: auto; top: calc(var(--guide-visual-top, 0px) + 8px); max-height: calc(var(--guide-visual-height, 100dvh) - 16px); }
+  #mvu-guidance-root .guide-panel { left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); width: auto; top: calc(var(--guide-visual-top, 0px) + 72px); max-height: calc(var(--guide-visual-height, 100dvh) - 80px); }
   #mvu-guidance-root .guide-header { padding: 12px 14px; }
   #mvu-guidance-root .guide-body { padding-inline: 14px; }
 }
