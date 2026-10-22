@@ -116,3 +116,19 @@ candidate.5 的真实事件元数据证实：START 后、MESSAGE_SENT 前已有 
 保存确认中被新 START 取代的正文，之后仍可能包含于新目标的完整前缀。因此重新核对 `host.captureHistory`（保留每段 scopeKey/lineage）、`readback`（核对完整前缀）以及 `drain` 的合批采用路径：稳定目标捕获后可先将真实提示观察放进已有内存 deliveries，但这不增加 acceptedCount、不存档、不等同正文已采用。内存条目额外绑定 scopeKey/lineage；后继目标通过完整前缀读回后，drain 在投影正文前逐段核对这两个绑定，仅把匹配的最小 receipt 送给模型。旧分支即使目标 identity 相同，也不能借用观察。现有 exact 记录的 receipts 仍由外层已保存分支约束，不另改持久 schema。手动重算的保存确认票据同样标记 finishing，防止新 START 把尚未处理的正文误报为已应用。
 
 以上最小修复已实施；定向离线检查 `guidance-host-save` 4 项、原 runtime 27 项和 host 7 项共 38/38 通过，runtime/新增测试语法与 `git diff --check` 通过（仅既有 CRLF 提示）。新增检查使用真实 capture/readback/evolve/reveal，存档读取与模型输出均为合成输入：连续九次未匹配仍保持零模型调用、自然保存后一次推演；下一正文不等待旧保存且 latestApplied=false，完整前缀证明后合批核对旧提示；transport/format 立即失败且连续主动重算保留同目标世界规则；相同 identity 的不同前缀不得复用旧回执。没有访问真实宿主或调用真实模型，候选仍待根任务统一冻结与真实重验。
+
+## candidate.9 后：当前场景来源与未覆盖正文状态（实施前 2A）
+
+2026-10-22 按新观测重新检索 `scene.text/recentText/currentGuideInput`、`baselineIndex/beforeSnapshot`、`latestApplied/restore/failed` 及旧模块的召回、生成和恢复路径。完整复读当前 guide runtime、reveal 的筛选与渲染、host 的 capture/assertTarget/captureHistory/branches，以及本轮命中的旧 prepareRecall、生成删除和公开宿主上下游。仅使用当前代码和公开宿主源码，未读取私人正文、连接宿主或请求模型。根任务提供的 candidate.9 脱敏观测是：新正文已接受、指导返回 `guide_response_invalid`，旧记录仍留在前一目标，但界面 `latestApplied=true`；本节修状态机制，不把该失败转记为通过。
+
+| 来源 | 已确认的原因 | 最小适配与边界 |
+|---|---|---|
+| `guide/runtime.mjs::preparePrompt`；`guide/reveal.mjs::currentGuideInput/sceneText/relevant/buildGuideReveal` | reveal 会解包 userInput，但 runtime 另把同一原始包装放进 scene.text；缝合怪 story 或数据库历史里的旧主体可由这个旁路重新选中条件事项 | runtime 先调用已有 currentGuideInput，再把同一当前输入给 userInput 和 scene.text。只识别已有明确生产者包装，不新增删正文规则；近期有效正文仍可提供场景依据 |
+| 公开 `host-script-public-source.js` 的 GenerateInternal（5061 起、START 5070、删除 5171–5185、coreChat 的 swipe 排除 5278–5280）；`modular/runtime.mjs::started/deleted`；`world/runtime.mjs::prepareRecall`；`profiles/runtime.mjs::prepareRecall` | START 时旧正文尚在 chat；regenerate 后续删除，swipe 只从主提示用的 coreChat 排除。旧模块已有按 baselineIndex 排除替换楼层来源的办法，但 profiles 的近期文本筛选并没有解决新指导的 scene 上下文旁路 | 原样保留固定 beforeSnapshot；仅 regenerate/swipe 的 recentText 排除 index >= baselineIndex 的助手正文，且不依赖 saved 是否恰好位于该楼。continue 保留当前正文前缀，normal 保留近期有效正文。不得把旧模块排除 continue 存档的做法扩张为删除续写文本 |
+| `guide/runtime.mjs::restore/locate/started/finish/drain/retry`；`guide/host.mjs::capture/assertTarget/latestIndex`；`guide/surface.mjs` 的 latestApplied 显示 | failed 路径未清已追平标志；空闲 START 仅看 active/pending/finishing；restore 可读到祖先记录却不比对当前目标。队列为空或找到旧记录均不能证明已覆盖最新正文 | 不加新字段：失败保持 latestApplied=false；START 保留已知遗漏；restore 用当前 capture 与记录的 identity/index/lineage 精确匹配校准；当前目标成功保存或精确读回才恢复 true。有真实目标但无记录则显示未追平，仍不自动补跑 |
+
+本轮计划只修改 `guide/runtime.mjs`、其既有调度测试和本来源表。新增离线场景覆盖两种明确输入包装、替换/续写的场景区别、旧记录恢复、无记录真实目标、纯开场、失败后空闲 START 与后继合批追平；不改变提示词、模型、schema、后台调用次数或宿主设置。离线检查只证明分区和状态机制，实际叙事采用仍需根任务冻结后验证。
+
+独立审查补充：完整复核 host.capture 的全部 null 返回原因，发现其还包括无有效作用域、活动 swipe 与 mes 未对齐及空用户输入，不能用 null 本身证明纯开场。只有作用域有效、没有任何非系统用户消息且助手展示与活动 swipe 一致时，才按纯开场保持零调用和无遗漏；其余未确认目标显示未追平。restore 在 await locate 后须再次 guard 精确前缀，并核对 target.index 仍是当前 latestIndex，才能把命中的存档称作最新覆盖；host.assertTarget 允许后追加正文，单独该守卫不够。这个补充只加强恢复显示，不增加自动补跑、状态字段或持久 schema。
+
+实施结果：以上三处机制修复及恢复边界已落盘。定向离线检查 `node --test tests/guidance-runtime.test.mjs tests/guidance-host-save.test.mjs` 共 **41/41** 通过（runtime 37 项、保存屏障 4 项）。新增测试使用真实 host.capture 和真实 evolve/reveal，模型返回与存储均为合成输入；包含包装历史不再回流、重生成排除旧正文而续写保留、失败后不误报追平、旧记录与未确认 swipe/空用户/无效作用域的恢复，以及异步读回期间追加新正文不能误报最新。未连接真实宿主、未调用模型；根任务仍需统一冻结并验证当前候选，不能把离线通过当作实际叙事已采用。

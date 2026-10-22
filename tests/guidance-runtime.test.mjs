@@ -29,6 +29,12 @@ function matter() {
     exposure: [{ id: 'shield-delivery', readiness: 'ready', route: '工匠亲手交还', when: '交接时', visible: '工匠递来修好的盾牌',
       factIds: ['shield-repaired'], conditionIds: [], status: 'pending' }] };
 }
+function conditionalMatter(id, subject) {
+  return { id, title: subject, subjects: [subject], process: '等待接触', status: 'active', history: [],
+    facts: [], conditions: [{ id: `${id}-condition`, when: `实际到达${subject}`, change: '可以看见当地告示', basis: ['合成测试设定'] }],
+    exposure: [{ id: `${id}-exposure`, readiness: 'conditional', route: '当面可见', when: `实际到达${subject}`, visible: '门旁挂着告示',
+      factIds: [], conditionIds: [`${id}-condition`], status: 'pending' }] };
+}
 function memoryStore() {
   const records = new Map(), commits = [];
   const key = (scopeKey, branchKey) => JSON.stringify([scopeKey, branchKey]);
@@ -255,13 +261,9 @@ test('quiet settings and later world scans cannot overwrite the main request wor
 for (const auxiliaryType of [null, 'quiet', 'normal']) {
 test(`native START ${auxiliaryType ? `then ${auxiliaryType} auxiliary settings and END ` : ''}then MESSAGE_SENT selects the current input`, async () => {
   const h = harness();
-  const conditional = (id, subject) => ({ id, title: subject, subjects: [subject], process: '等待接触', status: 'active', history: [],
-    facts: [], conditions: [{ id: `${id}-condition`, when: `实际到达${subject}`, change: '可以看见当地告示', basis: ['合成测试设定'] }],
-    exposure: [{ id: `${id}-exposure`, readiness: 'conditional', route: '当面可见', when: `实际到达${subject}`, visible: '门旁挂着告示',
-      factIds: [], conditionIds: [`${id}-condition`], status: 'pending' }] });
   try {
     h.context.chat[0].mes = '先去旧港口';
-    await h.seed({ snapshot: { revision: 1, matters: [conditional('old', '旧港口'), conditional('new', '新酒馆')] } });
+    await h.seed({ snapshot: { revision: 1, matters: [conditionalMatter('old', '旧港口'), conditionalMatter('new', '新酒馆')] } });
     await h.runtime.bind();
     h.eventSource.emit('GENERATION_STARTED', 'normal');
     assert.equal(h.prompt(), '');
@@ -293,6 +295,150 @@ test(`native START ${auxiliaryType ? `then ${auxiliaryType} auxiliary settings a
   } finally { h.runtime.destroy(); }
 });
 }
+
+for (const [producer, input] of [
+  ['stitches', '<story>上次在旧港口见过告示。</story><user_input>改去新酒馆</user_input>'],
+  ['database', '以下是用户的本轮输入：\n历史资料：旧港口\n<本轮用户输入>改去新酒馆</本轮用户输入>'],
+]) {
+  test(`${producer} history wrapper cannot select an unrelated condition through scene.text`, async () => {
+    const h = harness();
+    try {
+      await h.seed({ snapshot: { revision: 1, matters: [conditionalMatter('old', '旧港口'), conditionalMatter('new', '新酒馆')] } });
+      await h.runtime.bind(); h.begin(input);
+      assert.match(h.prompt(), /new-exposure/u);
+      assert.doesNotMatch(h.prompt(), /old-exposure|旧港口/u);
+      h.observePrompt(); h.complete('队伍仍在讨论路线。'); await h.settle();
+      assert.equal(h.calls.length, 1);
+      assert.deepEqual(h.calls[0].input.priorDelivery.receipts[0].exposureIds, ['new-exposure']);
+      assert.equal(h.calls[0].input.newlyAccepted[0].userText, '改去新酒馆');
+    } finally { h.runtime.destroy(); }
+  });
+}
+
+for (const type of ['regenerate', 'swipe', 'continue']) {
+  test(`${type} uses only the narrative context retained by this generation`, async () => {
+    for (const exactRecord of [false, true]) {
+      const h = harness();
+      try {
+        const snapshot = { revision: 1, matters: [conditionalMatter('prior', '旧街区'), conditionalMatter('replaced', '新码头')] };
+        h.context.chat[0].mes = '继续前行';
+        h.context.chat[1].mes = '路旁是旧街区。';
+        await h.seed({ snapshot });
+        h.context.chat.push({ is_user: true, mes: '接着观察' }, { is_user: false, mes: '队伍来到新码头。' });
+        if (exactRecord) await h.seed({ before: snapshot, snapshot });
+        await h.runtime.bind(); h.runtime.started(type);
+        assert.match(h.prompt(), /prior-exposure/u, 'the earlier retained scene still selects its condition');
+        assert.equal(h.prompt().includes('replaced-exposure'), type === 'continue',
+          `replacement filtering must not depend on an exact saved record (${exactRecord})`);
+        if (type === 'regenerate') {
+          h.context.chat.pop(); h.eventSource.emit('MESSAGE_DELETED', 3);
+          assert.match(h.prompt(), /prior-exposure/u);
+          assert.doesNotMatch(h.prompt(), /replaced-exposure/u);
+        }
+        assert.equal(h.calls.length, 0);
+        assert.equal(h.store.commits.length, 0);
+      } finally { h.runtime.destroy(); }
+    }
+  });
+}
+
+test('failed guidance remains behind at idle START until a later normal batch covers both accepted bodies', async () => {
+  const h = harness({ response: (input, index) => index === 0
+    ? { ...noChange(input), upserts: [{ identity: 'not-a-matter', content: 'Synthetic wrong shape.' }] } : noChange(input) });
+  try {
+    const previous = await h.seed(); await h.runtime.bind();
+    assert.equal(h.runtime.snapshot().latestApplied, true);
+    h.begin('第一段输入'); h.complete('第一段已接受正文。');
+    await until(() => !h.runtime.snapshot().busy && h.runtime.snapshot().status === 'failed');
+    assert.equal(h.runtime.snapshot().code, 'guide_response_invalid');
+    assert.equal(h.runtime.snapshot().latestApplied, false);
+    assert.equal(h.runtime.record().target.identity, previous.target.identity);
+    assert.equal(h.calls.length, 1, 'failure does not automatically add a request');
+    h.begin('第二段输入');
+    assert.equal(h.runtime.snapshot().latestApplied, false, 'an idle START cannot erase the uncovered reply');
+    h.complete('第二段已接受正文。'); await h.settle();
+    assert.deepEqual(h.calls[1].input.newlyAccepted.map(row => row.content), ['第一段已接受正文。', '第二段已接受正文。']);
+    assert.equal(h.runtime.snapshot().latestApplied, true);
+    assert.equal(h.runtime.record().coveredReplyKeys.length, 2);
+    assert.equal(h.calls.length, 2);
+  } finally { h.runtime.destroy(); }
+});
+
+test('restore distinguishes an exact record from an ancestor or no record without starting guidance', async () => {
+  const h = harness();
+  try {
+    const previous = await h.seed(); await h.runtime.bind();
+    assert.equal(h.runtime.snapshot().latestApplied, true);
+    h.context.chat.push({ is_user: true, mes: '新的用户回合' }, { is_user: false, mes: '新的有效正文。' });
+    await h.runtime.restore();
+    assert.equal(h.runtime.record().target.identity, previous.target.identity);
+    assert.equal(h.runtime.snapshot().latestApplied, false);
+    h.store.records.clear(); await h.runtime.restore();
+    assert.equal(h.runtime.record(), null);
+    assert.equal(h.runtime.snapshot().latestApplied, false, 'a real reply without any guidance record is uncovered');
+    const current = await h.seed(); await h.runtime.restore();
+    assert.equal(h.runtime.record().target.identity, current.target.identity);
+    assert.equal(h.runtime.snapshot().latestApplied, true);
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.store.commits.length, 0);
+  } finally { h.runtime.destroy(); }
+});
+
+test('a fresh opening without a preceding user reply remains zero-call and has no coverage gap', async () => {
+  const h = harness();
+  try {
+    h.context.chat = [{ is_user: false, mes: '旅程即将开始。' }];
+    assert.equal(await h.host.capture(), null);
+    await h.runtime.bind(); await h.runtime.restore();
+    assert.equal(h.runtime.snapshot().latestApplied, true);
+    h.begin('开始旅程');
+    assert.equal(h.runtime.snapshot().latestApplied, true);
+    assert.equal(h.runtime.snapshot().acceptedCount, 0);
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.store.commits.length, 0);
+  } finally { h.runtime.destroy(); }
+});
+
+test('an unconfirmed active swipe, empty user or missing scope is not mistaken for a fresh opening', async () => {
+  const h = harness();
+  try {
+    await h.seed(); await h.runtime.bind();
+    h.context.chat[1].swipes = ['另一个活动正文。'];
+    h.context.chat[1].swipe_id = 0;
+    assert.equal(await h.host.capture(), null);
+    await h.runtime.restore();
+    assert.equal(h.runtime.snapshot().latestApplied, false);
+    assert.match(h.runtime.snapshot().detail, /尚未确认/u);
+    delete h.context.chat[1].swipes;
+    h.context.chat[0].mes = '';
+    assert.equal(await h.host.capture(), null);
+    await h.runtime.restore();
+    assert.equal(h.runtime.snapshot().latestApplied, false);
+    h.context.chatId = 'default';
+    h.context.chat = [{ is_user: false, mes: '旅程即将开始。' }];
+    await h.runtime.restore();
+    assert.equal(h.runtime.snapshot().latestApplied, false);
+    assert.match(h.runtime.snapshot().detail, /尚无有效聊天/u);
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.store.commits.length, 0);
+  } finally { h.runtime.destroy(); }
+});
+
+test('an exact record read cannot report latest coverage if a newer reply arrives during that read', async () => {
+  const gate = deferred(), reading = deferred(), h = harness();
+  try {
+    const previous = await h.seed(), read = h.store.read;
+    h.store.read = async (...args) => { reading.resolve(); await gate.promise; return read(...args); };
+    const restoring = h.runtime.bind();
+    await reading.promise;
+    h.context.chat.push({ is_user: true, mes: '存档读取期间的新输入' }, { is_user: false, mes: '读取期间的新正文。' });
+    gate.resolve(); await restoring;
+    assert.equal(h.runtime.record().target.identity, previous.target.identity);
+    assert.equal(h.runtime.snapshot().latestApplied, false);
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.store.commits.length, 0);
+  } finally { gate.resolve(); h.runtime.destroy(); }
+});
 
 test('first normal send supplies only narrative boundaries after the user arrives and has no event receipt IDs', async () => {
   const h = harness();

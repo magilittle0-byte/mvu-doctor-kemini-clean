@@ -45,12 +45,21 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
       if (!valid(token)) return;
       const loaded = target ? await locate(target) : null;
       if (!valid(token)) return;
+      if (target) guard(target, token);
+      const scope = host.scope(), chat = host.context().chat || [];
+      const opening = !target && !!scope && chat.every(row => row?.is_system || (!row?.is_user
+        && String(row?.mes || '') === host.messageText(row)));
       saved = loaded;
-      restoredScope = canonical(host.scope());
-      publish({ status: saved ? 'restored' : 'idle', readback: !!saved,
-        detail: saved ? '已读回本分支的幕后记录；没有额外推进' : '等待新正文；不会自动补跑历史', code: null });
+      restoredScope = canonical(scope);
+      const latestApplied = opening || (!!target && target.index === host.latestIndex() && saved?.target?.identity === target.identity
+        && saved.target.index === target.index && saved.target.lineage === target.lineage);
+      publish({ status: saved ? 'restored' : 'idle', readback: !!saved, latestApplied,
+        detail: !scope ? '尚无有效聊天，无法确认指导覆盖' : !target && !opening ? '当前正文尚未确认，不能报告指导已追平'
+          : !latestApplied ? '当前正文尚未被指导覆盖；已有记录保留，不会自动补跑历史'
+          : saved ? '已读回本分支的幕后记录；没有额外推进' : '等待新正文；不会自动补跑历史', code: null });
     } catch (error) {
-      if (valid(token)) publish({ status: 'failed', code: safeCode(error), detail: '指导存档读取失败，未用空结果覆盖旧记录' });
+      if (valid(token)) publish({ status: 'failed', code: safeCode(error), latestApplied: false,
+        detail: '指导存档读取失败，未用空结果覆盖旧记录' });
     }
   }
   function preparePrompt() {
@@ -58,10 +67,12 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     if (host.settings().enabled === false || restoredScope !== canonical(host.scope())) return null;
     const chat = host.context().chat || [];
     const user = [...chat].reverse().find(message => message?.is_user);
-    const userInput = String(user?.mes || '');
+    const userInput = currentGuideInput(String(user?.mes || ''));
     const sameFloor = ticket && ticket.type !== 'normal' && saved?.target?.index === ticket.baselineIndex;
     const record = (sameFloor ? saved?.beforeSnapshot : saved?.snapshot) || { matters: [] };
-    const recentText = chat.filter(row => row && !row.is_user && !row.is_system).slice(-2)
+    const replacing = ticket && ['regenerate', 'swipe'].includes(ticket.type);
+    const recentText = chat.filter((row, index) => row && !row.is_user && !row.is_system
+      && (!replacing || index < ticket.baselineIndex)).slice(-2)
       .map(row => String(row.mes || '')).join('\n');
     const selected = reveal({ snapshot: record, userInput,
       scene: { text: userInput, recentText }, budgetChars: host.settings().promptBudgetChars || 4800 });
@@ -72,7 +83,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     type = String(type || 'normal').toLowerCase();
     if (disposed || dryRun || options?.dryRun || options?.quiet || options?.silent || options?.raw
       || !['normal', 'swipe', 'regenerate', 'continue'].includes(type)) return;
-    const missed = !!active || !!pending || !!ticket?.finishing || Number.isInteger(ticket?.received);
+    const missed = state.latestApplied === false || !!active || !!pending || !!ticket?.finishing || Number.isInteger(ticket?.received);
     invalidate();
     const baselineIndex = host.latestIndex();
     const hasPendingUser = (host.context().chat || []).slice(baselineIndex + 1).some(row => row?.is_user && !row.is_system);
@@ -204,12 +215,14 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
       ticket = null;
       pending = { target, token: current.token, delivery: lastDelivery, manual: false,
         worldEntries: current.worldEntries, worldObserved: current.worldObserved };
-      publish({ acceptedCount: state.acceptedCount + 1, status: 'queued', detail: '正文已接受，等待单次幕后推演' });
+      publish({ acceptedCount: state.acceptedCount + 1, status: 'queued', latestApplied: false,
+        detail: '正文已接受，等待单次幕后推演' });
       void drain();
     } catch (error) {
       if (valid(current.token)) {
         ticket = null;
-        publish({ status: 'failed', code: safeCode(error), detail: '未确认本轮完整正文，指导未推进；可在正文恢复后重算本次' });
+        publish({ status: 'failed', code: safeCode(error), latestApplied: false,
+          detail: '未确认本轮完整正文，指导未推进；可在正文恢复后重算本次' });
       }
     }
   }
@@ -229,7 +242,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
       guard(target, token);
       if (exact && !job.manual) {
         saved = exact; restoredScope = canonical(host.scope());
-        publish({ status: 'restored', readback: true, detail: '该正文已有指导记录，没有重复推进' }); return;
+        publish({ status: 'restored', readback: true, latestApplied: true, detail: '该正文已有指导记录，没有重复推进' }); return;
       }
       const previous = await locate(target, false);
       guard(target, token);
@@ -290,7 +303,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
         durationMs: Date.now() - startedAt, detail: result.conflicts?.length
           ? '幕后结果已保存；部分事项与正文有冲突，已保留待核对' : '幕后结果已保存，等待合适的时机影响正文', code: null });
     } catch (error) {
-      if (valid(token)) publish({ status: 'failed', code: safeCode(error), readback: false,
+      if (valid(token)) publish({ status: 'failed', code: safeCode(error), readback: false, latestApplied: false,
         detail: '本轮指导未完成，保留上次完整记录；未自动追加请求', durationMs: Date.now() - startedAt });
     } finally {
       if (active?.job === job) active = null;
@@ -319,7 +332,8 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
         worldEntries: current.worldEntries, worldObserved: current.worldObserved };
       return drain();
     } catch (error) {
-      if (valid(token)) { ticket = null; publish({ status: 'failed', code: safeCode(error), detail: '无法确认当前正文，未启动重算；本次观测材料仍按来源保留' }); }
+      if (valid(token)) { ticket = null; publish({ status: 'failed', code: safeCode(error), latestApplied: false,
+        detail: '无法确认当前正文，未启动重算；本次观测材料仍按来源保留' }); }
     }
   }
   function cancelled() {
