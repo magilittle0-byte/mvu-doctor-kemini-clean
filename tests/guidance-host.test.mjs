@@ -76,12 +76,20 @@ test('persisted target readback checks the whole prefix without saving host data
 
 test('settings and prompt changes remain in the guidance namespace', () => {
   const { host, ctx, prompts } = fixture();
+  const promptCalls = [];
+  ctx.setExtensionPrompt = (...args) => { promptCalls.push(args); prompts.set(args[0], args[1]); };
   host.updateSettings({ enabled: false, detailsOpen: true, foreign: 'overwrite', apiKey: 'not-allowed' });
   assert.deepEqual(ctx.extensionSettings.foreign, { enabled: true });
   assert.deepEqual(Object.keys(ctx.extensionSettings[GUIDE_SETTINGS_KEY]).sort(), ['detailsOpen', 'enabled', 'maxTokens']);
   host.setPrompt('Visible clue only');
   assert.equal(prompts.get(GUIDE_PROMPT_KEY), 'Visible clue only');
+  assert.deepEqual(promptCalls.at(-1), [GUIDE_PROMPT_KEY, 'Visible clue only', 0, 0, false, 0]);
+  host.clearPrompt();
+  assert.deepEqual(promptCalls.at(-1), [GUIDE_PROMPT_KEY, '', 0, 0, false, 0]);
+  host.setPrompt('Visible clue only');
   host.destroy(); host.destroy();
+  assert.deepEqual(promptCalls.at(-1), [GUIDE_PROMPT_KEY, '', 0, 0, false, 0]);
+  assert.equal(promptCalls.length, 4);
   assert.equal(prompts.get(GUIDE_PROMPT_KEY), '');
   assert.equal(prompts.get('foreign'), 'keep');
   assert.throws(() => host.scope(), { code: 'host_disposed' });

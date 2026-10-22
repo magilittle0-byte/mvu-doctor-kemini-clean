@@ -238,7 +238,8 @@ export function createGuideHost({
   function setPrompt(text) {
     const ctx = context();
     if (typeof ctx.setExtensionPrompt !== 'function') throw fault('prompt_unavailable', '宿主前置提示接口不可用');
-    ctx.setExtensionPrompt(GUIDE_PROMPT_KEY, String(text || ''), 1, 0, false);
+    // Native IN_PROMPT / SYSTEM; keep this outside the preset's chat-history slot.
+    ctx.setExtensionPrompt(GUIDE_PROMPT_KEY, String(text || ''), 0, 0, false, 0);
   }
   const clearPrompt = () => setPrompt('');
   const isGenerating = () => getDocument()?.body?.dataset?.generating === 'true';

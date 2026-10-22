@@ -115,6 +115,12 @@ test('model view sends each covered narrative once, retains unmatched context an
     assert.match(outsideSources, /adoptionChecks 必须严格返回 \[\]/u);
     assert.match(outsideSources, /入口 when 与引用条件的触发边界须一致/u);
     assert.match(messages[0].content, /未知机制继续保持未知，不硬编码成功或失败/u);
+    // Contract carriage and full frozen-world source only, not model semantic acceptance.
+    assert.match(messages[0].content, /即使玩家不实施当前计划/u);
+    assert.match(messages[0].content, /区分促成过程变化的条件与后果抵达视角的条件/u);
+    assert.match(outsideSources, /先判断不实施玩家当前计划时/u);
+    assert.match(outsideSources, /不无依据把施法、调查或同意绑成触发前提/u);
+    assert.match(outsideSources, /冻结、时间不足或能力\/机制未知时保留停滞或未知，不要求发生攻击/u);
     assert.equal(Object.hasOwn(item, 'content'), false);
     assert.match(outsideSources, /【任务结束】/);
     return JSON.stringify(response());
@@ -254,6 +260,38 @@ test('adoption is bound to observed exposure plus actual accepted target, never 
   assert.equal(result.adoption[0].recordedAtTargetIdentity, target.identity);
   await assert.rejects(run({ adoptionChecks: [shown({ evidence: '正文中不存在的袭击' })] }, { baseline, priorDelivery: delivery() }),
     { code: 'guide_response_invalid' });
+});
+
+test('not-observed can leave evidence empty or quote an exact passage while explaining absence in reason', async () => {
+  const pending = { ...target, content: '守卫在门外巡逻。我们仍在讨论计划。' };
+  const baseline = { matters: [corpse()] }, before = structuredClone(baseline);
+  for (const evidence of ['', '守卫在门外巡逻']) {
+    let calls = 0;
+    const result = await evolveGuide({ target: pending, baseline, priorDelivery: delivery(), request: async messages => {
+      calls++;
+      assert.match(messages[0].content, /not-observed 的 evidence 允许为 ""/u);
+      assert.match(messages[1].content, /not-observed 无合适原文可写 evidence:""，未观察的说明放 reason/u);
+      return JSON.stringify(response({ adoptionChecks: [shown({ status: 'not-observed', evidence,
+        reason: '本段只写巡逻和讨论，没有满足取出接触条件。' })] }));
+    } });
+    assert.equal(calls, 1);
+    assert.equal(result.adoption[0].status, 'not-observed');
+    assert.equal(result.adoption[0].evidence, evidence);
+    assert.deepEqual(baseline, before);
+  }
+});
+
+test('paraphrased absence and empty shown or conflict evidence still reject atomically without repair', async () => {
+  const baseline = { matters: [corpse()] }, before = structuredClone(baseline);
+  for (const check of [shown({ status: 'not-observed', evidence: '正文未发生相应的接触结果' }),
+    shown({ evidence: '' }), shown({ status: 'conflict', evidence: '' })]) {
+    let calls = 0;
+    await assert.rejects(evolveGuide({ target, baseline, priorDelivery: delivery(), request: async () => {
+      calls++; return JSON.stringify(response({ adoptionChecks: [check] }));
+    } }), { code: 'guide_response_invalid' });
+    assert.equal(calls, 1);
+    assert.deepEqual(baseline, before);
+  }
 });
 
 test('generic-boundary receipt stays intact but yields no model adoption source or template; invented adoption still rejects the whole batch', async () => {
