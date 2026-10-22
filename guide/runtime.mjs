@@ -112,12 +112,14 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     if (!ticket || ticket.scope !== canonical(host.scope())) return;
     ticket.ended = true; scheduleFinish();
   }
-  function promptReady(data) {
-    if (!ticket || data?.dryRun || !Array.isArray(data?.chat)) return;
+  function settingsReady(data) {
+    if (!ticket || !valid(ticket.token) || ticket.scope !== canonical(host.scope()) || data?.dryRun
+      || !Object.prototype.hasOwnProperty.call(data || {}, 'type') || !Array.isArray(data.messages)
+      || (data.type === undefined ? 'normal' : data.type) !== ticket.type) return;
     ticket.worldObserved = true;
     if (!ticket.delivery?.text) return;
     const text = ticket.delivery.text;
-    const present = data.chat.some(message => typeof message?.content === 'string' && message.content.includes(text));
+    const present = data.messages.some(message => typeof message?.content === 'string' && message.content.includes(text));
     if (present) {
       ticket.delivery.promptObserved = true;
       publish({ delivery: 'provided', detail: '本轮主提示已包含指导内容；正文是否采用仍待核对' });
@@ -277,9 +279,10 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
       listeners.push(() => ctx.eventSource.removeListener(events[name], callback));
     };
     on('GENERATION_STARTED', started); on('MESSAGE_RECEIVED', received); on('GENERATION_ENDED', ended);
-    on('GENERATION_STOPPED', cancelled); on('CHAT_COMPLETION_PROMPT_READY', promptReady);
+    on('GENERATION_STOPPED', cancelled); on('CHAT_COMPLETION_SETTINGS_READY', settingsReady);
     on('WORLD_INFO_ACTIVATED', entries => {
-      if (ticket && Array.isArray(entries) && ticket.scope === canonical(host.scope())) ticket.worldEntries = clone(entries);
+      if (ticket && !ticket.worldObserved && Array.isArray(entries)
+        && ticket.scope === canonical(host.scope())) ticket.worldEntries = clone(entries);
     });
     on('MESSAGE_SENT', sent);
     on('MESSAGE_SWIPED', () => { if (!ticket) void restore(); });
@@ -299,7 +302,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     host.clearPrompt(); host.destroy?.();
   }
   return Object.freeze({ bind, destroy, restore, retry, setEnabled, snapshot,
-    record: () => clone(saved), started, received, ended, promptReady });
+    record: () => clone(saved), started, received, ended, settingsReady });
 }
 
 function safeCode(error) {

@@ -53,3 +53,21 @@
 新增部分只有现有 MESSAGE_SENT 监听的窄处理函数；原因是指导新增了当前输入相关性筛选，而旧模块没有这条入库后刷新路径。没有第二调度器、定时轮询、存储迁移或自动重试。后台 JSON schema 的渠道支持本轮未启用，宿主请求桥保持原样。
 
 同轮复核补充：当前公开宿主 hideStopButton（4175–4184）发送的 GENERATION_ENDED 只有 chat.length，没有请求 ID；根任务提供的真实事件元数据也出现辅助 END 早于主 RECEIVED。重新核对 guide/modular 的 ended→scheduleFinish 和旧 world 的 receipt 绑定：不能用单独 ended 阻止入库后准备。这里的锁点改用本票据的 promptReady、received 或 finishing；START→辅助 END→用户入库→MESSAGE_SENT 仍须准备正确本轮提示，未收到正文时不发指导请求。此事实另加离线回归，不把早到 END 当主正文已完成。
+
+## candidate.5：区分辅助提示准备与主请求参数准备
+
+candidate.4 的新真实事件元数据出现 START→辅助 CHAT_COMPLETION_PROMPT_READY→辅助 END→MESSAGE_SENT→主 CHAT_COMPLETION_PROMPT_READY。前一节的 promptReady 锁点因此不成立；本节取代它，不能把“第一个 READY”当正文。此次重新检索公开宿主、旧模块、原始 MVU 请求监听、数据库公开参考及成熟后台调用路径，并读到下列实际发送边界；没有读取私人请求正文。
+
+| 来源 | 完整核对范围 / 事实 | 复用与适配边界 |
+|---|---|---|
+| 当前 `host-script-public-source.js`（与前节同一仓外目录） | generateRawData 4679–4799、主 GenerateInternal 的发送路径及 sendGenerationRequest/sendStreamingRequest；4715–4716 的辅助 READY 只有 `{chat,dryRun:false}`，4756 固定使用 quiet 发送 | 无类型 READY 不能记主请求已观察，也不能锁住 MESSAGE_SENT 后的筛选。辅助 raw 不需要发 START 也能触发这个事件 |
+| 当前 `host-openai-public-source.js`（同目录） | prepareOpenAIMessages 2374–2488、createGenerationParameters 的 type/messages 构造与 sendOpenAIRequest 4592–4726 | 主 READY 2479–2480 同样无 type；请求参数 4264–4266 保留实际 type/messages；4599–4608 在真实 fetch 前 await CHAT_COMPLETION_SETTINGS_READY。直接复用这个现有事件，只读取 type 与 messages，不记录其中连接或凭据信息 |
+| 当前 `host-script-public-source.js` | 6213/6271 到 7150–7188 的流式/非流式发送；5231→6942–6951→6930–6933 的入库屏障 | 主调用透传 normal、regenerate、swipe、continue 类型；quiet 辅助走 quiet。普通用户入库仍同步刷新，已有用户/自动 normal 和同楼重生成不强制等待新增 MESSAGE_SENT |
+| 原始 MVU `src/function/request/index.ts`、数据库公开参考 `public-reference-shujuku-spv8.9.2.js` 69696–69772、102172–102182 | SETTINGS_READY 的既有消息处理监听、messages 形状与清理方式 | 只复用既有事件和消息形状；不搬变量修正、数据库模板处理、全局宏或对消息的改写 |
+| `guide/runtime.mjs` / 既有 ticket、sent 与 receipt | 无类型 READY 过早把 worldObserved 置 true，导致 sent 被挡；provided 回执可能归错辅助请求 | 最小改为 SETTINGS_READY 观察：有效票据、同作用域、显式 type 字段且归一化类型等于本票据、messages 为数组时才记录观察；其中精确包含本次指导文本才记“已提供”。不改变模型调用、保存、忙碌续接、同楼前态或暴露成功判断 |
+
+不新增阶段总线或请求 ID。GENERATION_AFTER_COMMANDS / AFTER_COMBINE 也可能被辅助流程触发，不能作为主请求的唯一身份。当前复用的是宿主实际发送类型，不宣称它能识别任意第三方伪造的同类型事件；真实宿主/最终上游消息仍由本轮验收核对。离线回归覆盖主请求前后 quiet、无类型 READY、normal 已有用户和自动入口、同楼类型匹配/不匹配以及原串行续接，均不新增模型调用。
+
+同一链上的世界书资料只在主请求参数确认前收集：当前公开 script 5418 await getWorldInfoPrompt，之后才于 6076–6102 组装主提示、发送 typed SETTINGS_READY。WORLD_INFO_ACTIVATED 本身不带类型；主请求参数一经确认，冻结 ticket 已捕获条目，后来的 quiet 扫描不得覆盖它。此处只保护已捕获资料，不主动扫描、不声称无类型世界事件能够独立证明任意并发扫描的身份。
+
+类型匹配遵从当前源码的字符串参数：只将自有 type 字段值为 undefined 的原生普通调用归为 normal；null、布尔值、数字和空串不冒充 normal。其他类型必须与本票据精确相等。

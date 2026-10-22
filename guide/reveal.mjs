@@ -31,7 +31,8 @@ function relevant(matter, input, scene) {
   return list(matter.subjects).some(subject => text(subject).trim().length >= 2 && context.includes(subject.toLocaleLowerCase()));
 }
 
-const HEADER = `[指导 · 私下叙事约束]\n以下只用于当前场景的因果连续性，不能整段抄给玩家。已成立事实具有约束力，不能因为此前正文没写就抹除；主体仅按各自知识行动。不要替玩家决定、答应或行动，不切换全知视角解释秘密。条件项只是分支：只有本轮正文实际经历对应时间、接触或传播才发生；玩家输入的打算不等于已经发生。不满足则继续潜伏，不强造转折。已显露入口不重复演出；若已接受正文已演出此动作，即使指导还在等待核对，也只延续后果，不重演同一攻击或行动。遇到已接受正文与既成事实的矛盾，不倒改事实或补造前因，保留未解边界。`;
+const VIEW_BOUNDARY = `[指导 · 叙事边界]\n正文、状态栏、任务框和系统提示展示都只呈现世界规则与当前视角实际感知、亲历或获告知渠道支持的信息；不得换用展示框或全知旁白提前泄露幕后过程、身份、动机和未被获知的风险。叙述者全知说明、规划或系统调试不自动成为角色知识。各主体按自己的已知信息行动，不替玩家决定、答应、查看、理解或产生感受。玩家输入是意图，只有正文实际完成的行动、经过的时间及满足的条件才算发生。没有依据的变化保持未知或潜伏，不强造转折。这些是叙事边界，不是未来事实，不要把本段规则抄给玩家。`;
+const HEADER = `${VIEW_BOUNDARY}\n\n[指导 · 私下因果约束]\n以下只用于当前场景的因果连续性，不能整段抄给玩家。已成立事实具有约束力，不能因为此前正文没写就抹除。条件项只是分支：只有本轮正文实际经历对应时间、接触或传播才发生；不满足则继续潜伏。已显露入口不重复演出；若已接受正文已演出此动作，即使指导还在等待核对，也只延续后果，不重演同一攻击或行动。遇到已接受正文与既成事实的矛盾，不倒改事实或补造前因，保留未解边界。`;
 
 function renderMatter(matter, entries, shown = []) {
   const factIds = new Set([...entries, ...shown].flatMap(entry => list(entry.factIds)));
@@ -54,6 +55,7 @@ function renderMatter(matter, entries, shown = []) {
 export function buildGuideReveal({ snapshot = { matters: [] }, userInput = '', scene = {}, budgetChars = Infinity } = {}) {
   const input = currentGuideInput(userInput);
   const limit = Number.isFinite(budgetChars) ? Math.max(0, Math.floor(budgetChars)) : Infinity;
+  const boundaryFits = VIEW_BOUNDARY.length <= limit;
   const candidates = [];
   for (const matter of list(snapshot.matters)) {
     const isRelevant = relevant(matter, input, scene);
@@ -74,8 +76,8 @@ export function buildGuideReveal({ snapshot = { matters: [] }, userInput = '', s
     items.push({ matterId: candidate.matter.id, exposureIds: candidate.entries.map(item => item.id),
       readiness: candidate.entries.map(item => ({ exposureId: item.id, readiness: item.readiness })) });
   }
-  return { text: blocks.length ? `${HEADER}\n\n${blocks.join('\n\n')}` : '',
+  return { text: blocks.length ? `${HEADER}\n\n${blocks.join('\n\n')}` : boundaryFits ? VIEW_BOUNDARY : '',
     providedIds: items.map(item => item.matterId), exposureIds: items.flatMap(item => item.exposureIds), items,
     sourceRevision: Number.isSafeInteger(snapshot.revision) ? snapshot.revision : 0,
-    coverageLimited: omittedIds.length > 0, omittedIds };
+    coverageLimited: !boundaryFits || omittedIds.length > 0, omittedIds };
 }

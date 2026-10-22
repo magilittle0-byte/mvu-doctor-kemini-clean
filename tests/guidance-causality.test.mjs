@@ -162,16 +162,52 @@ test('existing backstage facts cannot be erased or rewritten; NPC knowledge does
   assert.deepEqual(baseline.matters[0].facts[0].knownTo, []);
 });
 
+test('first-turn viewpoint boundaries carry no invented fact or event delivery, including when only rules were observed', async () => {
+  const reveal = buildGuideReveal({ snapshot: { matters: [] }, userInput: '开始行动' });
+  assert.match(reveal.text, /正文、状态栏、任务框和系统提示/);
+  assert.match(reveal.text, /全知/);
+  assert.match(reveal.text, /玩家输入是意图/);
+  assert.equal(reveal.text.includes('尸体'), false);
+  assert.deepEqual(reveal.providedIds, []);
+  assert.deepEqual(reveal.exposureIds, []);
+  assert.deepEqual(reveal.items, []);
+  assert.equal(reveal.coverageLimited, false);
+  await assert.rejects(run({ adoptionChecks: [shown()] }, { baseline: { matters: [corpse()] },
+    priorDelivery: { ...reveal, promptObserved: true, targetIdentity: target.identity } }), { code: 'guide_response_invalid' });
+  const tooSmall = buildGuideReveal({ budgetChars: reveal.text.length - 1 });
+  assert.equal(tooSmall.text, '');
+  assert.equal(tooSmall.coverageLimited, true);
+});
+
+test('already narrated facts without a new consequence do not become a fresh reveal or repeat the old action', async () => {
+  const result = await run({ upserts: [{ id: 'closed-door', title: '旧门的后续状态', subjects: ['储藏室', '门'],
+    process: '门保持关闭，目前没有新的可观察影响。',
+    facts: [{ id: 'door-closed', text: 'ALREADY_NARRATED_锁门动作与旧界面已展示', basis: ['已接受正文'], knownTo: ['在场主体'] }],
+    conditions: [], exposure: [] }] });
+  const reveal = buildGuideReveal({ snapshot: result.snapshot, userInput: '查看储藏室的门' });
+  assert.deepEqual(reveal.providedIds, []);
+  assert.deepEqual(reveal.exposureIds, []);
+  assert.equal(reveal.text.includes('ALREADY_NARRATED'), false);
+  assert.equal(reveal.text.includes('旧界面'), false);
+  assert.equal(result.snapshot.matters[0].facts.length, 1);
+});
+
 test('future contact is exposed as a condition, not executed from input; unrelated secret and history stay out', () => {
   const snapshot = { matters: [corpse()] }, before = structuredClone(snapshot);
   const reveal = buildGuideReveal({ snapshot, userInput: '过夜后取出尸体' });
   assert.deepEqual(reveal.exposureIds, ['corpse-contact']);
   assert.match(reveal.text, /未来条件，尚未自动结算/);
+  assert.match(reveal.text, /尸体已感染/);
+  assert.match(reveal.text, /实际经过一夜/);
+  assert.match(reveal.text, /尸变的身体突然扑来/);
   assert.equal(reveal.text.includes('UNRELATED_SECRET_MARKER'), false);
   assert.equal(reveal.text.includes('PRIVATE_HISTORY_MARKER'), false);
   assert.deepEqual(snapshot, before);
   assert.equal(snapshot.matters[0].exposure[0].status, 'pending');
-  assert.equal(buildGuideReveal({ snapshot, userInput: '谈天气', scene: { text: '在隔壁城镇' } }).text, '');
+  const unrelated = buildGuideReveal({ snapshot, userInput: '谈天气', scene: { text: '在隔壁城镇' } });
+  assert.deepEqual(unrelated.exposureIds, []);
+  assert.equal(unrelated.text.includes('尸体已感染'), false);
+  assert.equal(unrelated.text.includes('UNRELATED_SECRET_MARKER'), false);
 });
 
 test('arrived consequences do not depend on player keywords; pronoun contact can use current scene context', () => {
@@ -196,7 +232,8 @@ test('whole matter projection reports coverage limit rather than truncating caus
   const snapshot = { matters: [corpse()] };
   const whole = buildGuideReveal({ snapshot, userInput: '取出尸体' });
   const limited = buildGuideReveal({ snapshot, userInput: '取出尸体', budgetChars: whole.text.length - 1 });
-  assert.equal(limited.text, '');
+  assert.equal(limited.text, buildGuideReveal().text);
+  assert.equal(limited.text.includes('尸体已感染'), false);
   assert.equal(limited.coverageLimited, true);
   assert.deepEqual(limited.omittedIds, ['corpse']);
   assert.deepEqual(limited.exposureIds, []);

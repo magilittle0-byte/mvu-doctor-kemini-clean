@@ -9,7 +9,7 @@ import { clone, fault } from '../guide/store.mjs';
 // Offline scheduler checks: real host identity/branch code and real evolve/reveal,
 // with synthetic model text, in-memory storage and no network or live Tavern.
 const events = ['GENERATION_STARTED', 'MESSAGE_RECEIVED', 'GENERATION_ENDED', 'GENERATION_STOPPED',
-  'CHAT_COMPLETION_PROMPT_READY', 'WORLD_INFO_ACTIVATED', 'MESSAGE_SENT', 'MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'CHAT_CHANGED', 'CHAT_LOADED'];
+  'CHAT_COMPLETION_PROMPT_READY', 'CHAT_COMPLETION_SETTINGS_READY', 'WORLD_INFO_ACTIVATED', 'MESSAGE_SENT', 'MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'CHAT_CHANGED', 'CHAT_LOADED'];
 const deferred = () => {
   let resolve;
   const promise = new Promise(done => { resolve = done; });
@@ -89,7 +89,7 @@ function harness({ response = noChange, gates = [], store = memoryStore() } = {}
     return index;
   }
   const prompt = () => [...prompts.values()].find(Boolean) || '';
-  const observePrompt = () => eventSource.emit('CHAT_COMPLETION_PROMPT_READY', { chat: [{ role: 'system', content: prompt() }], dryRun: false });
+  const observePrompt = (type = 'normal') => eventSource.emit('CHAT_COMPLETION_SETTINGS_READY', { type, messages: [{ role: 'system', content: prompt() }] });
   const settle = async () => {
     await until(() => !runtime.snapshot().busy && ['settled', 'conflict', 'failed'].includes(runtime.snapshot().status), 'completed guidance');
     assert.equal(runtime.snapshot().status, 'settled', runtime.snapshot().code);
@@ -179,7 +179,7 @@ test('editing an earlier branch invalidates an in-flight result without saving i
   } finally { gate.resolve(); h.runtime.destroy(); }
 });
 
-test('promptReady records only provision and does not consume an exposure or call a model', async () => {
+test('matching native settings record only provision and do not consume an exposure or call a model', async () => {
   const h = harness();
   try {
     const seeded = await h.seed(); await h.runtime.bind(); h.begin();
@@ -190,6 +190,65 @@ test('promptReady records only provision and does not consume an exposure or cal
     assert.deepEqual(await h.store.read(seeded.scopeKey, seeded.branchKey), seeded);
     assert.equal(h.calls.length, 0);
     assert.equal(h.store.commits.length, 0);
+  } finally { h.runtime.destroy(); }
+});
+
+for (const type of ['normal', 'regenerate', 'swipe', 'continue']) {
+  test(`${type} observes only matching typed native request settings`, async () => {
+    const h = harness();
+    try {
+      await h.seed({ before: { matters: [matter()], revision: 0 } }); await h.runtime.bind();
+      if (type === 'normal') h.begin(); else h.runtime.started(type);
+      assert.match(h.prompt(), /shield-delivery/u);
+      h.eventSource.emit('CHAT_COMPLETION_PROMPT_READY', { chat: [{ role: 'system', content: h.prompt() }], dryRun: false });
+      h.eventSource.emit('CHAT_COMPLETION_SETTINGS_READY', { messages: [{ role: 'system', content: h.prompt() }] });
+      for (const invalidType of [null, false, 0, '']) h.observePrompt(invalidType);
+      for (const other of ['quiet', 'impersonate', type === 'normal' ? 'regenerate' : 'normal']) h.observePrompt(other);
+      assert.notEqual(h.runtime.snapshot().delivery, 'provided');
+      h.eventSource.emit('CHAT_COMPLETION_SETTINGS_READY', { type, messages: [{ role: 'system', content: '合成无指导内容' }] });
+      assert.notEqual(h.runtime.snapshot().delivery, 'provided');
+      h.observePrompt(type);
+      assert.equal(h.runtime.snapshot().delivery, 'provided');
+      h.observePrompt('quiet');
+      assert.equal(h.runtime.snapshot().delivery, 'provided');
+      assert.equal(h.calls.length, 0);
+      assert.equal(h.store.commits.length, 0);
+    } finally { h.runtime.destroy(); }
+  });
+}
+
+for (const mode of ['existing-user', 'automatic']) {
+  test(`normal ${mode} observes the main request without requiring another MESSAGE_SENT`, async () => {
+    const h = harness();
+    try {
+      await h.seed(); await h.runtime.bind();
+      if (mode === 'existing-user') h.context.chat.push({ is_user: true, name: 'Player', mes: '看看盾牌' });
+      h.runtime.started('normal', { automatic_trigger: mode === 'automatic' });
+      h.observePrompt('quiet');
+      assert.notEqual(h.runtime.snapshot().delivery, 'provided');
+      // The native builder owns type even when the original normal call omitted its value.
+      h.eventSource.emit('CHAT_COMPLETION_SETTINGS_READY', { type: undefined, messages: [{ role: 'system', content: h.prompt() }] });
+      assert.equal(h.runtime.snapshot().delivery, 'provided');
+      assert.equal(h.calls.length, 0);
+      assert.equal(h.store.commits.length, 0);
+    } finally { h.runtime.destroy(); }
+  });
+}
+
+test('quiet settings and later world scans cannot overwrite the main request world observation', async () => {
+  const h = harness(), mainEntries = [{ uid: 'synthetic-main-rule', content: '合成主请求世界条目' }];
+  try {
+    await h.seed(); await h.runtime.bind(); h.begin();
+    h.eventSource.emit('WORLD_INFO_ACTIVATED', [{ uid: 'synthetic-early-aux', content: '合成前置辅助条目' }]);
+    h.observePrompt('quiet');
+    h.eventSource.emit('WORLD_INFO_ACTIVATED', mainEntries);
+    h.observePrompt();
+    h.observePrompt('quiet');
+    h.eventSource.emit('WORLD_INFO_ACTIVATED', [{ uid: 'synthetic-late-aux', content: '合成后置辅助条目' }]);
+    h.complete('队伍停在柜台前。'); await h.settle();
+    assert.deepEqual(h.runtime.record().worldObservation, { activatedEntries: mainEntries, observed: true });
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].input.priorDelivery.receipts[0].promptObserved, true);
   } finally { h.runtime.destroy(); }
 });
 
@@ -205,7 +264,11 @@ test(`native START ${auxiliaryEnd ? 'then auxiliary END ' : ''}then MESSAGE_SENT
     await h.seed({ snapshot: { revision: 1, matters: [conditional('old', '旧港口'), conditional('new', '新酒馆')] } });
     await h.runtime.bind();
     h.eventSource.emit('GENERATION_STARTED', 'normal');
-    if (auxiliaryEnd) h.eventSource.emit('GENERATION_ENDED');
+    if (auxiliaryEnd) {
+      h.eventSource.emit('CHAT_COMPLETION_PROMPT_READY', { chat: [{ role: 'system', content: h.prompt() }], dryRun: false });
+      h.observePrompt('quiet');
+      h.eventSource.emit('GENERATION_ENDED');
+    }
     assert.match(h.prompt(), /old-exposure/u);
     assert.doesNotMatch(h.prompt(), /new-exposure/u);
     const index = h.context.chat.push({ is_user: true, name: 'Player', mes: '改去新酒馆' }) - 1;
