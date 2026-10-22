@@ -67,3 +67,22 @@
 最小实现仍是 system＋JSON user 两条消息：固定职责头明确 GM 链、正文/显示模板、变量更新等来源文字无指令权；JSON 最后一个 `outputContract` 字段由程序生成，包含完整短示例与职责尾锚。system 明确该顶层固定字段是本任务合同，其他字段仍为只读资料。世界设定全文保留。material 去掉已由 newlyAccepted 提供的正文/输入副本；history 中无法与已接受正文及其前置用户输入准确对应的开场或其他上下文，仍单独保留为 context。原始调用入参不变。
 
 本轮预算先消除可证明的重复，不设任意截断阈值，不用字符差额宣称 token/费用下降；当前 3 份重复正文约 23718 字符是可核对的去重对象，真实 token 差额待下一次原型请求测量。检查覆盖完整来源保留、连续正文各一次、未覆盖开场保留、中文包装与未包装输入、命令串台资料仍隔离及混合非 JSON 响应继续拒绝。本地检查不能证明真实模型已服从。
+
+## P2 candidate.3 的数组元素类型错误：完整嵌套模板与资料区分离
+
+2026-10-22，修改前根据主代理新提供的脱敏事实重新检索：响应整体可解析，六个顶层字段齐全，但首个 upsert 使用正文记录形状 `{identity,index,userText,content}`，缺少事项 ID；content 继续生成主剧情/变量格式。后续相等性检查为 `contentSame=false`、`copiedAccepted=false`，因此不是原样回显已接受正文。真实请求仍为两条消息；system 2650 字符、user 56053 字符，authority 48544 字符、连续新正文区 6564 字符、末尾合同字段 484 字符。响应未保存，无自动重试。本段不保存任何私有来源或原始返回，也不把格式布局认定为已证实的唯一原因。
+
+本次按 2A 重新检索当前 profiles/world、Story Oracle、原始 MVU 和 NPC Tracker 的 `json_schema`、`response_format`、完整模板和资料投影，阅读命中函数及请求/过滤上下游。直接落实前再次完整核对 `profileTurnMessages`、其输入投影与完整模板定义，及当前指导的消息构造、解析、合并和定向测试：
+
+| 来源 | 对本次修正的约束 |
+|---|---|
+| `profiles/content.mjs:111–167,192–235` | 成熟路径把完整嵌套内容模板放在来源 JSON **之外**，先结束资料，再给固定模板与任务尾锚。当前指导仅将空数组外壳塞进 JSON 的字符串字段，未等价适配这两点。本次借布局与完整类型说明，绝不恢复人物档案字段。 |
+| `docs/profiles/P2_REPAIR_FEEDBACK_SOURCE_MAP_2026-09-20.md` 全文 | 布局是待真实核验的候选修正，不证明原故障唯一原因；严格解析和完整资料均保留，不携带上次错误返回供续写。 |
+| 原始 MVU `src/function/function_call.ts:35–146`；`src/function/update/invoke_extra_model.ts:1–158,409–552` | schema 明确数组元素内部属性，`json_object` 只限制 JSON 外壳，不能证明事项元素正确。其 `json_schema` / tool-call / v4 路由分别有能力要求；本轮不改 host 或全局连接设置，不照搬临时写全局设置和回退请求。 |
+| 原始 MVU `src/function/request/filter_entries.ts`、`filter_prompts.ts`；NPC Tracker `scripts/profile_prompt_context.js` 与 `scripts/api.js:937–948,1115–1122` | 机制过滤有明确条目元数据/职责边界；JSON 模式的兼容回退不能移植为额外调用。没有足够依据删掉当前混合世界规则，仍完整保留 authority。 |
+
+最小修正：保持 system/user 两种角色、一次请求和原入参；user 改为“标注的只读来源 JSON 一行 → 来源结束 → 完整六字段及非空嵌套事项模板 → 固定任务尾锚”。模板给出 facts、conditions、exposure、closures、adoptionChecks、conflicts 的元素形状，用说明占位值表达字段类型，不提供可误当本局事实的剧情例子。明确占位值不是事实；没有对应变更或有效采用回执的数组必须为空。已有事项仍仅给增量，当前资料、连续正文、来源绑定及严格拒收保持原义。
+
+定向检查保留全部真实资料投影检查，并新增“外壳正确但 upsert 是继续写正文的对象”拒收回归：整批失败、原快照不变、一次请求无重试。模板位置检查须读取独立的资料区，不能再把整条 user 当 JSON 解析。本地检查仅证明提示布局和拒收机制，不证明实际模型已改正；仍需主代理冻结候选并执行真实 P2。
+
+本次技能路由为 `sillytavern-extension-dev`；库快照 `2026-08-18`，加载 ST-A0、ST-D5、ST-E5 的相关扩展边界，未选设计目录候选。A0 目标是修正事项输出合同，红线是完整世界规则/当前模型路由/一次调用及旧资料不变，验收是定向机制检查后重新实测；本修改不接触宿主、版本或显露筛选。

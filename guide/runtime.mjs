@@ -82,6 +82,23 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     publish({ status: 'waiting', latestApplied: !missed, coverageLimited: preparationFailed || ticket.delivery?.coverageLimited === true,
       detail: missed ? '本轮未应用最新指导，正文继续；后台将在接受新正文后续接' : '正文生成中；按已有幕后事实与条件准备提示' });
   }
+  function sent(index) {
+    if (!ticket) { invalidate(); return; }
+    if (!valid(ticket.token) || ticket.type !== 'normal' || ticket.finishing || ticket.received !== null
+      || ticket.worldObserved || ticket.scope !== canonical(host.scope())) return;
+    const chat = host.context().chat || [], row = chat[index];
+    if (!Number.isInteger(index) || index <= ticket.baselineIndex || index !== chat.length - 1
+      || !row?.is_user || row.is_system) return;
+    // Native START precedes inserting this user row; MESSAGE_SENT is awaited
+    // before the host snapshots extension prompts for the main request.
+    ticket.delivery = null;
+    try {
+      ticket.delivery = preparePrompt();
+      publish({ coverageLimited: ticket.delivery?.coverageLimited === true });
+    } catch (error) {
+      host.clearPrompt(); publish({ code: safeCode(error), coverageLimited: true });
+    }
+  }
   function received(index, type = '') {
     if (!ticket || ticket.scope !== canonical(host.scope())) return;
     const actual = String(type || '').toLowerCase();
@@ -264,7 +281,7 @@ export function createGuideRuntime({ host, store, evolve = evolveGuide, reveal =
     on('WORLD_INFO_ACTIVATED', entries => {
       if (ticket && Array.isArray(entries) && ticket.scope === canonical(host.scope())) ticket.worldEntries = clone(entries);
     });
-    on('MESSAGE_SENT', () => { if (!ticket) invalidate(); });
+    on('MESSAGE_SENT', sent);
     on('MESSAGE_SWIPED', () => { if (!ticket) void restore(); });
     on('MESSAGE_EDITED', () => void restore()); on('MESSAGE_DELETED', deleted);
     on('CHAT_CHANGED', () => void restore()); on('CHAT_LOADED', () => void restore());

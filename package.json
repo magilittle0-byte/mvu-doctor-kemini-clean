@@ -1,6 +1,6 @@
 {
   "name": "mvu-doctor-kemini-clean",
-  "version": "0.12.0-candidate.3",
+  "version": "0.12.0-candidate.4",
   "private": true,
   "type": "module",
   "scripts": {

@@ -58,7 +58,9 @@ function harness({ response = noChange, gates = [], store = memoryStore() } = {}
     material: async () => ({ authority: { card: 'Synthetic local card.', world: 'Synthetic local rules.' }, players: ['Player'] }),
     requestFingerprint: async () => 'synthetic-route',
     request: async (messages, options) => {
-      const input = JSON.parse(messages.at(-1).content), index = calls.length;
+      const [label, sourceJson] = messages.at(-1).content.split('\n');
+      assert.equal(label, '【指导只读来源 JSON】');
+      const input = JSON.parse(sourceJson), index = calls.length;
       calls.push({ input: clone(input), options });
       inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
       try {
@@ -75,8 +77,9 @@ function harness({ response = noChange, gates = [], store = memoryStore() } = {}
     store.seed(record); return clone(record);
   }
   function begin(user = '看看盾牌') {
-    context.chat.push({ is_user: true, name: 'Player', mes: user });
     eventSource.emit('GENERATION_STARTED', 'normal');
+    const index = context.chat.push({ is_user: true, name: 'Player', mes: user }) - 1;
+    eventSource.emit('MESSAGE_SENT', index);
   }
   function complete(content, duplicates = false) {
     const index = context.chat.push({ is_user: false, name: 'Narrator', mes: content }) - 1;
@@ -190,6 +193,41 @@ test('promptReady records only provision and does not consume an exposure or cal
   } finally { h.runtime.destroy(); }
 });
 
+for (const auxiliaryEnd of [false, true]) {
+test(`native START ${auxiliaryEnd ? 'then auxiliary END ' : ''}then MESSAGE_SENT replaces previous-input selection before the main prompt`, async () => {
+  const h = harness();
+  const conditional = (id, subject) => ({ id, title: subject, subjects: [subject], process: '等待接触', status: 'active', history: [],
+    facts: [], conditions: [{ id: `${id}-condition`, when: `实际到达${subject}`, change: '可以看见当地告示', basis: ['合成测试设定'] }],
+    exposure: [{ id: `${id}-exposure`, readiness: 'conditional', route: '当面可见', when: `实际到达${subject}`, visible: '门旁挂着告示',
+      factIds: [], conditionIds: [`${id}-condition`], status: 'pending' }] });
+  try {
+    h.context.chat[0].mes = '先去旧港口';
+    await h.seed({ snapshot: { revision: 1, matters: [conditional('old', '旧港口'), conditional('new', '新酒馆')] } });
+    await h.runtime.bind();
+    h.eventSource.emit('GENERATION_STARTED', 'normal');
+    if (auxiliaryEnd) h.eventSource.emit('GENERATION_ENDED');
+    assert.match(h.prompt(), /old-exposure/u);
+    assert.doesNotMatch(h.prompt(), /new-exposure/u);
+    const index = h.context.chat.push({ is_user: true, name: 'Player', mes: '改去新酒馆' }) - 1;
+    h.eventSource.emit('MESSAGE_SENT', index);
+    assert.match(h.prompt(), /new-exposure/u);
+    assert.doesNotMatch(h.prompt(), /old-exposure/u);
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.store.commits.length, 0);
+    h.observePrompt();
+    // A duplicate after prompt assembly must not erase the observed receipt.
+    h.eventSource.emit('MESSAGE_SENT', index);
+    h.eventSource.emit('MESSAGE_SENT', 0);
+    h.complete('队伍停在原地讨论路线。'); await h.settle();
+    assert.equal(h.calls.length, 1);
+    const receipt = h.calls[0].input.priorDelivery.receipts[0];
+    assert.equal(receipt.promptObserved, true);
+    assert.deepEqual(receipt.providedIds, ['new']);
+    assert.deepEqual(receipt.exposureIds, ['new-exposure']);
+  } finally { h.runtime.destroy(); }
+});
+}
+
 test('a later accepted body can bind observed provision and record actual exposure with real evolve', async () => {
   const h = harness({ response: input => ({ ...noChange(input), adoptionChecks: [{ matterId: 'shield', exposureId: 'shield-delivery',
     targetIdentity: input.target.identity, status: 'shown', evidence: '工匠递来修好的盾牌', reason: '合成正文明确发生交还。' }] }) });
@@ -279,6 +317,10 @@ for (const type of ['regenerate', 'swipe', 'continue', 'normal']) {
       await h.seed({ before: { matters: [beforeMatter], revision: 0 }, snapshot: { matters: [afterMatter], revision: 1 } });
       await h.runtime.bind();
       if (type === 'normal') h.begin(); else h.runtime.started(type);
+      if (type !== 'normal') {
+        const index = h.context.chat.push({ is_user: true, name: 'Player', mes: '独立发送事件不改变同楼前态' }) - 1;
+        h.eventSource.emit('MESSAGE_SENT', index);
+      }
       assert.equal(h.prompt().includes('FIXED_BEFORE_FACT'), type !== 'normal');
       assert.equal(h.prompt().includes('FIXED_BEFORE_EFFECT'), type !== 'normal');
       assert.equal(h.prompt().includes('CURRENT_AFTER_FACT'), type === 'normal');

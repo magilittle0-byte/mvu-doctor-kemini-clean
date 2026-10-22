@@ -24,6 +24,11 @@ const delivery = (extra = {}) => ({ promptObserved: true, targetIdentity: target
   exposureIds: ['corpse-contact'], ...extra });
 const shown = (extra = {}) => ({ matterId: 'corpse', exposureId: 'corpse-contact', targetIdentity: target.identity,
   status: 'shown', evidence: '尸体扑向我', reason: '正文已经出现与取出接触对应的袭击，而非仅有意图', ...extra });
+const sourcePayload = messages => {
+  const [header, json] = messages[1].content.split('\n');
+  assert.equal(header, '【指导只读来源 JSON】');
+  return JSON.parse(json);
+};
 
 test('one request receives all covered accepted replies; unchanged matters and model-independent source survive', async () => {
   const baseline = { revision: 7, matters: [corpse()], owned: 'preserve' };
@@ -33,7 +38,7 @@ test('one request receives all covered accepted replies; unchanged matters and m
   const result = await evolveGuide({ baseline, target, newlyAccepted: covered, material: { coverage: { limited: false } },
     request: async messages => {
       calls++;
-      const payload = JSON.parse(messages[1].content);
+      const payload = sourcePayload(messages);
       assert.deepEqual(payload.newlyAccepted, covered.map(row => ({ identity: row.identity, index: row.index,
         userText: row.userText, content: row.content })));
       assert.equal(payload.sourceRevision, 7);
@@ -84,7 +89,7 @@ test('model view sends each covered narrative once, retains unmatched context an
     calls++;
     assert.equal(messages.length, 2);
     assert.match(messages[0].content, /GM.*UpdateVariable/s);
-    const data = JSON.parse(messages[1].content);
+    const data = sourcePayload(messages);
     assert.deepEqual(data.target, { identity: last.identity, index: last.index });
     assert.deepEqual(data.material.authority, material.authority);
     assert.deepEqual(data.material.limitations, material.limitations);
@@ -94,9 +99,21 @@ test('model view sends each covered narrative once, retains unmatched context an
     assert.deepEqual(data.newlyAccepted.map(item => item.userText), ['收尸入包', '过夜后取出']);
     assert.equal(messages[1].content.split('BODY_FIRST_UNIQUE').length - 1, 1);
     assert.equal(messages[1].content.split('BODY_LAST_UNIQUE').length - 1, 1);
-    assert.equal(Object.keys(data).at(-1), 'outputContract');
-    assert.match(data.outputContract, /来源资料结束/);
-    assert.match(data.outputContract, /"sourceRevision":0/);
+    assert.equal(Object.hasOwn(data, 'outputContract'), false);
+    const outsideSources = messages[1].content.split('\n').slice(2).join('\n');
+    assert.match(outsideSources, /来源资料结束/);
+    const template = JSON.parse(outsideSources.split('【指导完整结构模板】\n')[1].split('\n\n')[0]);
+    assert.equal(template.sourceRevision, 0);
+    assert.deepEqual(Object.keys(template), ['sourceRevision', 'upserts', 'closures', 'adoptionChecks', 'conflicts', 'summary']);
+    const item = template.upserts[0];
+    assert.equal(typeof item.id, 'string');
+    assert.ok(item.facts[0].basis.length);
+    assert.equal(typeof item.conditions[0].when, 'string');
+    assert.deepEqual(item.exposure[0].factIds, [item.facts[0].id]);
+    assert.deepEqual(item.exposure[0].conditionIds, [item.conditions[0].id]);
+    assert.equal(typeof template.adoptionChecks[0].exposureId, 'string');
+    assert.equal(Object.hasOwn(item, 'content'), false);
+    assert.match(outsideSources, /【任务结束】/);
     return JSON.stringify(response());
   } });
   assert.equal(calls, 1);
@@ -118,6 +135,19 @@ test('GM narrative with an embedded valid JSON still fails without another reque
     calls++; return `<gm_chain>错误职责</gm_chain><story_body>不该续写</story_body>${JSON.stringify(response())}<UpdateVariable>[]</UpdateVariable>`;
   } }), { code: 'guide_response_invalid' });
   assert.equal(calls, 1);
+});
+
+test('valid JSON envelope with a continued story record in upserts is rejected atomically without retry', async () => {
+  const baseline = { matters: [corpse()] }, before = structuredClone(baseline);
+  let calls = 0;
+  await assert.rejects(evolveGuide({ target, baseline, request: async () => {
+    calls++;
+    return JSON.stringify(response({ upserts: [{ identity: 'another-reply', index: 6, userText: '继续',
+      content: '<story_body>守卫开始讲述新的故事。</story_body><UpdateVariable>[]</UpdateVariable>' }],
+    summary: '已接收正文和变量操作' }));
+  } }), { code: 'guide_response_invalid' });
+  assert.equal(calls, 1);
+  assert.deepEqual(baseline, before);
 });
 
 test('existing backstage facts cannot be erased or rewritten; NPC knowledge does not depend on player observation', async () => {
