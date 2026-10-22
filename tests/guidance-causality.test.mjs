@@ -121,6 +121,10 @@ test('model view sends each covered narrative once, retains unmatched context an
     assert.match(outsideSources, /先判断不实施玩家当前计划时/u);
     assert.match(outsideSources, /不无依据把施法、调查或同意绑成触发前提/u);
     assert.match(outsideSources, /冻结、时间不足或能力\/机制未知时保留停滞或未知，不要求发生攻击/u);
+    assert.match(messages[0].content, /先从 baseline 和 newlyAccepted 识别有实际依据、仍需延续的过程/u);
+    assert.match(messages[0].content, /同处一个场景、涉及相同人物或服务同一玩家计划，不等于同一过程/u);
+    assert.match(messages[0].content, /不按物品清单逐件造事件，不强制事项数/u);
+    assert.match(outsideSources, /upserts 的示例元素不限制实际事项数/u);
     assert.equal(Object.hasOwn(item, 'content'), false);
     assert.match(outsideSources, /【任务结束】/);
     return JSON.stringify(response());
@@ -176,6 +180,11 @@ test('first-turn viewpoint boundaries carry no invented fact or event delivery, 
   assert.match(reveal.text, /正文、状态栏、任务框和系统提示/);
   assert.match(reveal.text, /全知/);
   assert.match(reveal.text, /玩家输入是意图/);
+  // These assertions verify delivered boundaries, not real model obedience.
+  assert.match(reveal.text, /不得仅凭职业、计划或解释需要，临时编造穿透封闭容器、远距全知等获知能力/u);
+  assert.match(reveal.text, /已设定的合法探测能力与实际可感知迹象仍按设定生效/u);
+  assert.match(reveal.text, /客观风险或未知结果不能仅为顺从玩家计划直接改判成安全、收益或必然成功/u);
+  assert.match(reveal.text, /各主体按自己的已知信息、动机和能力自主行动/u);
   assert.equal(reveal.text.includes('尸体'), false);
   assert.deepEqual(reveal.providedIds, []);
   assert.deepEqual(reveal.exposureIds, []);
