@@ -111,7 +111,10 @@ test('model view sends each covered narrative once, retains unmatched context an
     assert.equal(typeof item.conditions[0].when, 'string');
     assert.deepEqual(item.exposure[0].factIds, [item.facts[0].id]);
     assert.deepEqual(item.exposure[0].conditionIds, [item.conditions[0].id]);
-    assert.equal(typeof template.adoptionChecks[0].exposureId, 'string');
+    assert.deepEqual(template.adoptionChecks, []);
+    assert.match(outsideSources, /adoptionChecks 必须严格返回 \[\]/u);
+    assert.match(outsideSources, /入口 when 与引用条件的触发边界须一致/u);
+    assert.match(messages[0].content, /未知机制继续保持未知，不硬编码成功或失败/u);
     assert.equal(Object.hasOwn(item, 'content'), false);
     assert.match(outsideSources, /【任务结束】/);
     return JSON.stringify(response());
@@ -243,7 +246,7 @@ test('adoption is bound to observed exposure plus actual accepted target, never 
   const baseline = { matters: [corpse()] };
   const unchanged = await run({}, { baseline, priorDelivery: delivery() });
   assert.equal(unchanged.snapshot.matters[0].exposure[0].status, 'pending');
-  for (const bad of [delivery({ promptObserved: false }), delivery({ targetIdentity: 'wrong' }), delivery({ exposureIds: ['other'] })])
+  for (const bad of [delivery({ promptObserved: false }), delivery({ targetIdentity: 'wrong' }), delivery({ exposureIds: ['other'] }), delivery({ exposureIds: [] })])
     await assert.rejects(run({ adoptionChecks: [shown()] }, { baseline, priorDelivery: bad }), { code: 'guide_response_invalid' });
   const result = await run({ adoptionChecks: [shown()] }, { baseline, priorDelivery: delivery() });
   assert.equal(result.snapshot.matters[0].exposure[0].status, 'shown');
@@ -251,6 +254,48 @@ test('adoption is bound to observed exposure plus actual accepted target, never 
   assert.equal(result.adoption[0].recordedAtTargetIdentity, target.identity);
   await assert.rejects(run({ adoptionChecks: [shown({ evidence: '正文中不存在的袭击' })] }, { baseline, priorDelivery: delivery() }),
     { code: 'guide_response_invalid' });
+});
+
+test('generic-boundary receipt stays intact but yields no model adoption source or template; invented adoption still rejects the whole batch', async () => {
+  const baseline = { matters: [] }, priorDelivery = { receipts: [{ promptObserved: true,
+    targetIdentity: target.identity, providedIds: [], exposureIds: [], sourceRevision: 0 }] };
+  const before = structuredClone({ baseline, priorDelivery });
+  let calls = 0;
+  await assert.rejects(evolveGuide({ target, baseline, priorDelivery, request: async messages => {
+    calls++;
+    assert.deepEqual(sourcePayload(messages).priorDelivery, { receipts: [] });
+    const template = JSON.parse(messages[1].content.split('【指导完整结构模板】\n')[1].split('\n\n')[0]);
+    assert.deepEqual(template.adoptionChecks, []);
+    assert.match(messages[1].content, /本次新建了后果入口，也没有可核对的入口采用/u);
+    return JSON.stringify(response({ upserts: [corpse()], adoptionChecks: [shown()] }));
+  } }), { code: 'guide_response_invalid' });
+  assert.equal(calls, 1);
+  assert.deepEqual({ baseline, priorDelivery }, before);
+});
+
+test('model adoption view includes only observed existing exposures bound to this accepted batch and keeps its nonempty type template', async () => {
+  const first = { ...target, identity: 'reply-first', index: 3 };
+  const baseline = { matters: [corpse()] };
+  const priorDelivery = { receipts: [
+    delivery({ targetIdentity: first.identity, exposureIds: ['corpse-contact', 'unknown', 'corpse-contact'], sourceRevision: 3 }),
+    delivery({ promptObserved: false }), delivery({ targetIdentity: 'not-covered' }),
+    delivery({ exposureIds: [] }), delivery({ exposureIds: ['unknown'] }),
+    { promptObserved: true, targetIdentity: target.identity, items: [{ matterId: 'corpse', exposureIds: ['corpse-contact'] }] },
+  ] };
+  const before = structuredClone(priorDelivery);
+  let calls = 0;
+  await evolveGuide({ target, baseline, priorDelivery, newlyAccepted: [first, target], request: async messages => {
+    calls++;
+    assert.deepEqual(sourcePayload(messages).priorDelivery.receipts, [
+      { targetIdentity: first.identity, promptObserved: true, providedIds: ['corpse'], exposureIds: ['corpse-contact'], sourceRevision: 3 },
+      { targetIdentity: target.identity, promptObserved: true, providedIds: ['corpse'], exposureIds: ['corpse-contact'] },
+    ]);
+    const template = JSON.parse(messages[1].content.split('【指导完整结构模板】\n')[1].split('\n\n')[0]);
+    assert.equal(typeof template.adoptionChecks[0].exposureId, 'string');
+    return JSON.stringify(response());
+  } });
+  assert.equal(calls, 1);
+  assert.deepEqual(priorDelivery, before);
 });
 
 test('shown exposure is not replayed; necessary world facts remain and a new consequence uses a new ID', async () => {

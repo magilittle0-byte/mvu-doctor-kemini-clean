@@ -29,10 +29,11 @@ facts 是已成立记载的增补：[{id,text,basis:[依据说明],knownTo:[实�
 conditions 是当前有效的未来条件，提供时替换旧条件：[{id,when,change,basis:[依据说明]}]。条件不等于事实。逐项检查仍有效的条件：凡会在实际时间、接触或传播后形成可感知后果，都须由相应 exposure.conditionIds 引用，不能只存条件却遗漏后续入口；尚无任何有据观察或传播渠道时可仅留后台，但须在 process/updateSummary 点明该条件 ID 和具体原因。条件尚未满足、玩家尚未调查或尚未取出物体本身不是省略 conditional 入口的理由。过期条件可移除，但须同步处理引用它的尚未显露入口。同批 adoptionChecks 证明 shown 后可以移除已消费条件，本地自动为该入口保留旧条件历史依据 conditionEvidence；不要自行填写或改写这个历史字段。
 exposure 是新增或更新的可表现入口：[{id,readiness:"ready"或"conditional",route,when,visible,factIds:[],conditionIds:[]}]。只承接尚未在已接受正文演出的新影响或后续影响；正文已展示的动作、感官信息和状态仅作 facts 依据，不能包装成待显露入口再次投送。已展示事实仍可成为新后果的前因。id 全局稳定。ready 只用于影响已经抵达当前场景、尚待自然体现的后果；conditional 用于尚需本轮实际时间、接触或传播的入口。route 说明到达渠道，when 说明适用边界，visible 只写该视角可感知的结果，不泄露幕后全貌。引用最少必要事实和条件。至少引用一条依据；ready 必须有已成立事实，conditional 必须有条件。既有 readiness=ready 或 status=shown 的入口，其上述内容与引用均不可改写，也不可退回 conditional 或撤销；保留原入口，新后果用新 id，不把旧攻击再演一遍。只有尚未 ready 且尚未 shown 的条件入口可用 retireExposureIds:[id] 结束，不得借此删除事实。
 closures:[{id,reason}] 仅在该过程结束时关闭事项，已成立但尚未显露的后果仍保留。
-adoptionChecks:[{matterId,exposureId,targetIdentity,status:"shown"|"not-observed"|"conflict",evidence,reason}]：只复核 priorDelivery（多条时见 receipts 数组）中实际提供过且 promptObserved=true 的入口，绑定 newlyAccepted 中的正文。按已接受正文先后核对每条实际提供的入口。shown 必须正文确实发生了对应表现，而不是有同名词、计划、否定或传闻。未出现/条件未满足用 not-observed；与既成事实抵触用 conflict。evidence 引用短小且原样存在的正文片段，reason 说明含义。首次送入提示不算采用。已经在前一段正文 shown 的入口，后文未再提及不撤销原记录。此检查与世界推进在同一次调用完成，无需第二次审核。
+条件与入口须保持同一因果分支：exposure.when 必须与其 conditionIds 引用的实际触发条件一致，visible 表达这些条件真正成立之后的有据变化。不得把避免触发的提前行动、另一分支或玩家希望的成功结果，替代此条件的后果。需要另一分支时分别说明其自身条件和依据；未知机制继续保持未知，不硬编码成功或失败。
+adoptionChecks:[{matterId,exposureId,targetIdentity,status:"shown"|"not-observed"|"conflict",evidence,reason}]：只复核 priorDelivery.receipts 中 exposureIds 明列的、实际提供过且 promptObserved=true 的既有入口，绑定该回执 targetIdentity 对应的 newlyAccepted 正文。通用叙事规则被观察不等于提供过事件入口；没有适用入口回执时 adoptionChecks 必须为 []。本次新建的入口尚未提供，不能在同批核对其采用。按已接受正文先后核对每条实际提供的入口。shown 必须正文确实发生了对应表现，而不是有同名词、计划、否定或传闻。未出现/条件未满足用 not-observed；与既成事实抵触用 conflict。evidence 引用短小且原样存在的正文片段，reason 说明含义。首次送入提示不算采用。已经在前一段正文 shown 的入口，后文未再提及不撤销原记录。此检查与世界推进在同一次调用完成，无需第二次审核。
 conflicts:[{matterId,reason}]：明确未解决的正文或规则冲突。summary 简述这批实际推进或未推进的原因，不声称真实验收通过。`;
 
-function guideOutputContract(sourceRevision) {
+function guideOutputContract(sourceRevision, hasAdoption) {
   const template = {
     sourceRevision,
     upserts: [{
@@ -44,8 +45,8 @@ function guideOutputContract(sourceRevision) {
       retireExposureIds: [], updateSummary: '本次新增或改变了什么及其原因',
     }],
     closures: [{ id: '<确已结束的事项ID>', reason: '过程已结束的依据' }],
-    adoptionChecks: [{ matterId: '<实际已提供的事项ID>', exposureId: '<实际已提供的显露入口ID>', targetIdentity: '<对应已接受正文的identity>',
-      status: 'shown', evidence: '对应正文中的逐字短引文', reason: '为何该表现确已发生而非只是意图或同名词' }],
+    adoptionChecks: hasAdoption ? [{ matterId: '<实际已提供的事项ID>', exposureId: '<实际已提供的显露入口ID>', targetIdentity: '<对应已接受正文的identity>',
+      status: 'shown', evidence: '对应正文中的逐字短引文', reason: '为何该表现确已发生而非只是意图或同名词' }] : [],
     conflicts: [{ matterId: '<存在冲突的事项ID>', reason: '已成立事实与本批正文或规则的具体矛盾' }],
     summary: '本批实际变化或暂不推进的依据',
   };
@@ -54,8 +55,10 @@ function guideOutputContract(sourceRevision) {
     `【指导完整结构模板】\n${JSON.stringify(template, null, 2)}`,
     '模板只说明字段与数组元素的类型，不是本局事实，不得照抄占位 ID、内容或凭模板造出事项。upserts 的每个元素是一个事项变更；输入 newlyAccepted 中的 identity/index/userText/content 是正文来源记录，不能作为 upserts 的元素结构。',
     '新事项填写 id/title/subjects/process 及有依据的 facts/conditions/exposure；旧事项沿用 id，只给有变化的字段。事实和条件分开；ready 必须有已成立事实，conditional 必须有当前条件。各引用使用本事项对应的实际 ID。knownTo 无知情者时用空数组。',
-    '输出前逐项核对有效条件是否已经接到后续可表现入口；没有入口时，必须在现有 process/updateSummary 点明条件 ID 和仅后台的具体原因。仅仅尚未触发不算没有入口。已接受正文展示过的动作和状态不新建待显露入口；可沿其因果产生有依据的新后果，也可以继续潜伏。',
-    '模板列出的每种数组都可以为空：没有对应事项变更、结束、有效采用核对或冲突时，分别返回 []。没有 promptObserved=true 且绑定该正文的实际提供回执，adoptionChecks 必须为空；有回执才按 system 判断 shown/not-observed/conflict。旧事项未改变的条件字段应省略，不用空数组误清除。',
+    '输出前逐项核对有效条件是否已经接到后续可表现入口；没有入口时，必须在现有 process/updateSummary 点明条件 ID 和仅后台的具体原因。仅仅尚未触发不算没有入口。入口 when 与引用条件的触发边界须一致，visible 须是该条件成立后的有据后果，不得换成避免条件的行动、另一分支或玩家期望的成功；未知裁定保留未知。已接受正文展示过的动作和状态不新建待显露入口；可沿其因果产生有依据的新后果，也可以继续潜伏。',
+    '模板列出的每种数组都可以为空：没有对应事项变更、结束、有效采用核对或冲突时，分别返回 []。旧事项未改变的条件字段应省略，不用空数组误清除。',
+    hasAdoption ? '【本批采用核对】仅核对 priorDelivery.receipts 中明列的 exposureIds 及其 targetIdentity，按 system 判断 shown/not-observed/conflict；不得核对本次新建或未提供的入口。'
+      : '【本批采用核对】没有实际提供过的适用事件入口，adoptionChecks 必须严格返回 []。即使正文遵守了通用叙事规则，或本次新建了后果入口，也没有可核对的入口采用。',
     `【固定输出合同】只输出一个完整 JSON 对象，六个顶层字段必须为 sourceRevision/upserts/closures/adoptionChecks/conflicts/summary。sourceRevision 必须是 ${sourceRevision}。事项的 source/history/status 及入口的 status/conditionEvidence 由本地保存，不在 upserts 中返回；adoptionChecks.status 按上述核对合同填写。`,
     '【任务结束】根据只读资料结算本批持续世界变化，核对已提供入口，然后只返回上述事项 JSON 对象；不继续演绎来源正文，不输出 GM 链、story_body、思维链、UpdateVariable、JSONPatch、前言或代码围栏。',
   ].join('\n\n');
@@ -198,9 +201,28 @@ function suppliedExposures(delivery) {
   return Array.isArray(delivery?.items) ? delivery.items.flatMap(item => item.exposureIds || []) : [];
 }
 
-function reviewAdoption(checks, matters, priorDelivery, newlyAccepted, target) {
-  const deliveries = (Array.isArray(priorDelivery) ? priorDelivery
+function deliveryRows(priorDelivery) {
+  return (Array.isArray(priorDelivery) ? priorDelivery
     : Array.isArray(priorDelivery?.receipts) ? priorDelivery.receipts : [priorDelivery]).filter(object);
+}
+
+// Model projection only. Runtime keeps the complete provision observations for
+// diagnostics; observing generic narrative rules supplies no event to review.
+function modelPriorDelivery(priorDelivery, covered, baseline) {
+  const accepted = new Set(covered.map(item => item.identity));
+  const owners = new Map(baseline.matters.flatMap(matter => (matter.exposure || []).map(entry => [entry.id, matter.id])));
+  return { receipts: deliveryRows(priorDelivery).flatMap(receipt => {
+    if (receipt.promptObserved !== true || !accepted.has(receipt.targetIdentity)) return [];
+    const exposureIds = [...new Set(suppliedExposures(receipt).filter(id => nonempty(id) && owners.has(id)))];
+    if (!exposureIds.length) return [];
+    return [{ targetIdentity: receipt.targetIdentity, promptObserved: true,
+      providedIds: [...new Set(exposureIds.map(id => owners.get(id)))], exposureIds,
+      ...(Number.isSafeInteger(receipt.sourceRevision) ? { sourceRevision: receipt.sourceRevision } : {}) }];
+  }) };
+}
+
+function reviewAdoption(checks, matters, priorDelivery, newlyAccepted, target) {
+  const deliveries = deliveryRows(priorDelivery);
   const accepted = new Map(newlyAccepted.map(item => [item.identity, item]));
   const seen = new Set();
   const ordered = [...rows(checks, '采用核对')].sort((left, right) =>
@@ -252,14 +274,15 @@ export async function evolveGuide({ request, target, material = {}, baseline = {
     throw fault('guide_input_invalid', '指导待处理正文顺序无效');
   const sourceRevision = Number.isSafeInteger(baseline.revision) ? baseline.revision : 0;
   const view = modelMaterial(material, covered);
+  const applicableDelivery = modelPriorDelivery(priorDelivery, covered, baseline);
   const acceptedView = covered.map(row => ({ identity: row.identity, index: row.index,
     userText: currentGuideInput(row.userText || ''), content: row.content }));
   const sources = {
     sourceRevision, target: { identity: target.identity, index: target.index },
-    material: view.material, context: view.context, baseline, priorDelivery, newlyAccepted: acceptedView,
+    material: view.material, context: view.context, baseline, priorDelivery: applicableDelivery, newlyAccepted: acceptedView,
   };
   const messages = [{ role: 'system', content: GUIDE_EVOLUTION_INSTRUCTION }, { role: 'user', content:
-    `【指导只读来源 JSON】\n${JSON.stringify(sources)}\n\n${guideOutputContract(sourceRevision)}` }];
+    `【指导只读来源 JSON】\n${JSON.stringify(sources)}\n\n${guideOutputContract(sourceRevision, applicableDelivery.receipts.length > 0)}` }];
   // No automatic model retries, repair calls, dice calls or secondary adjudicators.
   const response = parseResponse(await request(messages, { signal }));
   if (response.sourceRevision !== sourceRevision) fail('指导返回来源版本不一致');

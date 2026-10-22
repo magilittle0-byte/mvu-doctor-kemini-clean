@@ -307,7 +307,8 @@ test('first normal send supplies only narrative boundaries after the user arrive
     assert.match(h.prompt(), /指导 · 叙事边界/u);
     assert.doesNotMatch(h.prompt(), /shield-delivery|修盾/u);
     h.observePrompt(); h.complete('对话刚刚开始。'); await h.settle();
-    const receipt = h.calls[0].input.priorDelivery.receipts[0];
+    assert.deepEqual(h.calls[0].input.priorDelivery.receipts, []);
+    const receipt = h.runtime.record().receipts[0];
     assert.equal(receipt.promptObserved, true);
     assert.deepEqual(receipt.providedIds, []);
     assert.deepEqual(receipt.exposureIds, []);
