@@ -1,0 +1,59 @@
+#mvu-guidance-root {
+  --guide-bg: #17221f;
+  --guide-line: #40574e;
+  --guide-text: #edf5ef;
+  --guide-muted: #b6c9be;
+  --guide-accent: #b7dfc6;
+  position: fixed; inset: 0; z-index: 1500; pointer-events: none;
+  color: var(--guide-text); font: 14px/1.55 system-ui, sans-serif;
+}
+#mvu-guidance-root *, #mvu-guidance-root *::before, #mvu-guidance-root *::after { box-sizing: border-box; }
+#mvu-guidance-root [hidden] { display: none !important; }
+#mvu-guidance-root button, #mvu-guidance-root input, #mvu-guidance-root summary { font: inherit; }
+#mvu-guidance-root button {
+  min-height: 42px; border: 1px solid var(--guide-line); border-radius: 10px;
+  background: #23382f; color: var(--guide-text); padding: 8px 14px; cursor: pointer;
+}
+#mvu-guidance-root button:disabled { cursor: default; opacity: .5; }
+#mvu-guidance-root :is(button, input, summary):focus-visible { outline: 3px solid var(--guide-accent); outline-offset: 3px; }
+#mvu-guidance-root .guide-launcher {
+  position: fixed; pointer-events: auto; right: max(16px, env(safe-area-inset-right));
+  top: calc(var(--guide-visual-top, 0px) + var(--guide-visual-height, 100dvh) - 86px);
+  box-shadow: 0 3px 18px #0007; border-color: var(--guide-accent); font-weight: 700;
+}
+#mvu-guidance-root .guide-launcher[data-state="failed"] { border-color: #e5ba9e; }
+#mvu-guidance-root .guide-panel {
+  pointer-events: auto; position: fixed; display: flex; flex-direction: column;
+  top: calc(var(--guide-visual-top, 0px) + 12px); right: max(12px, env(safe-area-inset-right));
+  width: min(430px, calc(100vw - 24px)); max-height: calc(var(--guide-visual-height, 100dvh) - 24px);
+  border: 1px solid var(--guide-line); border-radius: 16px; overflow: hidden;
+  background: var(--guide-bg); box-shadow: 0 12px 50px #0008;
+}
+#mvu-guidance-root .guide-header { display: flex; gap: 12px; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid var(--guide-line); flex: 0 0 auto; }
+#mvu-guidance-root h2 { font: 700 23px/1.2 system-ui, sans-serif; margin: 3px 0 0; color: var(--guide-text); }
+#mvu-guidance-root .guide-eyebrow { margin: 0; color: var(--guide-accent); font-size: 12px; }
+#mvu-guidance-root .guide-body { padding: 14px 18px max(18px, env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+#mvu-guidance-root p { margin: 0 0 12px; overflow-wrap: anywhere; }
+#mvu-guidance-root .guide-status { font-weight: 700; color: var(--guide-accent); }
+#mvu-guidance-root .guide-muted, #mvu-guidance-root .guide-candidate { color: var(--guide-muted); font-size: 12px; }
+#mvu-guidance-root .guide-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; margin: 14px 0 10px; }
+#mvu-guidance-root .guide-toggle { display: flex; align-items: center; gap: 9px; min-height: 42px; cursor: pointer; }
+#mvu-guidance-root input[type="checkbox"] { width: 19px; height: 19px; accent-color: var(--guide-accent); margin: 0; }
+#mvu-guidance-root .guide-details { border-top: 1px solid var(--guide-line); margin-top: 14px; }
+#mvu-guidance-root summary { padding: 13px 0; cursor: pointer; min-height: 44px; font-weight: 600; color: var(--guide-text); }
+#mvu-guidance-root .guide-matter { padding: 12px; border: 1px solid var(--guide-line); border-radius: 10px; margin-bottom: 12px; overflow-wrap: anywhere; }
+#mvu-guidance-root h3 { font-size: 15px; margin: 0 0 5px; color: var(--guide-accent); }
+#mvu-guidance-root h4 { font-size: 13px; margin: 12px 0 5px; }
+#mvu-guidance-root ul { padding-left: 20px; margin: 0 0 10px; }
+#mvu-guidance-root li { margin: 5px 0; white-space: pre-wrap; }
+#mvu-guidance-root .guide-diagnostics { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; font-size: 12px; margin: 0 0 12px; }
+#mvu-guidance-root dt { color: var(--guide-muted); }
+#mvu-guidance-root dd { margin: 0; overflow-wrap: anywhere; }
+#mvu-guidance-root .guide-feedback { color: #f0c1a5; }
+#mvu-guidance-root .guide-candidate { margin: 14px 0 0; }
+@media (max-width: 520px) {
+  #mvu-guidance-root .guide-panel { left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); width: auto; top: calc(var(--guide-visual-top, 0px) + 8px); max-height: calc(var(--guide-visual-height, 100dvh) - 16px); }
+  #mvu-guidance-root .guide-header { padding: 12px 14px; }
+  #mvu-guidance-root .guide-body { padding-inline: 14px; }
+}
+@media (prefers-reduced-motion: reduce) { #mvu-guidance-root * { scroll-behavior: auto; } }
